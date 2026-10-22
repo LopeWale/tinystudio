@@ -162,7 +162,7 @@ def interp_capture(ctx: Context) -> dict[str, Any]:
     from tinystudio.interp.neurons import CaptureSpec, capture
 
     a = ctx.args
-    return capture(_store(ctx), CaptureSpec(model_id=a["model"], dataset=a.get("dataset"), snapshot=a.get("snapshot"), layers=list(a.get("layers") or []), topk=int(a.get("topk", 40)), name=a.get("name")), ctx.progress)
+    return capture(_store(ctx), CaptureSpec(model_id=a["model"], dataset=a.get("dataset"), snapshot=a.get("snapshot"), layers=list(a.get("layers") or []), topk=int(a.get("topk", 40)), name=a.get("name") or ""), ctx.progress)
 
 
 def interp_capture_checkpoints(ctx: Context) -> dict[str, Any]:
@@ -196,7 +196,7 @@ def interp_diff(ctx: Context) -> dict[str, Any]:
     from tinystudio.interp.neurons import DiffSpec, diff
 
     a = ctx.args
-    return diff(_store(ctx), DiffSpec(experiment=a["experiment"], base=a.get("base"), dataset=a.get("dataset"), snapshot=a.get("snapshot"), layers=list(a.get("layers") or []), name=a.get("name")), ctx.progress)
+    return diff(_store(ctx), DiffSpec(experiment=a["experiment"], base=a.get("base"), dataset=a.get("dataset"), snapshot=a.get("snapshot"), layers=list(a.get("layers") or []), name=a.get("name") or ""), ctx.progress)
 
 
 # ---------------------------------------------------------------- autopilot, hub
