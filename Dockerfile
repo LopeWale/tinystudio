@@ -26,5 +26,5 @@ RUN pip install ".[assistant]"
 
 USER studio
 VOLUME ["/data"]
-EXPOSE 8000 8001
-CMD ["tinystudio", "serve", "--host", "0.0.0.0", "--port", "8000"]
+# ports come from TINYSTUDIO_PORT / TINYSTUDIO_INFERENCE_PORT at run time (see compose.yaml and .env.example)
+CMD ["tinystudio", "serve"]

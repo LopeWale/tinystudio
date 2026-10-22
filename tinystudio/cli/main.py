@@ -118,14 +118,15 @@ def worker(queue: Annotated[list[str] | None, typer.Option("--queue", help="Queu
 
 
 @app.command()
-def inference(host: str = "0.0.0.0", port: Annotated[int | None, typer.Option()] = None, base: Annotated[list[str] | None, typer.Option("--base")] = None) -> None:
+def inference(host: Annotated[str | None, typer.Option(help="Bind address; default TINYSTUDIO_INFERENCE_HOST or 0.0.0.0.")] = None, port: Annotated[int | None, typer.Option(help="Port; default TINYSTUDIO_INFERENCE_PORT or 8001.")] = None, base: Annotated[list[str] | None, typer.Option("--base")] = None) -> None:
     """Run the inference service (models in memory, OpenAI-compatible routes; the API proxies to it)."""
     import uvicorn
 
     from tinystudio.config import config
     from tinystudio.inference.app import create_inference_app
 
-    uvicorn.run(create_inference_app(base or []), host=host, port=port or config().inference_port, log_level="warning")
+    cfg = config()
+    uvicorn.run(create_inference_app(base or []), host=host or cfg.inference_host, port=port or cfg.inference_port, log_level="warning")
 
 
 @app.command()

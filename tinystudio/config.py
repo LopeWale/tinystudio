@@ -33,6 +33,7 @@ class Config:
     host: str
     port: int
     inference_url: str | None
+    inference_host: str
     inference_port: int
     admin_email: str | None
     admin_password: str | None
@@ -68,6 +69,7 @@ def _load() -> Config:
         host=_env("TINYSTUDIO_HOST", "127.0.0.1"),
         port=int(_env("TINYSTUDIO_PORT", "8000")),
         inference_url=_env("TINYSTUDIO_INFERENCE_URL").rstrip("/") or None,
+        inference_host=_env("TINYSTUDIO_INFERENCE_HOST", "0.0.0.0"),
         inference_port=int(_env("TINYSTUDIO_INFERENCE_PORT", "8001")),
         admin_email=_env("TINYSTUDIO_ADMIN_EMAIL") or None,
         admin_password=os.environ.get("TINYSTUDIO_ADMIN_PASSWORD") or None,
