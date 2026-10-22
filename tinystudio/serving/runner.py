@@ -1,9 +1,7 @@
 """Load a base model or a fine-tuned experiment and generate chat replies.
 
-One ``ModelRunner`` per model id. Ids are either a Hugging Face model id
-(``HuggingFaceTB/SmolLM2-135M-Instruct``) for a baseline, or
-``<job>/<experiment>`` for something you trained here. Shared by ``serve``,
-``eval``, and ``chat`` so all three produce the same text for the same input.
+One ``ModelRunner`` per resolved model (see :func:`tinystudio.services.models.resolve`). Shared by the
+inference service, evaluations, and the CLI so all produce the same text for the same input.
 """
 
 from __future__ import annotations
@@ -23,8 +21,7 @@ from typing import Any
 
 TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
-from tinystudio.core.project import SAFE_NAME, Project, ProjectError, read_json
-from tinystudio.training.train import parse_alias
+from tinystudio.core.project import ProjectError
 
 STREAM_TIMEOUT_SECONDS = 300.0
 
@@ -69,44 +66,6 @@ class ResolvedModel:
     adapter_dir: Path | None
     model_dir: Path | None
     kind: str  # "base" | "lora" | "full"
-
-
-def resolve_model(project: Project | None, model_id: str) -> ResolvedModel:
-    """Map an id to weights on disk: a model directory, ``job/experiment`` inside a project, or a Hub id."""
-    local = Path(model_id).expanduser()
-    if local.is_dir() and (local / "config.json").exists():
-        return ResolvedModel(model_id, str(local), None, local, "full")
-    if project is not None:
-        alias = parse_alias(model_id)
-        if alias is not None and (project.job_dir(alias[0]) / "experiments" / str(alias[1]) / "status.json").exists():
-            model_id = f"{alias[0]}/{alias[1]}"
-    job, _, experiment = model_id.partition("/")
-    experiment, _, step = experiment.partition("@")
-    if project is not None and experiment.isdigit() and SAFE_NAME.match(job):
-        exp_dir = project.job_dir(job) / "experiments" / experiment
-        if step:
-            if not step.isdigit():
-                raise ProjectError(f"{model_id}: a checkpoint reference is job/number@step")
-            ck = exp_dir / "checkpoints" / f"checkpoint-{step}"
-            if not ck.is_dir():
-                raise ProjectError(f"experiment {job}/{experiment} has no checkpoint at step {step}; train with --checkpoint-every N")
-            config = read_json(exp_dir / "config.json")
-            status = read_json(exp_dir / "status.json") if (exp_dir / "status.json").exists() else {}
-            if (ck / "adapter_config.json").exists():
-                return ResolvedModel(model_id, status.get("weights_source") or config["base_model"], ck, None, "lora")
-            return ResolvedModel(model_id, status.get("weights_source") or config["base_model"], None, ck, "full")
-        if (exp_dir / "status.json").exists():
-            status = read_json(exp_dir / "status.json")
-            if status.get("state") != "succeeded":
-                raise ProjectError(f"experiment {model_id} is in state {status.get('state')!r}; only succeeded experiments can be loaded")
-            config = read_json(exp_dir / "config.json")
-            if (exp_dir / "adapter").exists():
-                weights = status.get("weights_source") or config["base_model"]
-                return ResolvedModel(model_id, weights, exp_dir / "adapter", None, "lora")
-            if (exp_dir / "model").exists():
-                return ResolvedModel(model_id, status.get("weights_source") or config["base_model"], None, exp_dir / "model", "full")
-            raise ProjectError(f"experiment {model_id} has no adapter/ or model/ directory")
-    return ResolvedModel(model_id, model_id, None, None, "base")
 
 
 class ModelRunner:

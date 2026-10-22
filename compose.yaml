@@ -1,0 +1,109 @@
+# tinystudio deployment: operational database, vector store, queue, API, worker, inference.
+#   docker compose up -d                  CPU images (training and inference on CPU)
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d --build   NVIDIA GPUs for worker and inference
+# Infrastructure only (run the Python services natively, e.g. on a Mac for Apple-GPU training):
+#   docker compose up -d postgres redis qdrant
+name: tinystudio
+
+x-app: &app
+  image: tinystudio:local
+  build:
+    context: .
+    args:
+      TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    TINYSTUDIO_DATABASE_URL: postgresql+psycopg://tinystudio:${POSTGRES_PASSWORD:-tinystudio}@postgres:5432/tinystudio
+    TINYSTUDIO_REDIS_URL: redis://redis:6379/0
+    TINYSTUDIO_QDRANT_URL: http://qdrant:6333
+    TINYSTUDIO_QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    TINYSTUDIO_DATA_DIR: /data
+    TINYSTUDIO_INFERENCE_URL: http://inference:8001
+    HF_HOME: /data/hub
+  volumes:
+    - data:/data
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: tinystudio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tinystudio}
+      POSTGRES_DB: tinystudio
+    volumes:
+      - pgdata:/var/lib/postgresql   # the 18 image's volume; 17 and below used /var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tinystudio -d tinystudio"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant:/qdrant/storage
+    ports:
+      - "${QDRANT_BIND:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_BIND:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    command: ["tinystudio", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${TINYSTUDIO_BIND:-0.0.0.0}:${TINYSTUDIO_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  worker:
+    <<: *app
+    command: ["tinystudio", "worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  inference:
+    <<: *app
+    command: ["tinystudio", "inference", "--host", "0.0.0.0", "--port", "8001"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  qdrant:
+  data:

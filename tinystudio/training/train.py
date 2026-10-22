@@ -1,19 +1,9 @@
-"""Fine-tuning jobs and experiments.
+"""Fine-tuning: SFT (full or LoRA, 4-bit QLoRA on CUDA) and DPO with TRL and PEFT.
 
-A job pins a snapshot. Each experiment under it pins a base model and a
-training configuration, then produces either a LoRA adapter (``adapter/``) or
-a full set of weights (``model/``). The lifecycle mirrors Studio's
-``pending -> running -> succeeded | failed`` and is written to
-``status.json`` so you can poll it from another shell. Every experiment gets
-a model alias ``ft-<job>-<n>`` that the server and the ``chat``/``eval``
-commands accept as a model id once it has succeeded.
-
-Training uses TRL's ``SFTTrainer`` on the conversational ``messages`` format,
-so the chat template is applied for you, and PEFT for LoRA. On Apple Silicon
-the run goes through PyTorch's MPS backend in fp32: bf16 is switched off
-explicitly because TRL defaults it on, 4-bit QLoRA is unavailable because
-bitsandbytes has no Metal backend, and the fused AdamW is replaced by the
-plain one.
+This module trains into an experiment directory and reports through callbacks; jobs, experiments, and their
+state live in PostgreSQL (see :mod:`tinystudio.services.jobs`). On Apple Silicon the run goes through PyTorch's
+MPS backend in fp32: bf16 is switched off, 4-bit QLoRA is unavailable because bitsandbytes has no Metal backend,
+and the fused AdamW is replaced by the plain one. On CUDA the run uses bf16 and the fused optimizer.
 """
 
 from __future__ import annotations
@@ -22,14 +12,11 @@ import json
 import os
 import re
 import shutil
-import time
-import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tinystudio.core.data import load_snapshot, snapshot_meta
-from tinystudio.core.project import Project, ProjectError, now, read_json, write_json
+from tinystudio.core.project import ProjectError, now, read_json
 from tinystudio.training.recommend import LORA_TARGETS, catalog_entry
 
 ALIAS = re.compile(r"^ft-(?P<job>[A-Za-z0-9][A-Za-z0-9._-]{0,63})-(?P<number>\d+)$")
@@ -38,7 +25,7 @@ ALIAS = re.compile(r"^ft-(?P<job>[A-Za-z0-9][A-Za-z0-9._-]{0,63})-(?P<number>\d+
 @dataclass
 class TrainConfig:
     base_model: str
-    training_type: str = "lora"  # "lora" | "full" | "dpo" (preference alignment with LoRA adapters)
+    training_type: str = "lora"  # "lora" | "full" | "qlora" | "dpo"
     epochs: float = 3
     learning_rate: float = 2e-4
     batch_size: int = 8
@@ -54,10 +41,10 @@ class TrainConfig:
     max_steps: int = -1  # >0 overrides epochs; handy for smoke tests
     logging_steps: int = 5
     eval_steps: int = 0  # 0 = evaluate once per epoch when validation data exists
-    refinetune_from: str | None = None  # job/number or ft-job-number: continue from that experiment's weights (Studio's refinetune_from_experiment_id)
-    dpo_beta: float = 0.1  # DPO only: how far the policy may move from the reference
-    checkpoint_every_steps: int = 0  # >0 saves weights-only checkpoints under experiments/<n>/checkpoints/ for drift studies
-    keep_checkpoints: int = 0  # 0 keeps every checkpoint; otherwise the Trainer deletes the oldest beyond this count
+    refinetune_from: str | None = None  # job/number or ft-job-number: continue from that experiment's weights
+    dpo_beta: float = 0.1
+    checkpoint_every_steps: int = 0  # >0 saves weights-only checkpoints under checkpoints/ for drift studies
+    keep_checkpoints: int = 0  # 0 keeps every checkpoint
 
     def __post_init__(self) -> None:
         if self.training_type not in ("lora", "full", "qlora", "dpo"):
@@ -71,6 +58,9 @@ class TrainConfig:
         known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in value.items() if k in known})
 
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 def alias_for(job: str, number: int) -> str:
     return f"ft-{job}-{number}"
@@ -81,151 +71,21 @@ def parse_alias(model_id: str) -> tuple[str, int] | None:
     return (match["job"], int(match["number"])) if match else None
 
 
-def create_job(project: Project, name: str, snapshot: str, goal: str = "", reasoning: bool = False) -> dict[str, Any]:
-    snapshot_meta(project, snapshot)
-    job_dir = project.job_dir(name)
-    if (job_dir / "job.json").exists():
-        raise ProjectError(f"job {name!r} already exists; add an experiment to it with `finetune --job {name}`")
-    job = {"name": name, "snapshot": snapshot, "goal": goal, "reasoning": reasoning, "created": now(), "experiments": []}
-    write_json(job_dir / "job.json", job)
-    return job
-
-
-def job_meta(project: Project, name: str) -> dict[str, Any]:
-    path = project.job_dir(name) / "job.json"
-    if not path.exists():
-        raise ProjectError(f"job {name!r} does not exist")
-    return read_json(path)
-
-
-def delete_job(project: Project, name: str) -> None:
-    job_meta(project, name)
-    shutil.rmtree(project.job_dir(name))
-
-
-def experiment_dir(project: Project, job: str, number: int) -> Path:
-    return project.job_dir(job) / "experiments" / str(number)
-
-
-def list_experiments(project: Project, job: str) -> list[dict[str, Any]]:
-    base = project.job_dir(job) / "experiments"
-    if not base.exists():
-        return []
-    rows = []
-    for child in sorted(base.iterdir(), key=lambda p: int(p.name) if p.name.isdigit() else 0):
-        if (child / "status.json").exists() and (child / "config.json").exists():
-            status = read_json(child / "status.json")
-            checkpoints = sorted(int(p.name.split("-")[1]) for p in (child / "checkpoints").glob("checkpoint-*") if p.is_dir() and p.name.split("-")[1].isdigit()) if (child / "checkpoints").exists() else []
-            rows.append({"number": int(child.name), "alias": alias_for(job, int(child.name)), **status, "config": read_json(child / "config.json"), "checkpoints": checkpoints})
-    return rows
-
-
-def delete_experiment(project: Project, job: str, number: int) -> None:
-    exp_dir = experiment_dir(project, job, number)
-    if not exp_dir.exists():
-        raise ProjectError(f"experiment {job}/{number} does not exist")
-    status = read_json(exp_dir / "status.json") if (exp_dir / "status.json").exists() else {}
-    if status.get("state") == "running":
-        raise ProjectError(f"experiment {job}/{number} is running; stop its task first")
-    shutil.rmtree(exp_dir)
-    meta = job_meta(project, job)
-    meta["experiments"] = [n for n in meta["experiments"] if n != number]
-    write_json(project.job_dir(job) / "job.json", meta)
-
-
-def claim_experiment_dir(project: Project, job: str) -> tuple[int, Path]:
-    """Create the next free experiments/<n>/ directory: max existing number + 1, skipping any that already exist."""
-    base = project.job_dir(job) / "experiments"
-    base.mkdir(parents=True, exist_ok=True)
-    taken = [int(child.name) for child in base.iterdir() if child.name.isdigit()]
-    number = max(taken, default=0) + 1
-    while True:
-        exp_dir = base / str(number)
-        try:
-            exp_dir.mkdir(exist_ok=False)
-            return number, exp_dir
-        except FileExistsError:
-            number += 1
-
-
-def _set_status(exp_dir: Path, state: str, **extra: Any) -> dict[str, Any]:
-    status = read_json(exp_dir / "status.json") if (exp_dir / "status.json").exists() else {}
-    status.update({"state": state, "updated": now(), **extra})
-    write_json(exp_dir / "status.json", status)
-    return status
-
-
-def create_pending_experiment(project: Project, job: str, config: TrainConfig) -> int:
-    """Register an experiment without training it (Studio's "configure, then Start Experiments")."""
-    meta = job_meta(project, job)
-    number, exp_dir = claim_experiment_dir(project, job)
-    write_json(exp_dir / "config.json", asdict(config))
-    _set_status(exp_dir, "pending", created=now(), job=job, snapshot=meta["snapshot"], alias=alias_for(job, number))
-    meta["experiments"].append(number)
-    write_json(project.job_dir(job) / "job.json", meta)
-    return number
-
-
-def run_experiment(project: Project, job: str, config: TrainConfig, progress: Any = print) -> dict[str, Any]:
-    """Create and train one experiment synchronously. Returns the final status document."""
-    number = create_pending_experiment(project, job, config)
-    return run_experiment_number(project, job, number, progress)
-
-
-def run_pending_experiments(project: Project, job: str, progress: Any = print) -> list[dict[str, Any]]:
-    """Train every pending experiment of a job in order (one at a time; there is one GPU)."""
-    results = []
-    for exp in list_experiments(project, job):
-        if exp.get("state") == "pending":
-            progress(f"=== experiment {job}/{exp['number']} ({exp['config']['base_model']}, {exp['config']['training_type']})")
-            results.append(run_experiment_number(project, job, exp["number"], progress))
-    return results
-
-
-def parent_weights(project: Project, reference: str) -> Path:
-    """Weights of a finished experiment to continue from: its full model, or its adapter merged once into the base (cached)."""
+def parse_experiment_ref(reference: str) -> tuple[str, int]:
+    """'job/number' or 'ft-job-number' -> (job, number)."""
     alias = parse_alias(reference)
-    job, number = alias if alias else (reference.partition("/")[0], reference.partition("/")[2])
-    if not str(number).isdigit():
-        raise ProjectError(f"refinetune_from must be job/number or ft-job-number, got {reference!r}")
-    exp_dir = experiment_dir(project, job, int(number))
-    if not (exp_dir / "status.json").exists():
-        raise ProjectError(f"refinetune_from: experiment {reference!r} does not exist")
-    if read_json(exp_dir / "status.json").get("state") != "succeeded":
-        raise ProjectError(f"refinetune_from: experiment {reference!r} has not succeeded")
-    if (exp_dir / "model").exists():
-        return exp_dir / "model"
-    merged = exp_dir / "merged"
-    if not (merged / "config.json").exists():
-        export_merged(project, job, int(number), merged)
-    return merged
+    if alias:
+        return alias
+    job, _, number = reference.partition("/")
+    if not job or not number.isdigit():
+        raise ProjectError(f"expected job/number or ft-job-number, got {reference!r}")
+    return job, int(number)
 
 
-def run_experiment_number(project: Project, job: str, number: int, progress: Any = print) -> dict[str, Any]:
-    meta = job_meta(project, job)
-    exp_dir = experiment_dir(project, job, number)
-    if not (exp_dir / "config.json").exists():
-        raise ProjectError(f"experiment {job}/{number} does not exist")
-    config = TrainConfig.from_dict(read_json(exp_dir / "config.json"))
-    train_rows, val_rows = load_snapshot(project, meta["snapshot"])
-    started = time.perf_counter()
-    try:
-        weights = parent_weights(project, config.refinetune_from) if config.refinetune_from else None
-        _set_status(exp_dir, "running", started_at=now(), weights_source=str(weights) if weights else config.base_model)
-        result = _train(exp_dir, config, train_rows, val_rows, progress, weights)
-        status = _set_status(exp_dir, "succeeded", seconds=round(time.perf_counter() - started, 1), **result)
-    except KeyboardInterrupt:
-        status = _set_status(exp_dir, "failed", error="interrupted", seconds=round(time.perf_counter() - started, 1))
-    except Exception as cause:  # noqa: BLE001 - the state file must record any failure reason
-        status = _set_status(
-            exp_dir,
-            "failed",
-            error=f"{type(cause).__name__}: {cause}",
-            traceback=traceback.format_exc()[-4000:],
-            seconds=round(time.perf_counter() - started, 1),
-        )
-    status["number"] = number
-    return status
+def train_experiment(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any = print, weights: Path | None = None, on_log: Any = None) -> dict[str, Any]:
+    """Train into ``exp_dir`` (adapter/ or model/, checkpoints/). ``on_log(kind, row)`` receives loss points and checkpoint records."""
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    return _train(exp_dir, config, train_rows, val_rows, progress, weights, on_log or (lambda kind, row: None))
 
 
 def preference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -239,7 +99,7 @@ def preference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pairs
 
 
-def _checkpoint_logger(exp_dir: Path, progress: Any) -> Any:
+def _checkpoint_logger(exp_dir: Path, progress: Any, on_log: Any) -> Any:
     """Record every periodic checkpoint (step, epoch, last loss, path) to checkpoints.jsonl."""
     from transformers import TrainerCallback
 
@@ -250,6 +110,7 @@ def _checkpoint_logger(exp_dir: Path, progress: Any) -> Any:
             row = {"step": int(state.global_step), "epoch": round(float(state.epoch or 0), 3), "loss": last.get("loss"), "path": str(path), "time": now()}
             with (exp_dir / "checkpoints.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row) + "\n")
+            on_log("checkpoint", row)
             progress(f"checkpoint saved at step {row['step']} (epoch {row['epoch']})")
 
     return CheckpointLog()
@@ -288,7 +149,7 @@ def _load_4bit(source: str, device: str, progress: Any) -> Any:
     return prepare_model_for_kbit_training(model)
 
 
-def _loss_logger(exp_dir: Path, progress: Any) -> Any:
+def _loss_logger(exp_dir: Path, progress: Any, on_log: Any) -> Any:
     from transformers import TrainerCallback
 
     loss_path = exp_dir / "loss.jsonl"
@@ -301,6 +162,7 @@ def _loss_logger(exp_dir: Path, progress: Any) -> Any:
             row = {"step": state.global_step, "epoch": round(state.epoch or 0, 3), "time": now(), **{k: v for k, v in logs.items() if isinstance(v, (int, float))}}
             with loss_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row) + "\n")
+            on_log("loss", row)
             shown = {k: (v if k == "learning_rate" else round(v, 4)) for k, v in row.items() if k in shown_keys}
             if shown:
                 progress(f"step {row['step']} epoch {row['epoch']} " + " ".join(f"{k}={v:.3g}" for k, v in shown.items()))
@@ -308,7 +170,7 @@ def _loss_logger(exp_dir: Path, progress: Any) -> Any:
     return LossLog()
 
 
-def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None = None) -> dict[str, Any]:
+def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any) -> dict[str, Any]:
     """Direct Preference Optimization with LoRA adapters; the adapter-free base acts as the reference model."""
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -363,7 +225,7 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
         disable_tqdm=True,
         **_checkpoint_args(config),
     )
-    trainer = DPOTrainer(model=model, ref_model=None, args=args, train_dataset=train_ds, eval_dataset=eval_ds, processing_class=tokenizer, peft_config=peft_config, callbacks=[_loss_logger(exp_dir, progress), _checkpoint_logger(exp_dir, progress)])
+    trainer = DPOTrainer(model=model, ref_model=None, args=args, train_dataset=train_ds, eval_dataset=eval_ds, processing_class=tokenizer, peft_config=peft_config, callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log)])
     trainer.remove_callback(PrinterCallback)
     trainable, total = _count_parameters(trainer.model)
     progress(f"trainable parameters: {trainable:,} of {total:,} ({trainable / total:.2%})")
@@ -386,9 +248,9 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
     }
 
 
-def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None = None) -> dict[str, Any]:
+def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any) -> dict[str, Any]:
     if config.training_type == "dpo":
-        return _train_dpo(exp_dir, config, train_rows, val_rows, progress, weights)
+        return _train_dpo(exp_dir, config, train_rows, val_rows, progress, weights, on_log)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     import torch
@@ -464,7 +326,7 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         eval_dataset=eval_ds,
         processing_class=tokenizer,
         peft_config=peft_config,
-        callbacks=[_loss_logger(exp_dir, progress), _checkpoint_logger(exp_dir, progress)],
+        callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log)],
     )
     trainer.remove_callback(PrinterCallback)  # the loss log above replaces the default stdout dump
     trainable, total = _count_parameters(trainer.model)
@@ -497,20 +359,18 @@ def _count_parameters(model: Any) -> tuple[int, int]:
     return trainable, total
 
 
-def read_loss_curve(project: Project, job: str, number: int) -> list[dict[str, Any]]:
-    path = experiment_dir(project, job, number) / "loss.jsonl"
+def read_loss_curve(exp_dir: Path) -> list[dict[str, Any]]:
+    path = exp_dir / "loss.jsonl"
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def export_merged(project: Project, job: str, number: int, destination: Path) -> Path:
+def export_merged(exp_dir: Path, destination: Path, base_model: str, weights_source: str | None = None) -> Path:
     """Merge a LoRA adapter into the weights it was trained on and save a standalone model directory."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    exp_dir = experiment_dir(project, job, number)
-    config = read_json(exp_dir / "config.json")
     if destination.exists() and any(destination.iterdir()):
         raise ProjectError(f"{destination} is not empty")
     if (exp_dir / "model").exists():
@@ -518,13 +378,34 @@ def export_merged(project: Project, job: str, number: int, destination: Path) ->
         return destination
     from peft import PeftModel
 
-    status = read_json(exp_dir / "status.json") if (exp_dir / "status.json").exists() else {}
-    source = status.get("weights_source") or config["base_model"]  # a refined adapter sits on its parent's merged weights
+    source = weights_source or base_model  # a refined adapter sits on its parent's merged weights
     base = AutoModelForCausalLM.from_pretrained(source, dtype=torch.float32)
     merged = PeftModel.from_pretrained(base, str(exp_dir / "adapter")).merge_and_unload()
     merged.save_pretrained(str(destination))
     AutoTokenizer.from_pretrained(str(exp_dir / "adapter")).save_pretrained(str(destination))
     return destination
+
+
+def checkpoints_on_disk(exp_dir: Path) -> list[dict[str, Any]]:
+    """Checkpoints saved during training, joined with checkpoints.jsonl records."""
+    logged: dict[int, dict[str, Any]] = {}
+    log_path = exp_dir / "checkpoints.jsonl"
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rec = json.loads(line)
+                logged[int(rec["step"])] = rec
+    found = []
+    ck_dir = exp_dir / "checkpoints"
+    if ck_dir.exists():
+        for child in ck_dir.iterdir():
+            m = re.fullmatch(r"checkpoint-(\d+)", child.name)
+            if m and child.is_dir() and ((child / "adapter_config.json").exists() or (child / "config.json").exists()):
+                step = int(m.group(1))
+                rec = logged.get(step, {})
+                size = sum(p.stat().st_size for p in child.rglob("*") if p.is_file())
+                found.append({"step": step, "epoch": rec.get("epoch"), "loss": rec.get("loss"), "path": str(child), "bytes": size})
+    return sorted(found, key=lambda r: r["step"])
 
 
 def write_ollama_modelfile(model_dir: Path, destination: Path, system_prompt: str | None = None) -> Path:

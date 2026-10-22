@@ -1,0 +1,28 @@
+# Overlay for hosts with NVIDIA GPUs (needs the NVIDIA Container Toolkit):
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d --build
+# TORCH_INDEX_URL picks the CUDA build of PyTorch; set it in .env to match your driver (cu126, cu128, ...).
+services:
+  api:
+    build:
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+  worker:
+    environment:
+      TINYSTUDIO_DEVICE: ${TINYSTUDIO_DEVICE:-cuda}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${WORKER_GPUS:-all}
+              capabilities: [gpu]
+  inference:
+    environment:
+      TINYSTUDIO_DEVICE: ${TINYSTUDIO_DEVICE:-cuda}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${INFERENCE_GPUS:-all}
+              capabilities: [gpu]

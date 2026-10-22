@@ -27,16 +27,66 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from tinystudio.core.data import load_dataset, load_snapshot
 from tinystudio.core.llm import LLMClient, LLMError
-from tinystudio.core.project import Project, ProjectError, now, read_json, write_json
+from tinystudio.core.project import ProjectError, now, read_json, write_json
 
 REGIMES = {3: "+/+", 2: "+/-", 1: "-/+", 0: "-/-"}
 STRONG_RATIO = 0.3  # the essay counts a response as strong at 30% of the neuron's strongest corpus example
 CONTEXT_TOKENS = 12
 SAFE_CHARS = re.compile(r"[^A-Za-z0-9 ._-]+")
+
+
+class InterpStore(Protocol):
+    """What the capture code needs from the application: where artifacts go, rows, model resolution, registration."""
+
+    captures_dir: Path
+    diffs_dir: Path
+
+    def rows_for(self, dataset: str | None, snapshot: str | None) -> list[dict[str, Any]]: ...
+
+    def resolve_model(self, model_id: str) -> Any: ...
+
+    def experiment_checkpoints(self, job: str, number: int) -> list[dict[str, Any]]: ...
+
+    def experiment_succeeded(self, job: str, number: int) -> bool: ...
+
+    def register(self, kind: str, name: str, meta: dict[str, Any]) -> None: ...
+
+    def unregister(self, kind: str, name: str) -> None: ...
+
+
+class LocalStore:
+    """A store over a plain directory with no database: base models only (tests, ad-hoc analysis)."""
+
+    def __init__(self, root: Path, rows: list[dict[str, Any]] | None = None) -> None:
+        self.captures_dir = root / "captures"
+        self.diffs_dir = root / "diffs"
+        self._rows = rows or []
+
+    def rows_for(self, dataset: str | None, snapshot: str | None) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+    def resolve_model(self, model_id: str) -> Any:
+        from tinystudio.serving.runner import ResolvedModel
+
+        local = Path(model_id).expanduser()
+        if local.is_dir() and (local / "config.json").exists():
+            return ResolvedModel(model_id, str(local), None, local, "full")
+        return ResolvedModel(model_id, model_id, None, None, "base")
+
+    def experiment_checkpoints(self, job: str, number: int) -> list[dict[str, Any]]:
+        return []
+
+    def experiment_succeeded(self, job: str, number: int) -> bool:
+        return False
+
+    def register(self, kind: str, name: str, meta: dict[str, Any]) -> None:
+        return None
+
+    def unregister(self, kind: str, name: str) -> None:
+        return None
 
 
 class InterpError(ProjectError):
@@ -76,19 +126,19 @@ def safe_part(text: str) -> str:
     return SAFE_CHARS.sub("-", text.replace("/", "-").replace("@", "-step")).strip("-") or "x"
 
 
-def captures_dir(project: Project) -> Path:
-    return project.root / "interp" / "captures"
+def captures_dir(project: InterpStore) -> Path:
+    return project.captures_dir
 
 
-def capture_dir(project: Project, name: str) -> Path:
+def capture_dir(project: InterpStore, name: str) -> Path:
     return captures_dir(project) / name
 
 
-def diffs_dir(project: Project) -> Path:
-    return project.root / "interp" / "diffs"
+def diffs_dir(project: InterpStore) -> Path:
+    return project.diffs_dir
 
 
-def diff_dir(project: Project, name: str) -> Path:
+def diff_dir(project: InterpStore, name: str) -> Path:
     return diffs_dir(project) / name
 
 
@@ -96,7 +146,7 @@ def default_capture_name(model_id: str, source: str) -> str:
     return f"{safe_part(model_id)}--{safe_part(source)}"
 
 
-def list_captures(project: Project) -> list[dict[str, Any]]:
+def list_captures(project: InterpStore) -> list[dict[str, Any]]:
     base = captures_dir(project)
     if not base.exists():
         return []
@@ -110,20 +160,21 @@ def list_captures(project: Project) -> list[dict[str, Any]]:
     return out
 
 
-def capture_meta(project: Project, name: str) -> dict[str, Any]:
+def capture_meta(project: InterpStore, name: str) -> dict[str, Any]:
     path = capture_dir(project, name) / "meta.json"
     if not path.exists():
         raise InterpError(f"capture {name!r} does not exist; run `tinystudio interp capture MODEL --dataset D` first")
     return read_json(path)
 
 
-def delete_capture(project: Project, name: str) -> None:
+def delete_capture(project: InterpStore, name: str) -> None:
     import shutil
 
     directory = capture_dir(project, name)
     if not (directory / "meta.json").exists():
         raise InterpError(f"capture {name!r} does not exist")
     shutil.rmtree(directory)
+    project.unregister("capture", name)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -139,13 +190,10 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------ rows, models, hooks
-def rows_for(project: Project, dataset: str | None, snapshot: str | None) -> list[dict[str, Any]]:
-    if dataset:
-        return load_dataset(project, dataset)
-    if snapshot:
-        train, val = load_snapshot(project, snapshot)
-        return train + val
-    raise InterpError("pass a dataset or a snapshot")
+def rows_for(project: InterpStore, dataset: str | None, snapshot: str | None) -> list[dict[str, Any]]:
+    if not dataset and not snapshot:
+        raise InterpError("pass a dataset or a snapshot")
+    return project.rows_for(dataset, snapshot)
 
 
 def _device() -> str:
@@ -154,16 +202,16 @@ def _device() -> str:
     return pick_device()
 
 
-def load_model(project: Project | None, model_id: str, device: str | None = None) -> dict[str, Any]:
+def load_model(project: InterpStore | None, model_id: str, device: str | None = None) -> dict[str, Any]:
     """Load a model for activation capture: fp32, adapters left unmerged so ``disable_adapter`` gives the base."""
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from tinystudio.serving.runner import resolve_model
+    from tinystudio.serving.runner import ResolvedModel
 
-    resolved = resolve_model(project, model_id)
+    resolved = project.resolve_model(model_id) if project is not None else ResolvedModel(model_id, model_id, None, None, "base")
     device = device or _device()
     source = str(resolved.model_dir) if resolved.model_dir else resolved.base_model
     tokenizer = AutoTokenizer.from_pretrained(source)
@@ -398,7 +446,7 @@ def _empty_top(k: int, width: int, device: str, largest: bool) -> dict[str, Any]
     }
 
 
-def capture(project: Project, spec: CaptureSpec, progress: Any = print) -> dict[str, Any]:
+def capture(project: InterpStore, spec: CaptureSpec, progress: Any = print) -> dict[str, Any]:
     """Run the dataset through the model and record per-neuron activation summaries for the chosen layers."""
     import numpy as np
     import torch
@@ -531,6 +579,7 @@ def capture(project: Project, spec: CaptureSpec, progress: Any = print) -> dict[
         "layer_stats": layer_stats,
     }
     write_json(out_dir / "meta.json", meta)
+    project.register("capture", name, meta)
     progress(f"capture {name}: done in {meta['seconds']}s -> {out_dir}")
     _release(loaded)
     return meta
@@ -549,7 +598,7 @@ def _release(loaded: dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------ reading captures
-def _layer_arrays(project: Project, name: str, layer: int) -> Any:
+def _layer_arrays(project: InterpStore, name: str, layer: int) -> Any:
     import numpy as np
 
     path = capture_dir(project, name) / f"layer-{layer}.npz"
@@ -558,7 +607,7 @@ def _layer_arrays(project: Project, name: str, layer: int) -> Any:
     return np.load(path)
 
 
-def _tokens(project: Project, name: str) -> dict[str, Any]:
+def _tokens(project: InterpStore, name: str) -> dict[str, Any]:
     return read_json(capture_dir(project, name) / "tokens.json")
 
 
@@ -584,7 +633,7 @@ def latest_records(path: Path) -> dict[tuple[int, int], dict[str, Any]]:
     return out
 
 
-def neuron_table(project: Project, name: str, layer: int, sort: str = "max", limit: int = 100, offset: int = 0, query: str = "") -> dict[str, Any]:
+def neuron_table(project: InterpStore, name: str, layer: int, sort: str = "max", limit: int = 100, offset: int = 0, query: str = "") -> dict[str, Any]:
     """Rows for the neuron table of one layer, sortable by max, min, open_max, echo_share, density."""
     import numpy as np
 
@@ -643,7 +692,7 @@ def _entry(arrays: Any, pole: str, j: int, n: int, tokens: dict[str, Any], conte
     }
 
 
-def neuron_view(project: Project, name: str, layer: int, neuron: int, context: int = CONTEXT_TOKENS, limit: int = 20) -> dict[str, Any]:
+def neuron_view(project: InterpStore, name: str, layer: int, neuron: int, context: int = CONTEXT_TOKENS, limit: int = 20) -> dict[str, Any]:
     """Everything the neuron panel shows: poles, regimes, label shares, explanation, tests, drift hints."""
     arrays = _layer_arrays(project, name, layer)
     width = int(arrays["stats_max"].shape[0])
@@ -715,7 +764,7 @@ def explain_prompt(view: dict[str, Any], positives: int = 12, negatives: int = 6
     return "\n".join(lines)
 
 
-def explain(project: Project, name: str, layer: int, neuron: int, client: LLMClient, progress: Any = print) -> dict[str, Any]:
+def explain(project: InterpStore, name: str, layer: int, neuron: int, client: LLMClient, progress: Any = print) -> dict[str, Any]:
     view = neuron_view(project, name, layer, neuron)
     prompt = explain_prompt(view)
     reply = client.chat_json([{"role": "user", "content": prompt}], temperature=0.1)
@@ -738,7 +787,7 @@ def explain(project: Project, name: str, layer: int, neuron: int, client: LLMCli
     return record
 
 
-def explain_top(project: Project, name: str, layer: int, client: LLMClient, top: int = 20, sort: str = "max", progress: Any = print) -> list[dict[str, Any]]:
+def explain_top(project: InterpStore, name: str, layer: int, client: LLMClient, top: int = 20, sort: str = "max", progress: Any = print) -> list[dict[str, Any]]:
     """Explain the first `top` neurons by `sort` that have no explanation yet (re-running moves on to the next ones)."""
     table = neuron_table(project, name, layer, sort=sort, limit=100000)
     pending = [row["neuron"] for row in table["rows"] if row["explanation"] is None][:top]
@@ -836,7 +885,7 @@ def score_texts(loaded: dict[str, Any], layer: int, neurons: list[int], texts: l
     return results
 
 
-def test(project: Project, name: str, layer: int, neuron: int, client: LLMClient, loaded: dict[str, Any] | None = None, n_blind: int = 3, n_each: int = 5, progress: Any = print) -> dict[str, Any]:
+def test(project: InterpStore, name: str, layer: int, neuron: int, client: LLMClient, loaded: dict[str, Any] | None = None, n_blind: int = 3, n_each: int = 5, progress: Any = print) -> dict[str, Any]:
     """Blind-maximum and near-miss tests of the latest explanation of one neuron."""
     explanations = latest_records(capture_dir(project, name) / "explanations.jsonl")
     exp = explanations.get((layer, neuron))
@@ -907,7 +956,7 @@ def test(project: Project, name: str, layer: int, neuron: int, client: LLMClient
     return record
 
 
-def test_many(project: Project, name: str, layer: int, neurons: list[int], client: LLMClient, progress: Any = print) -> list[dict[str, Any]]:
+def test_many(project: InterpStore, name: str, layer: int, neurons: list[int], client: LLMClient, progress: Any = print) -> list[dict[str, Any]]:
     meta = capture_meta(project, name)
     loaded = load_model(project, meta["model_id"])
     try:
@@ -917,30 +966,31 @@ def test_many(project: Project, name: str, layer: int, neurons: list[int], clien
 
 
 # ------------------------------------------------------------------ before / after
-def list_diffs(project: Project) -> list[dict[str, Any]]:
+def list_diffs(project: InterpStore) -> list[dict[str, Any]]:
     base = diffs_dir(project)
     if not base.exists():
         return []
     return [read_json(child / "meta.json") for child in sorted(base.iterdir()) if child.is_dir() and (child / "meta.json").exists()]
 
 
-def diff_meta(project: Project, name: str) -> dict[str, Any]:
+def diff_meta(project: InterpStore, name: str) -> dict[str, Any]:
     path = diff_dir(project, name) / "meta.json"
     if not path.exists():
         raise InterpError(f"comparison {name!r} does not exist")
     return read_json(path)
 
 
-def delete_diff(project: Project, name: str) -> None:
+def delete_diff(project: InterpStore, name: str) -> None:
     import shutil
 
     directory = diff_dir(project, name)
     if not (directory / "meta.json").exists():
         raise InterpError(f"comparison {name!r} does not exist")
     shutil.rmtree(directory)
+    project.unregister("diff", name)
 
 
-def diff(project: Project, spec: DiffSpec, progress: Any = print) -> dict[str, Any]:
+def diff(project: InterpStore, spec: DiffSpec, progress: Any = print) -> dict[str, Any]:
     """Compare per-neuron activations of an experiment against its base on the same tokens."""
     import numpy as np
     import torch
@@ -1055,6 +1105,7 @@ def diff(project: Project, spec: DiffSpec, progress: Any = print) -> dict[str, A
         "layer_summary": layer_summary,
     }
     write_json(out_dir / "meta.json", meta)
+    project.register("diff", name, meta)
     progress(f"compare {name}: done in {meta['seconds']}s")
     _release(exp)
     if base is not None:
@@ -1066,7 +1117,7 @@ def _finite(value: float) -> float | None:
     return None if math.isnan(value) else float(value)
 
 
-def diff_layer(project: Project, name: str, layer: int, limit: int = 50, context: int = CONTEXT_TOKENS, sort: str = "change") -> dict[str, Any]:
+def diff_layer(project: InterpStore, name: str, layer: int, limit: int = 50, context: int = CONTEXT_TOKENS, sort: str = "change") -> dict[str, Any]:
     """Most-changed neurons of one layer with the token where each changed most. sort: change (1 - r plus relative change), r, rel_change."""
     import numpy as np
 
@@ -1103,7 +1154,7 @@ def diff_layer(project: Project, name: str, layer: int, limit: int = 50, context
     return {"comparison": name, "layer": layer, "sort": sort, "summary": meta["layer_summary"].get(str(layer)), "rows": rows}
 
 
-def diff_neuron(project: Project, name: str, layer: int, neuron: int, limit: int = 10, context: int = CONTEXT_TOKENS) -> dict[str, Any]:
+def diff_neuron(project: InterpStore, name: str, layer: int, neuron: int, limit: int = 10, context: int = CONTEXT_TOKENS) -> dict[str, Any]:
     """Which datapoints and tokens drove one neuron's change."""
     import numpy as np
 
@@ -1128,33 +1179,16 @@ def diff_neuron(project: Project, name: str, layer: int, neuron: int, limit: int
 
 
 # ------------------------------------------------------------------ checkpoints and drift
-def experiment_checkpoints(project: Project, job: str, number: int) -> list[dict[str, Any]]:
-    """Checkpoints saved during an experiment, from checkpoints.jsonl plus whatever is on disk."""
-    from tinystudio.training.train import experiment_dir
-
-    exp_dir = experiment_dir(project, job, number)
-    logged = {int(r["step"]): r for r in _read_jsonl(exp_dir / "checkpoints.jsonl")}
-    found = []
-    ck_dir = exp_dir / "checkpoints"
-    if ck_dir.exists():
-        for child in ck_dir.iterdir():
-            m = re.fullmatch(r"checkpoint-(\d+)", child.name)
-            if m and child.is_dir() and ((child / "adapter_config.json").exists() or (child / "config.json").exists()):
-                step = int(m.group(1))
-                rec = logged.get(step, {})
-                size = sum(p.stat().st_size for p in child.rglob("*") if p.is_file())
-                found.append({"step": step, "epoch": rec.get("epoch"), "loss": rec.get("loss"), "path": str(child), "bytes": size, "model_id": f"{job}/{number}@{step}"})
-    return sorted(found, key=lambda r: r["step"])
+def experiment_checkpoints(project: InterpStore, job: str, number: int) -> list[dict[str, Any]]:
+    """Checkpoints saved during an experiment, as the application reports them."""
+    return project.experiment_checkpoints(job, number)
 
 
-def capture_checkpoints(project: Project, job: str, number: int, dataset: str | None, snapshot: str | None, layers: list[int], topk: int = 40, progress: Any = print) -> list[dict[str, Any]]:
+def capture_checkpoints(project: InterpStore, job: str, number: int, dataset: str | None, snapshot: str | None, layers: list[int], topk: int = 40, progress: Any = print) -> list[dict[str, Any]]:
     """Capture every saved checkpoint of an experiment plus its final weights, so drift can be read."""
-    from tinystudio.training.train import experiment_dir
-
     checkpoints = experiment_checkpoints(project, job, number)
-    status = read_json(experiment_dir(project, job, number) / "status.json") if (experiment_dir(project, job, number) / "status.json").exists() else {}
     ids = [c["model_id"] for c in checkpoints]
-    if status.get("state") == "succeeded":
+    if project.experiment_succeeded(job, number):
         ids.append(f"{job}/{number}")
     if not ids:
         raise InterpError(f"experiment {job}/{number} has no checkpoints (train with --checkpoint-every N) and has not succeeded")
@@ -1168,7 +1202,7 @@ def capture_checkpoints(project: Project, job: str, number: int, dataset: str | 
                 progress(f"capture {name} exists with the requested layers; skipping")
                 metas.append(existing)
                 continue
-            raise InterpError(f"capture {name!r} exists but only has layers {existing['layers']}; delete it (`tinystudio interp delete capture {name}`) or request those layers")
+            raise InterpError(f"capture {name!r} exists but only has layers {existing['layers']}; delete it or request those layers")
         metas.append(capture(project, CaptureSpec(model_id=model_id, dataset=dataset, snapshot=snapshot, layers=layers, topk=topk, name=name), progress))
     return metas
 
@@ -1178,7 +1212,7 @@ def _step_of(model_id: str) -> int | None:
     return int(step) if step.isdigit() else None
 
 
-def drift(project: Project, job: str, number: int, source: str, layer: int, neuron: int, limit: int = 12) -> dict[str, Any]:
+def drift(project: InterpStore, job: str, number: int, source: str, layer: int, neuron: int, limit: int = 12) -> dict[str, Any]:
     """How one neuron's strongest examples move across an experiment's checkpoints (final weights last)."""
     prefix = f"{job}/{number}"
     captures = [m for m in list_captures(project) if (m["model_id"] == prefix or m["model_id"].startswith(prefix + "@")) and m["source"] == source and layer in m["layers"]]
