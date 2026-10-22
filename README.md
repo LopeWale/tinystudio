@@ -1,43 +1,84 @@
 # tinystudio
 
-A local, account-free pipeline for training tiny and domain-specific language
-models on a Mac: **Datasets → Fine-tuning → Evaluations → Deployment**, the
-same four stages as Prem Studio, but every stage is a command over files in a
-directory you own. No sign-up, no billing, no network except the model weights
-you download once from Hugging Face and any helper model you run yourself.
+A self-hosted platform for training tiny and domain-specific language models:
+**Datasets → Fine-tuning → Evaluations → Deployment**, the same four stages as
+Prem Studio, for a team. Projects, datasets, snapshots, jobs, evaluations,
+traces, and accounts live in PostgreSQL; document chunks and their embeddings
+live in Qdrant; training, evaluation, indexing, and interpretability jobs run on
+workers through a Redis queue; models are served by an inference service behind
+the API. Weights, checkpoints, and activation captures sit on a shared data
+volume. One `docker compose up` starts everything; the Python services also run
+natively (for example on a Mac, where training uses the Apple GPU through
+PyTorch MPS) against the containerized stores.
 
-It targets Apple Silicon (PyTorch MPS) and models from 135M to about 1.7B
-parameters. On a 24 GB M4 Pro, a LoRA run over 200 examples takes about a
-minute.
-
-## Install
-
-```bash
-cd ~/Developer/tinystudio
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e ".[mlx,dev]"
-export PATH="$PWD/.venv/bin:$PATH"       # or call .venv/bin/tinystudio
+```
+                     ┌──────────────┐      ┌─────────────┐
+ browser / MCP ───▶  │  api (8000)  │ ───▶ │  inference  │  models in memory, /v1
+ OpenAI clients      │  web UI, /api│      │   (8001)    │
+                     └──┬─────┬─────┘      └──────┬──────┘
+                        │     │ enqueue           │
+              ┌─────────▼┐  ┌─▼───────┐   ┌───────▼──────┐   ┌──────────────┐
+              │ postgres │  │  redis  │◀──│   worker(s)  │──▶│    qdrant    │
+              │ rows     │  │  queue  │   │ train, eval, │   │ chunk vectors│
+              └──────────┘  └─────────┘   │ index, interp│   └──────────────┘
+                                          └──────┬───────┘
+                                        shared data volume: weights, checkpoints, captures, uploads, task logs
 ```
 
-Built and verified against: torch 2.14.1, transformers 5.20.2, trl 1.16.0,
-peft 0.21.2, datasets 5.1.0, fastapi 0.156.4, mlx-lm 0.32.2, Python 3.12.13.
+## Install and run
+
+**Everything in containers** (Linux server, optionally with NVIDIA GPUs):
+
+```bash
+cp .env.example .env            # set TINYSTUDIO_ADMIN_EMAIL / TINYSTUDIO_ADMIN_PASSWORD for the first admin, or use the setup form
+docker compose up -d --build    # postgres, redis, qdrant, api, worker, inference (CPU PyTorch)
+docker compose -f compose.yaml -f compose.gpu.yaml up -d --build   # NVIDIA: worker and inference get the GPUs; TORCH_INDEX_URL picks the CUDA wheel
+open http://localhost:8000
+```
+
+**Stores in containers, Python natively** (a Mac with Apple Silicon, or any
+machine where you want the GPU without Docker):
+
+```bash
+docker compose up -d postgres redis qdrant
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e ".[mlx,assistant,dev]"
+export PATH="$PWD/.venv/bin:$PATH"
+tinystudio serve          # API + web interface; applies migrations; models load in this process unless TINYSTUDIO_INFERENCE_URL is set
+tinystudio worker         # in a second terminal (or `tinystudio dev` runs both)
+```
+
+The first visit shows a setup form for the admin account (or set
+`TINYSTUDIO_ADMIN_EMAIL` and `TINYSTUDIO_ADMIN_PASSWORD` before the first
+start). Everything else, including credentials for the helper LLM, Claude,
+OpenAI, and Hugging Face, is configured once by an admin on the **Settings**
+page and stored in the database; `.env` holds only deployment values (store
+URLs, data directory, ports). See `.env.example`.
+
+Built and verified against: PostgreSQL 18.6, Qdrant 1.20.0, Redis 8.10,
+SQLAlchemy 2.1.6, psycopg 3.3.6, Alembic 1.20.1, qdrant-client 1.20.0,
+redis-py 8.1.0, RQ 2.12.0, torch 2.14.1, transformers 5.20.2, trl 1.16.0,
+peft 0.21.2, fastapi 0.156.4, Python 3.12.
+
+Coming from the earlier file-based layout? `tinystudio import-project
+/path/to/project` moves a directory project into the database (weights are
+hard-linked into the data directory, so nothing is copied twice).
 
 ## Ten-minute tour
 
 ```bash
-tinystudio init home projects/home --goal "Convert smart-home requests into one strict JSON command"
-cd projects/home
+tinystudio projects create home --goal "Convert smart-home requests into one strict JSON command"
+export TINYSTUDIO_PROJECT=home      # or pass -p home to every command
 
 # Datasets: import, split into training/validation, freeze a snapshot
-tinystudio dataset create commands --from-jsonl ../../examples/home_commands.jsonl
+tinystudio dataset create commands --from-jsonl examples/home_commands.jsonl
 tinystudio dataset split commands --train 85
 tinystudio snapshot create commands v1
 
-# Fine-tuning: see what fits this machine, then train
+# Fine-tuning: see what fits this machine, then train (runs in this process; the web interface queues the same work to a worker)
 tinystudio recommend v1
 tinystudio finetune v1 --job smol-lora --model HuggingFaceTB/SmolLM2-135M-Instruct --type lora --epochs 3
-tinystudio jobs
-tinystudio losses smol-lora/1
+tinystudio job list
 
 # Evaluations: deterministic metrics, base model vs. your experiment
 tinystudio metric create json --kind code --check json_valid
@@ -45,21 +86,20 @@ tinystudio metric create exact --kind code --check exact_match
 tinystudio eval run v1-smol --snapshot v1 --model smol-lora/1 --model HuggingFaceTB/SmolLM2-135M-Instruct --metric json --metric exact
 tinystudio eval show v1-smol --failures
 
-# Deployment: chat directly, or serve an OpenAI-compatible API
-tinystudio chat smol-lora/1 --system "You convert smart-home requests into one JSON command with keys action, device, room and optional value. Reply with JSON only."
-tinystudio serve --port 8000 --up smol-lora/1
-curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model":"smol-lora/1","messages":[{"role":"user","content":"kitchen lights off"}]}'
+# Deployment: chat directly, or call the OpenAI-compatible API with an API key from the API Keys page
+tinystudio chat smol-lora/1 --system "You convert smart-home requests into one JSON command. Reply with JSON only."
+curl -s localhost:8000/v1/chat/completions -H "Authorization: Bearer ts-..." -H 'content-type: application/json' \
+  -d '{"model":"home/smol-lora/1","messages":[{"role":"user","content":"kitchen lights off"}]}'
 ```
 
 ## The web interface (Studio replica)
 
-`tinystudio serve` serves a local replica of Prem Studio's interface at
+`tinystudio serve` serves a replica of Prem Studio's interface at
 http://127.0.0.1:8000/ with the same navigation: Datasets, Finetuning,
 Evaluations (Eval, Metrics), Playground, Models, Traces, API Keys, Stats.
 
 ```bash
-./dev-up.sh projects/home smol-full/1     # starts the helper LLM (mlx_lm.server) and tinystudio serve, detached
+tinystudio dev                             # API (models in-process) plus one worker, in this terminal
 ./dev-down.sh                              # stops both
 ```
 
@@ -292,36 +332,33 @@ MPS, then CPU (`TINYSTUDIO_DEVICE`), bf16 on CUDA GPUs and fp32 elsewhere
 (`TINYSTUDIO_DTYPE`), the fused AdamW on CUDA, and 4-bit QLoRA (`--type qlora`)
 when a CUDA GPU and `bitsandbytes` are present. The memory budget for
 recommendations reads total GPU memory on CUDA and host RAM on Linux and
-macOS. To use a bigger box, run `tinystudio serve --host 0.0.0.0` there and
+macOS. To use a bigger box, run the worker and the inference service there (or the whole compose stack) and
 open its address; the CLI, the MCP server, and the assistant all talk to the
 same HTTP API. The server is single-process; multi-GPU data parallelism is not
 implemented.
 
 ## Coding assistants and the in-app assistant
 
-tinystudio is an MCP server: every capability (55 tools) is available to
-Claude Code, Codex, Claude Desktop, or any MCP client. Long actions return a
-task id the assistant polls.
+Every tool the web interface offers is also an MCP tool, served over stdio by
+`tinystudio mcp`, which talks to the API with an API key (create one on the
+API Keys page) for one project:
 
 ```bash
-claude mcp add --scope user tinystudio -- $PWD/.venv/bin/tinystudio mcp --project $PWD/projects/home
-# Codex: ~/.codex/config.toml  ->  [mcp_servers.tinystudio] command = ".../tinystudio" args = ["mcp", "--project", "..."]
-# Claude Desktop: claude_desktop_config.json -> "mcpServers": {"tinystudio": {"command": ".../tinystudio", "args": ["mcp", "--project", "..."]}}
+claude mcp add --scope user tinystudio -e TINYSTUDIO_API_KEY=ts-... -- $PWD/.venv/bin/tinystudio mcp --url http://127.0.0.1:8000 --project home
+# Codex: ~/.codex/config.toml  ->  [mcp_servers.tinystudio] command = ".../tinystudio" args = ["mcp", "--url", "...", "--project", "home"] env = { TINYSTUDIO_API_KEY = "ts-..." }
+# Claude Desktop: claude_desktop_config.json -> "mcpServers": {"tinystudio": {"command": ".../tinystudio", "args": ["mcp", "--url", "...", "--project", "home"], "env": {"TINYSTUDIO_API_KEY": "ts-..."}}}
 ```
 
-The *Assistant* page runs the same tools from inside the app with a frontier
-model: Claude (Anthropic SDK tool runner, `claude-opus-5-5`, adaptive
-thinking, refusal fallbacks) when `ANTHROPIC_API_KEY` or an `ant auth login`
-profile is present, or OpenAI (Responses API function calling) when
-`OPENAI_API_KEY` and `TINYSTUDIO_OPENAI_MODEL` are set. Tool calls and
-results stream into the chat; the delete tool is offered only when you tick
-"Allow deletions".
+`TINYSTUDIO_URL`, `TINYSTUDIO_PROJECT`, and `TINYSTUDIO_API_KEY` in `.env`
+work as defaults. The in-app assistant (✦ on every page) calls the same API
+as the signed-in user through a short-lived service token, so it sees exactly
+what that account may see.
 
 ## How Studio concepts map
 
 | Studio | tinystudio | Where it lives |
 | --- | --- | --- |
-| Project | `tinystudio init` | `tinystudio.json` (one project per server; run `serve` in another directory for another project) |
+| Project | `tinystudio projects create`, the project menu in the sidebar | `projects` table; every other row carries a project id |
 | Dataset, datapoints with `messages` | `dataset create / add / show` | `datasets/<name>/datapoints.jsonl` |
 | Synthetic data from documents and URLs | `dataset synth --from doc.pdf --url https://... --spec spec.json` | needs a helper LLM (below); txt/md/html/pdf/docx/pptx and YouTube captions |
 | Augmentation | `dataset augment` | needs a helper LLM |
@@ -330,7 +367,7 @@ results stream into the chat; the delete tool is offered only when you tick
 | Recommended models and hyperparameters | `recommend` | heuristic over dataset size, sequence length, and unified memory |
 | Fine-tuning job → experiments, model aliases `ft-…` | `job create / add / run / analyze`, `finetune --job NAME` | `jobs/<job>/experiments/<n>/{config,status,loss}`, `analysis.json` |
 | Labels and auto-labeling | `dataset labels`, `dataset auto-label` | `labels` in `meta.json`, one label per datapoint |
-| Model up / down, API keys, Playground, Stats | web interface, `/v1/models/{id}/up`, API Keys page | `.api-keys.json` (hashed) |
+| Model up / down, API keys, Playground, Stats | web interface, `/v1/models/{id}/up`, API Keys page | `api_keys` table (SHA-256 digests, per user) |
 | `training_type` full / lora / qlora | `--type full` or `--type lora` | QLoRA is unavailable on Apple GPUs (no bitsandbytes Metal backend) |
 | Experiment states pending → running → succeeded / failed | `status.json` | poll with `tinystudio jobs` |
 | Rule-based metrics (should / should-not), built-ins Conciseness / Correctness / Hallucination | `metric create --kind rubric`, `metric generate --description`, web editor | `metrics/<name>.json`, judged by a helper LLM |
@@ -338,7 +375,7 @@ results stream into the chat; the delete tool is offered only when you tick
 | Code-based checks | `metric create --kind code --check ...` | exact_match, token_f1, similarity, json_valid, contains_reference |
 | Evaluation runs and leaderboard | `eval run`, `eval show` | `evals/<name>/{eval.json,results.jsonl}` |
 | Model up / down and chat completions | `serve`, `POST /v1/models/{id}/up` | OpenAI-compatible, localhost only |
-| Traces → add to dataset | `trace list / score / promote` | `traces.jsonl` |
+| Traces → add to dataset | `trace list / score / promote` | `traces` table |
 | Download weights | `export JOB/N DIR [--ollama]`, `hub upload experiment` | merged Hugging Face model directory, Ollama Modelfile, or a Hub repo |
 | Continuous fine-tuning from an earlier experiment | `--refinetune-from JOB/N` | `weights_source` in the experiment's `status.json` |
 | Structured output and tool calling in the API | `response_format`, `tools` on `/v1/chat/completions` | validated with retries; `tinystudio.json_valid` reports the outcome |
@@ -404,74 +441,95 @@ the recommendation and the default LoRA targets.
 
 ## Configuration
 
-Open **Settings** in the web interface to enter the helper LLM endpoint, the
-embedding model, Claude and OpenAI credentials and default models, the Hub
-token, and the device and dtype. Values are saved to `settings.json` in the
-project (owner-only file), applied to every task, the API, the MCP server,
-and the assistant, and win over the shell and `.env`. Each card has a
-**Test connection** button. An organization-level Anthropic key (one not
-created inside a workspace) also needs the workspace id, shown in the ID column of the Console's
-Workspaces page (platform.claude.com/settings/workspaces).
+Two layers:
 
-For unattended deployments, copy `.env.example` to `.env` (next to it, or in
-the directory you run from) or export the variables; the bind address and
-port are process settings and only come from there. `tinystudio config`
-prints the effective values with secrets shown as set or unset.
+- **Deployment values** come from the environment or `.env`: the store URLs
+  (`TINYSTUDIO_DATABASE_URL`, `TINYSTUDIO_REDIS_URL`, `TINYSTUDIO_QDRANT_URL`),
+  the data directory, bind address and port, `TINYSTUDIO_INFERENCE_URL`, the
+  bootstrap admin, and the per-host compute choice (`TINYSTUDIO_DEVICE`,
+  `TINYSTUDIO_DTYPE`). `docker compose` sets them for the containers;
+  `tinystudio config` prints the effective values with secrets hidden.
+- **Team settings** are edited by admins on the **Settings** page and stored in
+  the `settings` table: helper LLM endpoint and model, the default embedding
+  model, Claude and OpenAI credentials and defaults, the Hugging Face token.
+  They apply to the API, every worker, the inference service, and the assistant,
+  and win over the shell and `.env`, which only seed them. Each card has a
+  **Test connection** button, as do the PostgreSQL, Redis, Qdrant, and inference
+  cards. An organization-level Anthropic key (one not created inside a
+  workspace) also needs the workspace id, shown in the ID column of the
+  Console's Workspaces page (platform.claude.com/settings/workspaces).
+
+Accounts: the first admin comes from the setup form or the bootstrap
+variables; admins add users (member or admin), everyone creates their own API
+keys. Sessions are signed cookies; API keys authenticate `/api` and `/v1`.
+Put the API behind HTTPS (`TINYSTUDIO_SECURE_COOKIES=1`) when it leaves your
+network.
 
 ## Code layout
 
 ```
 tinystudio/
-  settings.py        environment and .env
-  core/              project layout, datasets, documents, quality, synthetic data, traces, helper-LLM client
-  training/          SFT, LoRA, QLoRA, DPO (train.py), recommendations, autopilot
-  evaluation/        metrics and evaluation runs, dataset analysis
-  serving/           model runner, OpenAI-compatible API server, API keys
-  interp/            neuron browser, explanations and tests, comparisons, drift
-  rag/               repositories (chunks + embeddings + retrieval)
+  config.py          deployment configuration (stores, data directory, ports)
+  settings.py        .env loading and the effective-config view
+  db/                SQLAlchemy models, engine and sessions, Alembic migrations
+  services/          every read and write of the database: projects, datasets, snapshots, jobs, metrics, evals,
+                     traces, repositories (with Qdrant), interp store, autopilot, settings, users, tasks, importer
+  worker/            Redis queue, task execution, progress channel, one handler per task kind
+  inference/         model engine (local or remote), OpenAI-compatible routes, the inference service
+  auth/              passwords, sessions, API keys, service tokens
+  api/               FastAPI app, dependencies, routes (auth, accounts, projects, data, training, serving, interp, system)
+  vectors/           Qdrant adapter (collections, upsert, search, scroll, delete by document)
+  core/              datapoint records, documents, quality, synthetic data, helper-LLM client
+  training/          SFT, LoRA, QLoRA, DPO (train.py), recommendations
+  evaluation/        scoring and the evaluation loop, dataset analysis
+  serving/           the model runner (generation, streaming, JSON mode, tool calls)
+  interp/            neuron browser, explanations and tests, comparisons, drift (over a store interface)
+  rag/               embedder and retrieval helpers
   integrations/      Hugging Face Hub, assistant, tool catalog, MCP server
-  api/               FastAPI routers for the web interface, task runner
   cli/               the `tinystudio` command
   ui/                the web interface (vanilla JS single-page app, no build step)
 ```
 
-## Project layout
+## Storage layout
+
+PostgreSQL holds the rows (see `tinystudio/db/models.py`): `users`,
+`api_keys`, `projects`, `settings`, `datasets`, `datapoints`,
+`cleaning_runs`, `snapshots`, `snapshot_rows`, `jobs`, `experiments`,
+`experiment_logs`, `analyses`, `metrics`, `evaluations`, `eval_results`,
+`traces`, `repositories`, `documents`, `interp_captures`, `autopilot_runs`,
+`tasks`. Qdrant holds one collection per repository (`ts_<repository id>`)
+with chunk text, document id, and position as payload. The data directory
+(`TINYSTUDIO_DATA_DIR`, the `data` volume in compose) holds:
 
 ```
-tinystudio.json
-datasets/<name>/datapoints.jsonl, meta.json, cleaning.jsonl
-snapshots/<name>/train.jsonl, val.jsonl, meta.json
-jobs/<name>/job.json, analysis.json
-jobs/<name>/experiments/<n>/config.json, status.json, loss.jsonl, adapter/ | model/, merged/
-metrics/<name>.json
-evals/<name>/eval.json, results.jsonl
-traces.jsonl
-autopilot/<name>.jsonl
-repositories/<name>/meta.json, chunks.jsonl, embeddings.npy
-interp/captures/<name>/meta.json, tokens.json, layer-<L>.npz, explanations.jsonl, tests.jsonl
-interp/diffs/<name>/meta.json, tokens.json, layer-<L>.npz
-jobs/<name>/experiments/<n>/checkpoints/checkpoint-<step>/, checkpoints.jsonl
-.api-keys.json (hashed), .tasks/, .uploads/, .downloads/
+projects/<project id>/experiments/<job id>/<n>/   config.json, loss.jsonl, checkpoints.jsonl, adapter/ | model/, merged/, checkpoints/checkpoint-<step>/
+projects/<project id>/interp/captures/<name>/     meta.json, tokens.json, layer-<L>.npz, explanations.jsonl, tests.jsonl
+projects/<project id>/interp/diffs/<name>/        meta.json, tokens.json, layer-<L>.npz
+uploads/                                          files uploaded through the web interface, read by workers
+tasks/<task id>.log                               full task logs (the row keeps the tail)
+hub/                                              the Hugging Face cache when HF_HOME points here (compose does)
 ```
-
-Everything is plain JSON. Delete a directory to delete the thing.
 
 ## Tests
 
 ```bash
+docker compose up -d postgres redis qdrant
 .venv/bin/python -m pytest -q tests
 ```
 
-The 54 unit tests cover datapoint validation, splitting, snapshots, metric
-scoring, JSON extraction, quality profiling, cleaning rules and PII redaction,
-augmentation prompts, preference pairs and DPO configuration, autopilot
-bookkeeping, the 42-tool catalog and MCP registration, Hub metadata handling,
-DOCX/PPTX extraction, tool-call parsing, JSON-schema validation, and
-refine-from resolution, and the interpretability capture, scoring, comparison,
-checkpoint references, and drift on a tiny random Llama model (the SmolLM2
-tokenizer is read from the local Hub cache), all without downloading anything. The end-to-end paths
-(train → eval → serve, JSON mode, refine-from, streamed usage, DPO, autopilot
-cycles) are exercised against a real SmolLM2-135M run.
+The 48 tests run against a dedicated `tinystudio_test` database on the
+configured PostgreSQL server, Qdrant in the client's local mode, Redis database
+9, and a temporary data directory; they skip with a reason when a store is not
+reachable. They cover records and splits, cleaning and PII redaction, metric
+scoring, parsing, the services (projects, datasets, snapshots, jobs and model
+resolution, metrics, traces, settings, accounts and keys), the HTTP API through
+FastAPI's test client (setup, sessions, CSRF, project scoping, key-gated `/v1`,
+admin-only settings), repositories over Qdrant with a tiny random embedder,
+the queue with an in-process RQ worker, the file-layout importer, the tool
+catalog and MCP registration, the assistant's interface bridge, and the
+interpretability capture, comparison, checkpoint and drift paths on a tiny
+random Llama model. Nothing is downloaded: the SmolLM2 tokenizer is read from
+the local Hub cache.
 
 ## Sources
 
@@ -495,6 +553,18 @@ cycles) are exercised against a real SmolLM2-135M run.
   v2.2: https://huggingface.co/docs/huggingface_hub/en/package_reference/hf_api
 - MCP Python SDK 2.x server (`MCPServer`, tool annotations):
   https://github.com/modelcontextprotocol/python-sdk
+- SQLAlchemy 2.1 ORM and session basics: https://docs.sqlalchemy.org/en/21/orm/session_basics.html;
+  connection pooling across forks: https://docs.sqlalchemy.org/en/21/core/pooling.html
+- Alembic commands API, v1.20: https://alembic.sqlalchemy.org/en/latest/api/commands.html
+- PostgreSQL 18 Docker image (volume at /var/lib/postgresql, POSTGRES_PASSWORD): https://hub.docker.com/_/postgres
+- Qdrant collections, points, indexing, query API, configuration (v1.20): https://qdrant.tech/documentation/concepts/collections/,
+  https://qdrant.tech/documentation/concepts/points/, https://qdrant.tech/documentation/concepts/indexing/,
+  https://api.qdrant.tech/api-reference/search/query-points, https://qdrant.tech/documentation/ops-configuration/configuration/
+- qdrant-client 1.19 release notes (search deprecated for query_points): https://github.com/qdrant/qdrant-client/releases/tag/v1.19.0
+- RQ workers (fork, SimpleWorker, SpawnWorker), jobs, results: https://python-rq.org/docs/workers/, https://python-rq.org/docs/jobs/
+- Redis persistence (AOF plus RDB): https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/
+- argon2-cffi PasswordHasher: https://argon2-cffi.readthedocs.io/en/stable/api.html;
+  itsdangerous timed signatures: https://itsdangerous.palletsprojects.com/en/stable/timed/
 - Anthropic Python SDK tool runner (`client.beta.messages.tool_runner`,
   `beta_tool`): https://github.com/anthropics/anthropic-sdk-python
 - OpenAI Responses API function calling:

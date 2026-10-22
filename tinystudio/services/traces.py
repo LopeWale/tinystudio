@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.orm import Session
 
 from tinystudio.core.project import ProjectError, iso
@@ -93,7 +93,8 @@ def stats(db: Session, project: Project) -> dict[str, Any]:
     tokens = db.execute(select(func.coalesce(func.sum(Trace.prompt_tokens), 0), func.coalesce(func.sum(Trace.completion_tokens), 0), func.count(Trace.score)).where(Trace.project_id == project.id)).one()
     per_day = Counter()
     per_model: Counter[str] = Counter()
-    for day, model, n in db.execute(select(func.to_char(Trace.time, "YYYY-MM-DD"), Trace.model, func.count()).where(Trace.project_id == project.id).group_by(func.to_char(Trace.time, "YYYY-MM-DD"), Trace.model)).all():
-        per_day[day] += int(n)
+    day = cast(Trace.time, Date)
+    for d, model, n in db.execute(select(day, Trace.model, func.count()).where(Trace.project_id == project.id).group_by(day, Trace.model)).all():
+        per_day[str(d)] += int(n)
         per_model[model] += int(n)
     return {"requests": total, "prompt_tokens": int(tokens[0]), "completion_tokens": int(tokens[1]), "scored_traces": int(tokens[2]), "requests_per_day": sorted(per_day.items()), "requests_per_model": per_model.most_common(10)}

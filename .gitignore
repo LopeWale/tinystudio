@@ -8,3 +8,4 @@ projects/
 .env
 .env.*
 !.env.example
+*.log

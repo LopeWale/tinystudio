@@ -24,9 +24,21 @@ def test_tool_catalog_shape():
 
 
 def test_studio_without_server_raises_clean_error():
-    studio = Studio("http://127.0.0.1:1", None)
-    with pytest.raises(StudioError, match="not reachable"):
+    studio = Studio("http://127.0.0.1:1", "home", "ts-x")
+    with pytest.raises(Exception):
         studio.call("GET", "/api/overview")
+    with pytest.raises(StudioError, match="not reachable"):
+        studio.ensure_running()
+
+
+def test_studio_scopes_project_paths():
+    from tinystudio.integrations.tools import scoped
+
+    assert scoped("/api/datasets/x", "home") == "/api/p/home/datasets/x"
+    assert scoped("/api/overview", "home") == "/api/p/home/overview"
+    assert scoped("/api/tasks/1", "home") == "/api/tasks/1" and scoped("/api/datasets", None) == "/api/datasets"
+    studio = Studio("http://127.0.0.1:1", "home", "ts-key")
+    assert studio.http.headers["authorization"] == "Bearer ts-key" and studio.http.headers["x-project"] == "home"
 
 
 def test_json_tool_wraps_errors_and_truncates():

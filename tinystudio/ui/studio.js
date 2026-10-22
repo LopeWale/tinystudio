@@ -12,11 +12,23 @@ const pctClass = (v) => v >= 0.75 ? "hi" : v >= 0.4 ? "mid" : "lo";
 const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
 const slug = (id) => id.replace("/", "~");
 
-const state = { overview: null, tasks: [], taskTimer: null, playground: { model: null, system: "", temperature: 0.2, history: [] } };
+const state = { overview: null, tasks: [], taskTimer: null, user: null, project: null, projects: [], playground: { model: null, system: "", temperature: 0.2, history: [] } };
 
 // ------------------------------------------------------------------ http
+// Project-scoped paths live under /api/p/<slug>; everything else (tasks, hub, settings, users, assistant) is global.
+const PROJECT_PREFIXES = ["/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog"];
+function scoped(path) {
+  if (state.project && PROJECT_PREFIXES.some((pre) => path === pre || path.startsWith(pre + "/") || path.startsWith(pre + "?"))) return `/api/p/${encodeURIComponent(state.project)}` + path.slice(4);
+  if (path === "/api/tasks" && state.project) return `/api/tasks?project=${encodeURIComponent(state.project)}`;
+  return path;
+}
+function rawFetch(path, options = {}) {
+  const headers = { "X-Requested-With": "tinystudio", ...(options.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(options.headers || {}) };
+  return fetch(scoped(path), { credentials: "same-origin", ...options, headers });
+}
 async function api(path, options = {}) {
-  const response = await fetch(path, { headers: options.body instanceof FormData ? {} : { "content-type": "application/json" }, ...options });
+  const response = await rawFetch(path, options);
+  if (response.status === 401 && !path.startsWith("/api/auth/")) { showLogin(); throw new Error("sign in to continue"); }
   if (!response.ok) {
     let detail = response.statusText;
     try { const j = await response.json(); detail = j.detail ?? detail; } catch (_) {}
@@ -30,6 +42,7 @@ async function api(path, options = {}) {
 }
 const post = (path, body) => api(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
 const put = (path, body) => api(path, { method: "PUT", body: JSON.stringify(body ?? {}) });
+const patch = (path, body) => api(path, { method: "PATCH", body: JSON.stringify(body ?? {}) });
 const del = (path) => api(path, { method: "DELETE" });
 
 function toast(message, isError = false) {
@@ -78,6 +91,8 @@ const routes = [
   [/^#\/api-keys$/, () => pageKeys()],
   [/^#\/assistant$/, () => pageAssistant()],
   [/^#\/settings$/, () => pageSettings()],
+  [/^#\/users$/, () => pageUsers()],
+  [/^#\/projects$/, () => pageProjects()],
   [/^#\/interp$/, () => pageInterp()],
   [/^#\/interp\/c\/([^/?]+)(?:\?(.*))?$/, (m) => pageCapture(decodeURIComponent(m[1]), new URLSearchParams(m[2] || ""))],
   [/^#\/interp\/d\/([^/?]+)(?:\?(.*))?$/, (m) => pageDiff(decodeURIComponent(m[1]), new URLSearchParams(m[2] || ""))],
@@ -113,6 +128,7 @@ function sidebar(active) {
   const item = (hash, key, label, icon) => `<a href="${hash}" class="${active === key ? "active" : ""}">${ICONS[icon]}<span>${label}</span></a>`;
   return `<aside class="sidebar">
     <div class="brand"><div class="logo"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M8 22 L13 12 L18 18 L24 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div>tinystudio<small>${esc(o.project?.name || "")}</small></div></div>
+    <div class="project-switch"><select id="projectSwitch" title="Project">${state.projects.map((pr) => `<option value="${esc(pr.slug)}" ${pr.slug === state.project ? "selected" : ""}>${esc(pr.name)}</option>`).join("")}<option value="__new__">+ New project…</option><option value="__all__">Manage projects…</option></select></div>
     <nav class="nav">
       ${item("#/datasets", "datasets", "Datasets", "datasets")}
       ${item("#/repositories", "repositories", "Repositories", "docs")}
@@ -127,16 +143,25 @@ function sidebar(active) {
       ${item("#/traces", "traces", "Traces", "traces")}
       ${item("#/api-keys", "keys", "API Keys", "keys")}
       ${item("#/stats", "stats", "Stats", "stats")}
-      ${item("#/settings", "settings", "Settings", "settings")}
+      ${state.user?.role === "admin" ? item("#/settings", "settings", "Settings", "settings") : ""}
+      ${state.user?.role === "admin" ? item("#/users", "users", "Users", "keys") : ""}
       <hr>
       <a href="/docs" target="_blank">${ICONS.docs}<span>API reference</span><span class="external">↗</span></a>
     </nav>
-    <div class="foot"><div class="avatar">${esc((o.project?.name || "t")[0].toUpperCase())}</div><div><div>${esc(o.project?.name || "")}</div><div class="mono" style="font-size:11px">${esc(o.llm?.base_url ? "helper LLM on" : "no helper LLM")}</div></div></div>
+    <div class="foot"><div class="avatar">${esc((state.user?.name || state.user?.email || "t")[0].toUpperCase())}</div><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(state.user?.name || state.user?.email || "")}</div><div class="mono" style="font-size:11px">${esc(state.user?.role || "")} · <a href="#" id="signOut">sign out</a></div></div></div>
   </aside>`;
 }
 function layout(active, contentHtml, crumbs = []) {
   const app = $("#app");
   app.innerHTML = `${sidebar(active)}<div class="main"><div class="topbar">${crumbs.map((c, i) => `${i ? '<span class="sep">›</span>' : ""}${c.href ? `<a href="${c.href}">${esc(c.label)}</a>` : `<span>${esc(c.label)}</span>`}`).join("")}<span class="spacer"></span><span id="llmStatus"></span></div><div class="content">${contentHtml}</div></div>`;
+  const sw = $("#projectSwitch", app);
+  if (sw) sw.onchange = guard(async () => {
+    if (sw.value === "__new__") { sw.value = state.project; return newProjectModal(); }
+    if (sw.value === "__all__") { sw.value = state.project; return go("#/projects"); }
+    await selectProject(sw.value); state.overview = null; ASSIST.models = null; go("#/datasets"); render();
+  });
+  const out = $("#signOut", app);
+  if (out) out.onclick = guard(async (e) => { e.preventDefault(); await post("/api/auth/logout", {}); location.reload(); });
   return $(".content", app);
 }
 async function ensureOverview(force = false) {
@@ -757,7 +782,7 @@ async function pagePlayground(preset) {
     const messages = [...(p.system.trim() ? [{ role: "system", content: p.system.trim() }] : []), ...p.history.slice(0, -1)];
     try {
       p.repositories = [...$("#pgRepos", content).selectedOptions].map((o) => o.value); p.repoLimit = Number($("#pgRepoLimit", content).value) || 3; p.repoThreshold = Number($("#pgRepoThreshold", content).value) || 0;
-      const response = await fetch("/api/playground/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: p.model, messages, temperature: p.temperature, max_tokens: 512, repositories: p.repositories.length ? { ids: p.repositories, limit: p.repoLimit, similarity_threshold: p.repoThreshold } : null }) });
+      const response = await rawFetch("/api/playground/chat", { method: "POST", body: JSON.stringify({ model: p.model, messages, temperature: p.temperature, max_tokens: 512, repositories: p.repositories.length ? { ids: p.repositories, limit: p.repoLimit, similarity_threshold: p.repoThreshold } : null }) });
       if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
       for (;;) {
@@ -784,7 +809,7 @@ async function pageModels() {
   await ensureOverview(true);
   const [models, hubInfo] = await Promise.all([api("/api/models"), api("/api/hub/models")]);
   const content = layout("models", `<div class="page-head"><h1>Models</h1><span class="meta">${models.filter((m) => m.kind === "fine-tuned").length} fine-tuned · ${models.filter((m) => m.kind === "base").length} catalog · ${hubInfo.models.length} in the Hub cache · ${hubInfo.free_disk_gb} GB free</span></div>
-    <div class="panel"><div class="head"><h2>Fine-tuned and catalog models</h2></div><table><thead><tr><th>Model</th><th>Kind</th><th>Base model</th><th class="num">Parameters</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${models.map((m) => `<tr><td><b class="mono">${esc(m.alias)}</b>${m.kind === "fine-tuned" ? `<div class="muted mono" style="font-size:11px">${esc(m.id)}</div>` : `<div class="muted" style="font-size:12px">${esc(m.notes || "")}</div>`}</td><td><span class="pill ${m.kind === "fine-tuned" ? "info" : ""}">${m.kind}${m.training_type ? " · " + m.training_type : ""}</span></td><td class="mono">${esc(m.base_model)}</td><td class="num">${fmtParams(m.parameters)}</td><td><span class="pill ${m.status}">${m.status}</span></td><td>${fmtDate(m.created)}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-toggle="${esc(m.id)}" data-status="${m.status}">${m.status === "up" ? "Unload" : "Load"}</button> <a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a>${m.kind === "fine-tuned" ? ` <a class="btn sm icon" title="Download" href="/api/jobs/${encodeURIComponent(m.id.split("/")[0])}/experiments/${m.id.split("/")[1]}/download">⬇</a> <button class="btn sm" data-upload="${esc(m.id)}">Upload to Hub</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
+    <div class="panel"><div class="head"><h2>Fine-tuned and catalog models</h2></div><table><thead><tr><th>Model</th><th>Kind</th><th>Base model</th><th class="num">Parameters</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${models.map((m) => `<tr><td><b class="mono">${esc(m.alias)}</b>${m.kind === "fine-tuned" ? `<div class="muted mono" style="font-size:11px">${esc(m.id)}</div>` : `<div class="muted" style="font-size:12px">${esc(m.notes || "")}</div>`}</td><td><span class="pill ${m.kind === "fine-tuned" ? "info" : ""}">${m.kind}${m.training_type ? " · " + m.training_type : ""}</span></td><td class="mono">${esc(m.base_model)}</td><td class="num">${fmtParams(m.parameters)}</td><td><span class="pill ${m.status}">${m.status}</span></td><td>${fmtDate(m.created)}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-toggle="${esc(m.id)}" data-status="${m.status}">${m.status === "up" ? "Unload" : "Load"}</button> <a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a>${m.kind === "fine-tuned" ? ` <a class="btn sm icon" title="Download" href="/api/p/${encodeURIComponent(state.project)}/jobs/${encodeURIComponent(m.id.split("/")[0])}/experiments/${m.id.split("/")[1]}/download">⬇</a> <button class="btn sm" data-upload="${esc(m.id)}">Upload to Hub</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
     <div class="panel" style="margin-top:16px"><div class="head"><h2>Hugging Face Hub</h2><span class="muted">token: ${hubInfo.token.configured ? `<span class="pill good">${esc(hubInfo.token.masked)}</span>` : '<span class="pill warn">not set (needed for gated models and uploads)</span>'}</span><div class="right"><input id="hfToken" placeholder="hf_… token" style="width:220px"><button class="btn sm" id="hfSave">Save token</button></div></div>
       <div class="body">
         <div class="row"><div class="field" style="flex:2"><label>Search the Hugging Face Hub (any open model)</label><input id="hubQ" placeholder="SmolLM2, Qwen2.5, gemma-3, phi, all-MiniLM…"></div><div class="field" style="max-width:170px"><label>Task</label><select id="hubTask"><option value="text-generation">text generation</option><option value="embeddings">embeddings (RAG)</option><option value="sentence-similarity">sentence similarity</option><option value="any">any</option></select></div><div class="field" style="max-width:150px"><label>Max parameters (B)</label><input id="hubMax" type="number" step="0.1" value="2"></div><button class="btn primary" id="hubSearch">Search</button></div>
@@ -792,12 +817,12 @@ async function pageModels() {
         <h3 style="margin:16px 0 6px">Downloaded (local cache)</h3>
         <table><thead><tr><th>Repository</th><th class="num">Size</th><th>Loadable</th><th>Last used</th><th></th></tr></thead><tbody>${hubInfo.models.map((m) => `<tr><td class="mono">${esc(m.id)}</td><td class="num">${m.size_gb} GB</td><td>${m.transformers_loadable ? '<span class="pill good">transformers</span>' : m.mlx ? '<span class="pill info">MLX (helper LLM only)</span>' : '<span class="pill">other</span>'}</td><td>${m.last_accessed ? fmtDate(new Date(m.last_accessed * 1000).toISOString()) : "–"}</td><td style="text-align:right;white-space:nowrap">${m.transformers_loadable ? `<a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a> ` : ""}<button class="btn sm danger" data-hubdel="${esc(m.id)}">Remove</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing cached yet.</td></tr>`}</tbody></table>
       </div></div>
-    <p class="muted" style="margin-top:12px">OpenAI-compatible API: <span class="mono">${location.origin}/v1/chat/completions</span> with <span class="mono">"model": "&lt;alias or id&gt;"</span>. Keys under API Keys gate this endpoint; the Playground is not gated. Any downloaded transformers model can be a base model in a fine-tuning job.</p>`, [{ label: "Models" }]);
+    <p class="muted" style="margin-top:12px">OpenAI-compatible API: <span class="mono">${location.origin}/v1/chat/completions</span> with <span class="mono">"model": "&lt;alias or id&gt;"</span>. API keys (API Keys page) authenticate this endpoint; model ids are <span class="mono">${esc(state.project)}/&lt;job&gt;/&lt;n&gt;</span>. Any downloaded transformers model can be a base model in a fine-tuning job.</p>`, [{ label: "Models" }]);
   $$("[data-toggle]", content).forEach((b) => b.onclick = guard(async () => { b.disabled = true; b.innerHTML = '<span class="spinner"></span>'; await post(`/api/models/${slug(b.dataset.toggle)}/${b.dataset.status === "up" ? "down" : "up"}`, {}); pageModels(); }));
   $$("[data-upload]", content).forEach((b) => b.onclick = () => {
     const m = modal({ title: `Upload ${b.dataset.upload} to the Hub`, body: `<div class="field"><label>Repository id (user/name)</label><input id="upRepo" placeholder="you/my-tiny-model"></div><label class="radio-card"><input type="checkbox" id="upPrivate" checked><div><b>Private repository</b></div></label><label class="radio-card" style="margin-top:8px"><input type="checkbox" id="upMerge"><div><b>Merge LoRA into the base model first</b><span>Uploads full weights instead of an adapter.</span></div></label>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Upload</button>` });
     $("[data-cancel]", m.el).onclick = m.close;
-    $("[data-ok]", m.el).onclick = guard(async () => { await post("/api/hub/upload", { kind: "experiment", name: b.dataset.upload, repo_id: $("#upRepo", m.el).value.trim(), private: $("#upPrivate", m.el).checked, merge: $("#upMerge", m.el).checked }); m.close(); showTasks(); pollTasks(); });
+    $("[data-ok]", m.el).onclick = guard(async () => { await post("/api/hub/upload", { project: state.project, kind: "experiment", name: b.dataset.upload, repo_id: $("#upRepo", m.el).value.trim(), private: $("#upPrivate", m.el).checked, merge: $("#upMerge", m.el).checked }); m.close(); showTasks(); pollTasks(); });
   });
   $("#hfSave", content).onclick = guard(async () => { const r = await post("/api/hub/token", { token: $("#hfToken", content).value }); toast(`logged in as ${r.user}`); pageModels(); });
   $$("[data-hubdel]", content).forEach((b) => b.onclick = () => confirmModal("Remove from cache", `Delete the local copy of ${b.dataset.hubdel}? It can be downloaded again.`, async () => { await del(`/api/hub/models/${b.dataset.hubdel}`); pageModels(); }, "Remove"));
@@ -858,22 +883,23 @@ async function pageRepositories() {
 // ------------------------------------------------------------------ settings (stored on the server, shared by everyone using this instance)
 async function pageSettings() {
   await ensureOverview(true);
-  const data = await api("/api/settings");
+  const [data, cfg] = await Promise.all([api("/api/settings"), api("/api/config")]);
   const groups = [
     ["anthropic", "Claude (assistant)", "Used by the ✦ assistant and the Assistant page. Any model the account lists becomes selectable.", "anthropic"],
     ["openai", "OpenAI (assistant)", "Same assistant, OpenAI models.", "openai"],
     ["helper", "Helper LLM", "Synthetic data, auto-labelling, rubric judging, neuron explanations and tests. Any OpenAI-compatible server: a local mlx_lm / llama-server / Ollama / vLLM, or a hosted API.", "helper"],
     ["rag", "Embeddings (repositories)", "The feature-extraction model new repositories embed with. Existing repositories keep theirs.", null],
     ["hub", "Hugging Face", "Token for gated models and uploads.", "hub"],
-    ["compute", "Compute", "Applies to tasks started after saving. auto = CUDA, then Apple MPS, then CPU; dtype auto = bf16 on CUDA, fp32 elsewhere.", null],
   ];
   const byGroup = (g) => data.settings.filter((s) => s.group === g);
   const field = (s) => `<div class="field"><label>${esc(s.label)} <span class="muted">(${s.source}${s.set ? "" : ", not set"})</span></label>${s.secret
     ? `<div class="row"><input type="password" data-key="${s.key}" placeholder="${s.set ? "•••••••• (saved; type to replace)" : "not set"}" autocomplete="new-password"><label class="chk"><input type="checkbox" data-clear="${s.key}"> clear</label></div>`
     : `<input data-key="${s.key}" value="${esc(s.value || "")}" placeholder="default">`}</div>`;
-  const content = layout("settings", `<div class="page-head"><div><h1>Settings</h1><div class="meta"><span>Saved on the server in <span class="mono">${esc(data.store)}</span> (owner-only file) and applied to every task, the API, the MCP server, and the assistant. Values here win over the shell and <span class="mono">.env</span>, which remain for ops.</span></div></div><div class="actions"><button class="btn primary" id="stSave">Save</button></div></div>
+  const store = (what, title, detail) => `<div class="card"><h3>${title}</h3><div class="sub mono" style="word-break:break-all">${esc(detail)}</div><div class="row" style="margin-top:8px"><button class="btn small" data-test="${what}">Test connection</button><span class="muted" data-result="${what}"></span></div></div>`;
+  const content = layout("settings", `<div class="page-head"><div><h1>Settings</h1><div class="meta"><span>One set for this deployment, stored in PostgreSQL and applied to the API, the workers, the inference service, and the assistant. Admins only.${data.updated ? ` Last change ${fmtDate(data.updated)}.` : ""}</span></div></div><div class="actions"><button class="btn primary" id="stSave">Save</button></div></div>
     <div class="cards settings">${groups.map(([g, title, blurb, test]) => `<div class="card"><h3>${title}</h3><div class="sub">${blurb}</div><div style="margin-top:10px">${byGroup(g).map(field).join("")}</div>${test ? `<div class="row" style="margin-top:8px"><button class="btn small" data-test="${test}">Test connection</button><span class="muted" data-result="${test}"></span></div>` : ""}</div>`).join("")}
-    <div class="card"><h3>Server</h3><div class="sub">Bind address and port are process settings: start with <span class="mono">tinystudio serve --host 0.0.0.0 --port ${esc(data.server.port)}</span> (or TINYSTUDIO_HOST / TINYSTUDIO_PORT) to reach this instance from other machines. There is no login on the web interface: put it behind your network or a reverse proxy with auth; <span class="mono">/v1</span> is gated by API keys.</div><div class="sub" style="margin-top:8px">Currently <span class="mono">${esc(data.server.host)}:${esc(data.server.port)}</span>.</div></div></div>`, [{ label: "Settings" }]);
+    ${store("database", "PostgreSQL", `${cfg.database_url} · ${cfg.database_version || "?"}`)}${store("redis", "Redis (queue)", cfg.redis_url)}${store("qdrant", "Qdrant (vectors)", cfg.qdrant_url)}${store("inference", "Inference", cfg.inference.mode === "remote" ? cfg.inference.url : "models load inside the API process")}
+    <div class="card"><h3>Compute and data</h3><div class="sub">Device and dtype are per host (TINYSTUDIO_DEVICE / TINYSTUDIO_DTYPE on each worker and inference machine); this API host reports <span class="mono">${esc(cfg.device)} / ${esc(cfg.dtype)}</span>. Artifacts live in <span class="mono">${esc(cfg.data_dir)}</span>.</div></div></div>`, [{ label: "Settings" }]);
   $("#stSave", content).onclick = guard(async () => {
     const values = {};
     $$("[data-key]", content).forEach((el) => { const key = el.dataset.key; const spec = data.settings.find((s) => s.key === key); if (spec.secret) { if (el.value) values[key] = el.value; } else if ((el.value || "") !== (spec.value || "")) values[key] = el.value || null; });
@@ -884,6 +910,85 @@ async function pageSettings() {
     toast("settings saved"); pageSettings();
   });
   $$("[data-test]", content).forEach((b) => b.onclick = guard(async () => { const out = $(`[data-result="${b.dataset.test}"]`, content); out.textContent = "testing…"; const r = await post("/api/settings/test", { what: b.dataset.test }); out.innerHTML = `<span class="pill ${r.ok ? "good" : "bad"}">${r.ok ? "ok" : "failed"}</span> ${esc(r.detail)}`; }));
+}
+
+async function pageUsers() {
+  await ensureOverview(true);
+  const users = await api("/api/users");
+  const content = layout("users", `<div class="page-head"><h1>Users</h1><span class="meta">${users.length} account${users.length === 1 ? "" : "s"}</span><div class="actions"><button class="btn primary" id="newUser">+ Add user</button></div></div>
+    <div class="panel"><table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last login</th><th>Status</th><th></th></tr></thead><tbody>${users.map((u) => `<tr><td><b>${esc(u.email)}</b></td><td>${esc(u.name)}</td><td><select data-role="${u.id}" ${u.id === state.user.id ? "disabled" : ""}><option ${u.role === "member" ? "selected" : ""}>member</option><option ${u.role === "admin" ? "selected" : ""}>admin</option></select></td><td>${fmtDate(u.last_login)}</td><td><span class="pill ${u.disabled ? "bad" : "good"}">${u.disabled ? "disabled" : "active"}</span></td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-pw="${u.id}">Set password</button> ${u.id !== state.user.id ? `<button class="btn sm" data-toggle-user="${u.id}" data-disabled="${u.disabled}">${u.disabled ? "Enable" : "Disable"}</button> <button class="btn sm danger" data-del-user="${u.id}">Delete</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`, [{ label: "Users" }]);
+  $("#newUser", content).onclick = () => {
+    const m = modal({ title: "Add user", body: `<div class="field"><label>Email</label><input id="uEmail" type="email"></div><div class="field"><label>Name</label><input id="uName"></div><div class="field"><label>Password (8+ characters)</label><input id="uPass" type="password" autocomplete="new-password"></div><label class="chk"><input type="checkbox" id="uAdmin"> admin</label>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Create</button>` });
+    $("[data-cancel]", m.el).onclick = m.close;
+    $("[data-ok]", m.el).onclick = guard(async () => { await post("/api/users", { email: $("#uEmail", m.el).value, name: $("#uName", m.el).value, password: $("#uPass", m.el).value, role: $("#uAdmin", m.el).checked ? "admin" : "member" }); m.close(); pageUsers(); });
+  };
+  $$("[data-role]", content).forEach((s) => s.onchange = guard(async () => { await patch(`/api/users/${s.dataset.role}`, { role: s.value }); toast("role updated"); }));
+  $$("[data-toggle-user]", content).forEach((b) => b.onclick = guard(async () => { await patch(`/api/users/${b.dataset.toggleUser}`, { disabled: b.dataset.disabled !== "true" }); pageUsers(); }));
+  $$("[data-del-user]", content).forEach((b) => b.onclick = () => confirmModal("Delete user", "Delete this account and its API keys?", async () => { await del(`/api/users/${b.dataset.delUser}`); pageUsers(); }));
+  $$("[data-pw]", content).forEach((b) => b.onclick = () => {
+    const m = modal({ title: "Set password", body: `<div class="field"><label>New password</label><input id="pw" type="password" autocomplete="new-password"></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Save</button>` });
+    $("[data-cancel]", m.el).onclick = m.close;
+    $("[data-ok]", m.el).onclick = guard(async () => { await post(`/api/users/${b.dataset.pw}/password`, { password: $("#pw", m.el).value }); m.close(); toast("password set"); });
+  });
+}
+
+async function pageProjects() {
+  await ensureOverview(true);
+  const projects = await api("/api/projects");
+  const content = layout("projects", `<div class="page-head"><h1>Projects</h1><div class="actions"><button class="btn primary" id="newProject">+ New project</button></div></div>
+    <div class="cards">${projects.map((pr) => `<div class="card ${pr.slug === state.project ? "" : "clickable"}" data-proj="${esc(pr.slug)}"><h3>${esc(pr.name)} ${pr.slug === state.project ? '<span class="pill info">current</span>' : ""}</h3><div class="sub">${esc(pr.goal || "")}</div><div class="foot"><span>${pr.datasets} datasets · ${pr.jobs} jobs · ${fmtDate(pr.created)}</span>${state.user.role === "admin" && projects.length > 1 ? `<button class="btn sm danger" data-del-proj="${esc(pr.slug)}">Delete</button>` : ""}</div></div>`).join("")}</div>`, [{ label: "Projects" }]);
+  $("#newProject", content).onclick = newProjectModal;
+  $$("[data-proj]", content).forEach((c) => c.onclick = guard(async (e) => { if (e.target.closest("button")) return; await selectProject(c.dataset.proj); state.overview = null; go("#/datasets"); render(); }));
+  $$("[data-del-proj]", content).forEach((b) => b.onclick = (e) => { e.stopPropagation(); confirmModal("Delete project", `Delete project ${b.dataset.delProj} with all its datasets, jobs, weights, evaluations, traces, and repositories?`, async () => { await del(`/api/p/${encodeURIComponent(b.dataset.delProj)}`); if (state.project === b.dataset.delProj) state.project = null; await ensureProject(); pageProjects(); }); });
+}
+
+function newProjectModal() {
+  const m = modal({ title: "New project", body: `<div class="field"><label>Name</label><input id="prName" placeholder="support-bot"></div><div class="field"><label>Goal (what the model should become good at)</label><textarea id="prGoal"></textarea></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Create</button>` });
+  $("[data-cancel]", m.el).onclick = m.close;
+  $("[data-ok]", m.el).onclick = guard(async () => { const pr = await post("/api/projects", { name: $("#prName", m.el).value.trim(), goal: $("#prGoal", m.el).value.trim() }); m.close(); await selectProject(pr.slug); state.overview = null; go("#/datasets"); render(); });
+}
+
+// ------------------------------------------------------------------ account and project selection
+const PROJECT_KEY = "tinystudio.project";
+async function selectProject(slug) {
+  state.projects = await api("/api/projects");
+  if (!state.projects.some((pr) => pr.slug === slug)) slug = state.projects[0]?.slug || null;
+  state.project = slug;
+  try { if (slug) localStorage.setItem(PROJECT_KEY, slug); } catch (_) {}
+  return slug;
+}
+async function ensureProject() {
+  let wanted = state.project; try { wanted = wanted || localStorage.getItem(PROJECT_KEY); } catch (_) {}
+  await selectProject(wanted);
+  if (!state.project) {
+    await new Promise((resolve) => {
+      const m = modal({ title: "Create your first project", body: `<p class="muted">A project holds datasets, snapshots, jobs, evaluations, traces, and repositories. You can add more later from the project menu.</p><div class="field"><label>Name</label><input id="prName" placeholder="support-bot"></div><div class="field"><label>Goal</label><textarea id="prGoal" placeholder="Answer questions about our product from the manual"></textarea></div>`, footer: `<button class="btn primary" data-ok>Create project</button>` });
+      $("[data-ok]", m.el).onclick = guard(async () => { const pr = await post("/api/projects", { name: $("#prName", m.el).value.trim(), goal: $("#prGoal", m.el).value.trim() }); m.close(); await selectProject(pr.slug); resolve(); });
+    });
+  }
+  return state.project;
+}
+function authPage(title, body) {
+  $("#app").innerHTML = `<div class="auth"><div class="auth-card"><div class="brand" style="padding:0 0 10px"><div class="logo"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M8 22 L13 12 L18 18 L24 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div>tinystudio<small>${esc(title)}</small></div></div>${body}</div></div>`;
+  $("#tasks").hidden = true;
+  return $("#app .auth-card");
+}
+function showLogin() {
+  if ($("#loginForm")) return;
+  const card = authPage("Sign in", `<form id="loginForm"><div class="field"><label>Email</label><input id="lEmail" type="email" autocomplete="username" required></div><div class="field"><label>Password</label><input id="lPass" type="password" autocomplete="current-password" required></div><button class="btn primary" style="width:100%;justify-content:center" type="submit">Sign in</button><div class="muted" id="lErr" style="margin-top:8px"></div></form>`);
+  $("#loginForm", card).onsubmit = async (e) => {
+    e.preventDefault();
+    try { await post("/api/auth/login", { email: $("#lEmail", card).value, password: $("#lPass", card).value }); location.reload(); }
+    catch (err) { $("#lErr", card).textContent = err.message; }
+  };
+}
+function showSetup() {
+  const card = authPage("First start: create the admin account", `<form id="setupForm"><div class="field"><label>Name</label><input id="sName"></div><div class="field"><label>Email</label><input id="sEmail" type="email" autocomplete="username" required></div><div class="field"><label>Password (8+ characters)</label><input id="sPass" type="password" autocomplete="new-password" required></div><button class="btn primary" style="width:100%;justify-content:center" type="submit">Create admin and continue</button><div class="muted" id="sErr" style="margin-top:8px"></div></form>`);
+  $("#setupForm", card).onsubmit = async (e) => {
+    e.preventDefault();
+    try { await post("/api/auth/setup", { name: $("#sName", card).value, email: $("#sEmail", card).value, password: $("#sPass", card).value }); location.reload(); }
+    catch (err) { $("#sErr", card).textContent = err.message; }
+  };
 }
 
 // ------------------------------------------------------------------ assistant (available on every page)
@@ -980,7 +1085,7 @@ async function uiPerform(action, args = {}) {
 
 // --- streaming turn shared by the widget and the Assistant page
 async function streamChat(body, onEvent) {
-  const response = await fetch("/api/assistant/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await rawFetch("/api/assistant/chat", { method: "POST", body: JSON.stringify({ ...body, project: state.project }) });
   if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
   for (;;) {
@@ -1106,7 +1211,7 @@ async function pageAssistant() {
     <div class="play"><div>
       <div class="panel"><div class="head"><h2>How it sees the interface</h2></div><div class="body" style="font-size:12.5px">
         <p>With <b>page</b> ticked, every message carries the route, the visible text, the data the page fetched, and your text selection. The <span class="mono">ui_read_page</span> tool returns the live element tree with ref ids; <span class="mono">ui_navigate</span>, <span class="mono">ui_click</span>, <span class="mono">ui_fill</span>, and <span class="mono">ui_select</span> operate it in your tab. Catalog tools run on the server, so long actions show up in the task drawer.</p>
-        <p class="muted">Models come from each provider's live model list; pick any Claude or OpenAI model your account can use. Credentials stay in the environment of <span class="mono">tinystudio serve</span>.</p>
+        <p class="muted">Models come from each provider's live model list; pick any Claude or OpenAI model your account can use. Credentials are set once by an admin under Settings.</p>
       </div></div>
       <div class="panel" style="margin-top:16px"><div class="head"><h2>Use from Claude Code, Codex, Claude Desktop</h2></div><div class="body" style="font-size:12.5px">
         <p>tinystudio is an MCP server. Register it once and your coding assistant can run the whole pipeline in natural language:</p>
@@ -1355,8 +1460,8 @@ async function pageKeys() {
   await ensureOverview(true);
   const keys = await api("/api/keys");
   const content = layout("keys", `<div class="page-head"><h1>API Keys</h1><div class="actions"><button class="btn primary" id="newKey">+ Create API key</button></div></div>
-    <div class="panel"><table><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td><b>${esc(k.name)}</b></td><td class="mono">${esc(k.prefix)}…</td><td>${fmtDate(k.created)}</td><td>${fmtDate(k.last_used)}</td><td style="text-align:right"><button class="btn sm danger" data-rev="${k.id}">Revoke</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No keys. The /v1 endpoint is open on localhost until you create one.</td></tr>`}</tbody></table></div>
-    <div class="panel" style="margin-top:16px"><div class="head"><h2>Using your key</h2></div><div class="body"><pre class="mono" style="white-space:pre-wrap">curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ts-..." -H "content-type: application/json" \\\n  -d '{"model": "ft-&lt;job&gt;-&lt;n&gt;", "messages": [{"role": "user", "content": "hello"}]}'</pre><p class="muted">Works with the OpenAI SDKs: set <span class="mono">base_url</span> to <span class="mono">${location.origin}/v1</span>.</p></div></div>`, [{ label: "API Keys" }]);
+    <div class="panel"><table><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td><b>${esc(k.name)}</b></td><td class="mono">${esc(k.prefix)}…</td><td>${fmtDate(k.created)}</td><td>${fmtDate(k.last_used)}</td><td style="text-align:right"><button class="btn sm danger" data-rev="${k.id}">Revoke</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No keys yet. Keys belong to your account and work on /v1 and /api (MCP clients use them).</td></tr>`}</tbody></table></div>
+    <div class="panel" style="margin-top:16px"><div class="head"><h2>Using your key</h2></div><div class="body"><pre class="mono" style="white-space:pre-wrap">curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ts-..." -H "content-type: application/json" \\\n  -d '{"model": "${esc(state.project)}/&lt;job&gt;/&lt;n&gt;", "messages": [{"role": "user", "content": "hello"}]}'</pre><p class="muted">Works with the OpenAI SDKs: set <span class="mono">base_url</span> to <span class="mono">${location.origin}/v1</span>. Model ids are <span class="mono">&lt;project&gt;/&lt;job&gt;/&lt;n&gt;</span>, or send the header <span class="mono">X-Project: ${esc(state.project)}</span> and use <span class="mono">&lt;job&gt;/&lt;n&gt;</span>.</p></div></div>`, [{ label: "API Keys" }]);
   $("#newKey", content).onclick = () => {
     const m = modal({ title: "Create API key", body: `<div class="field"><label>Name</label><input id="kName" placeholder="my-app"></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Create</button>` });
     $("[data-cancel]", m.el).onclick = m.close;
@@ -1374,17 +1479,27 @@ function showTasks() { $("#tasks").hidden = false; }
 async function pollTasks() {
   let tasks;
   try { tasks = await api("/api/tasks"); } catch (_) { return; }
-  const wasRunning = new Set(state.tasks.filter((t) => t.state === "running").map((t) => t.id));
+  const wasRunning = new Set(state.tasks.filter((t) => t.state === "running" || t.state === "queued").map((t) => t.id));
   state.tasks = tasks;
   const box = $("#tasks");
-  box.innerHTML = `<div class="head"><h2>Tasks</h2><div class="right"><button class="btn sm" id="tHide">Hide</button></div></div>` + (tasks.length ? tasks.slice(0, 6).map((t) => `<div class="task"><span class="pill ${t.state}">${t.state}</span> <b>${esc(t.kind)}</b> <span class="muted mono" style="font-size:11px">${esc(t.started.slice(11, 19))}</span>${t.state === "running" ? ` <button class="btn sm" style="float:right" data-stop="${t.id}">Stop</button>` : ""}<div class="mono muted" style="font-size:11px;word-break:break-all;margin-top:4px">tinystudio ${esc(t.command)}</div><pre>${esc(t.log_tail.join("\n"))}</pre></div>`).join("") : `<div class="task muted">Nothing running.</div>`);
+  box.innerHTML = `<div class="head"><h2>Tasks</h2><div class="right"><button class="btn sm" id="tHide">Hide</button></div></div>` + (tasks.length ? tasks.slice(0, 6).map((t) => `<div class="task"><span class="pill ${t.state}">${t.state}</span> <b>${esc(t.kind)}</b> <span class="muted mono" style="font-size:11px">${esc((t.started || t.created || "").slice(11, 19))}</span>${t.state === "running" || t.state === "queued" ? ` <button class="btn sm" style="float:right" data-stop="${t.id}">Stop</button>` : ""}<div class="mono muted" style="font-size:11px;word-break:break-all;margin-top:4px">${esc(JSON.stringify(t.args || {})).slice(0, 160)}</div><pre>${esc((t.log_tail || []).slice(-12).join("\n"))}</pre></div>`).join("") : `<div class="task muted">Nothing running.</div>`);
   $("#tHide", box).onclick = () => box.hidden = true;
   $$("[data-stop]", box).forEach((b) => b.onclick = guard(async () => { await post(`/api/tasks/${b.dataset.stop}/stop`, {}); pollTasks(); }));
-  const running = tasks.some((t) => t.state === "running");
-  if (tasks.some((t) => wasRunning.has(t.id) && t.state !== "running")) { toast("a task finished"); render(); }
+  const running = tasks.some((t) => t.state === "running" || t.state === "queued");
+  if (tasks.some((t) => wasRunning.has(t.id) && t.state !== "running" && t.state !== "queued")) { toast("a task finished"); render(); }
   clearTimeout(state.taskTimer);
   if (running) { showTasks(); state.taskTimer = setTimeout(pollTasks, 2500); }
 }
 
 // ------------------------------------------------------------------ boot
-guard(async () => { await ensureOverview(); mountAssistant(); await render(); pollTasks(); })();
+guard(async () => {
+  const auth = await api("/api/auth/status");
+  if (auth.setup_required) return showSetup();
+  if (!auth.authenticated) return showLogin();
+  state.user = auth.user;
+  await ensureProject();
+  await ensureOverview();
+  mountAssistant();
+  await render();
+  pollTasks();
+})();

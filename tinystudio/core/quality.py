@@ -20,8 +20,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from tinystudio.core.data import BUCKETS, last_user_message, load_dataset, reference_answer, save_dataset
-from tinystudio.core.project import Project, now
+from tinystudio.core.data import BUCKETS, last_user_message, reference_answer
+from tinystudio.core.project import now
 
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
@@ -278,16 +278,3 @@ def clean(rows: list[dict[str, Any]], spec: CleanSpec) -> tuple[list[dict[str, A
             kept_shingles.append(sh)
         kept.append(row)
     return kept, dict(removed)
-
-
-def apply_cleaning(project: Project, dataset: str, spec: CleanSpec) -> dict[str, Any]:
-    rows = load_dataset(project, dataset)
-    redacted = 0
-    if spec.redact_pii:
-        rows, redacted = redact_pii(rows)
-    kept, removed = clean(rows, spec)
-    meta = save_dataset(project, dataset, kept)
-    record = {"time": now(), "before": len(rows), "after": len(kept), "removed": removed, "redacted_rows": redacted, "spec": spec.__dict__}
-    with (project.dataset_dir(dataset) / "cleaning.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record) + "\n")
-    return {**record, "meta": meta}

@@ -136,8 +136,9 @@ def subscribe(task_id: str, timeout: float = 20.0) -> Iterator[str | None]:
 class TaskLog:
     """Progress sink for one task: file, Redis channel, and the row's tail (flushed every two seconds)."""
 
-    def __init__(self, task_id: str) -> None:
+    def __init__(self, task_id: str, echo: Any = None) -> None:
         self.task_id = task_id
+        self.echo = echo
         self.path = config().task_log(task_id)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = self.path.open("a", encoding="utf-8")
@@ -151,6 +152,8 @@ class TaskLog:
             return
         self.handle.write(text + "\n")
         self.handle.flush()
+        if self.echo is not None:
+            self.echo(text)
         publish(self.task_id, text)
         self.tail = (self.tail + [text])[-tasks_svc.TAIL_LINES :]
         self.dirty = True
@@ -168,13 +171,13 @@ class TaskLog:
         self.handle.close()
 
 
-def run_task(task_id: str) -> dict[str, Any] | None:
-    """The RQ job: executed in the worker's work horse."""
+def run_task(task_id: str, echo: Any = None) -> dict[str, Any] | None:
+    """The RQ job: executed in the worker's work horse (or inline by the CLI, which passes ``echo``)."""
     from tinystudio.services import settings as settings_svc
     from tinystudio.worker.handlers import HANDLERS, Context
 
     dispose_after_fork()
-    log = TaskLog(task_id)
+    log = TaskLog(task_id, echo)
     worker_name = f"{platform.node()}:{sys.argv[0].rsplit('/', 1)[-1]}"
     with session() as db:
         task = tasks_svc.mark_running(db, task_id, worker_name)
@@ -218,9 +221,14 @@ def _jsonable(value: Any) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else {"value": loaded}
 
 
-def run_inline(task_id: str) -> dict[str, Any] | None:
-    """Execute a task in this process (the CLI on a machine without a worker)."""
-    return run_task(task_id)
+def run_inline(kind: str, args: dict[str, Any], project: Project | None = None, user: User | None = None, echo: Any = print) -> dict[str, Any]:
+    """Create a task row and execute it in this process (the CLI on a machine without a worker). Returns the task."""
+    with session() as db:
+        task = tasks_svc.create_task(db, kind, args, project, user)
+        task_id = task.id
+    run_task(task_id, echo)
+    with session() as db:
+        return tasks_svc.task_dict(tasks_svc.get_task(db, task_id))
 
 
 def work(queues: list[str] | None = None, burst: bool = False) -> None:

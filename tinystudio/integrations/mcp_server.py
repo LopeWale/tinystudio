@@ -2,13 +2,13 @@
 
 The tool catalog lives in ``tools.py`` and is shared with the in-app
 assistant. Long actions return a task id; ``get_task`` polls it. If no server
-is listening, the first call starts ``tinystudio serve`` for the project.
+is reachable, every call reports that instead of guessing.
 
-Register once (user scope):
+Register once (user scope), with the server URL, a project slug, and an API key from the API Keys page:
 
-    claude mcp add --scope user tinystudio -- /path/to/.venv/bin/tinystudio mcp --project /path/to/project
-    Codex: ~/.codex/config.toml  [mcp_servers.tinystudio] command = ".../tinystudio" args = ["mcp", "--project", "..."]
-    Claude Desktop: claude_desktop_config.json  "mcpServers": {"tinystudio": {"command": ".../tinystudio", "args": ["mcp", "--project", "..."]}}
+    claude mcp add --scope user tinystudio -e TINYSTUDIO_API_KEY=ts-... -- /path/to/.venv/bin/tinystudio mcp --url http://host:8000 --project my-project
+    Codex: ~/.codex/config.toml  [mcp_servers.tinystudio] command = ".../tinystudio" args = ["mcp", "--url", "...", "--project", "..."] env = { TINYSTUDIO_API_KEY = "ts-..." }
+    Claude Desktop: claude_desktop_config.json  "mcpServers": {"tinystudio": {"command": ".../tinystudio", "args": ["mcp", "--url", "...", "--project", "..."], "env": {"TINYSTUDIO_API_KEY": "ts-..."}}}
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -71,12 +70,12 @@ def build_server(studio: Studio) -> MCPServer:
     return server
 
 
-def main(base_url: str | None = None, project: str | None = None) -> None:
+def main(base_url: str | None = None, project: str | None = None, api_key: str | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)  # keep stdio clean; MCP clients treat stderr as noise
     url = base_url or os.environ.get("TINYSTUDIO_URL", "http://127.0.0.1:8000")
-    root = Path(project or os.environ.get("TINYSTUDIO_PROJECT", ".")).expanduser().resolve()
-    studio = Studio(url, root if (root / "tinystudio.json").exists() else None)
-    build_server(studio).run(transport="stdio")
+    slug = project or os.environ.get("TINYSTUDIO_PROJECT") or None
+    token = api_key or os.environ.get("TINYSTUDIO_API_KEY") or None
+    build_server(Studio(url, slug, token)).run(transport="stdio")
 
 
 if __name__ == "__main__":

@@ -263,3 +263,11 @@ table.neurons .ctxcell{font-family:var(--mono);font-size:11.5px;max-width:420px;
 
 .cards.settings{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
 .cards.settings .card{cursor:default}
+
+/* account, projects */
+.auth{min-height:100vh;display:grid;place-items:center;width:100%;background:var(--panel-2)}
+.auth-card{width:360px;max-width:92vw;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px}
+.project-switch{padding:0 14px 10px}
+.project-switch select{width:100%;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--border-2);background:var(--panel);color:var(--text)}
+.pill.queued{background:var(--panel-3)}
+.pill.stopped{background:var(--panel-3);color:var(--text-2)}

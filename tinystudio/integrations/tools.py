@@ -1,22 +1,16 @@
 """The capability catalog shared by the MCP server and the in-app assistant.
 
-Every tool is a thin call to the running tinystudio HTTP server (the same
-``/api`` the web interface uses), so an assistant and the page share one task
-runner and one set of files. Long actions return a task id immediately;
-``get_task`` polls it. Functions carry docstrings and type hints because both
+Every tool is a thin call to the tinystudio API (the same ``/api`` the web interface uses), scoped to one
+project and authenticated with an API key, so an assistant and the page share one queue and one database.
+Long actions return a task id immediately; ``get_task`` polls it. Functions carry docstrings and type hints because both
 the MCP SDK and the Anthropic SDK derive the tool schema from them.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,38 +20,39 @@ class StudioError(RuntimeError):
     """An expected failure reported back to the assistant as a tool error."""
 
 
-class Studio:
-    """HTTP client for the local tinystudio server, with auto-start."""
+PROJECT_PREFIXES = ("/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog")
 
-    def __init__(self, base_url: str, project: Path | None) -> None:
+
+def scoped(path: str, project: str | None) -> str:
+    """Project-scoped paths live under /api/p/<slug>; global ones (tasks, hub, settings) stay as they are."""
+    if project and path.startswith(PROJECT_PREFIXES):
+        return f"/api/p/{project}" + path[4:]
+    return path
+
+
+class Studio:
+    """HTTP client for a tinystudio server: one project, one credential (API key or service token)."""
+
+    def __init__(self, base_url: str, project: str | None = None, token: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.project = project
-        self.http = httpx.Client(base_url=self.base_url, timeout=120.0)
+        headers = {"X-Requested-With": "tinystudio"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if project:
+            headers["X-Project"] = project
+        self.http = httpx.Client(base_url=self.base_url, timeout=120.0, headers=headers)
 
     def ensure_running(self) -> None:
         try:
-            self.http.get("/api/overview").raise_for_status()
-            return
-        except httpx.HTTPError:
-            pass
-        if self.project is None:
-            raise StudioError(f"tinystudio server is not reachable at {self.base_url} and no project directory was given to start one")
-        executable = Path(sys.executable).parent / "tinystudio"
-        command = [str(executable) if executable.exists() else "tinystudio", "serve", "--port", str(httpx.URL(self.base_url).port or 8000)]
-        log = (self.project / ".serve.log").open("a")
-        subprocess.Popen(command, cwd=str(self.project), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, "PYTORCH_ENABLE_MPS_FALLBACK": "1"})
-        for _ in range(120):
-            time.sleep(1)
-            try:
-                self.http.get("/api/overview").raise_for_status()
-                return
-            except httpx.HTTPError:
-                continue
-        raise StudioError(f"started `tinystudio serve` in {self.project} but it did not answer within 120 s; see {self.project / '.serve.log'}")
+            self.http.get("/api/health").raise_for_status()
+        except httpx.HTTPError as cause:
+            raise StudioError(f"tinystudio server is not reachable at {self.base_url}: {cause}. Start it with `tinystudio serve` (or docker compose up)") from cause
 
     def call(self, method: str, path: str, **kwargs: Any) -> Any:
-        self.ensure_running()
-        response = self.http.request(method, path, **kwargs)
+        response = self.http.request(method, scoped(path, self.project), **kwargs)
+        if response.status_code == 401:
+            raise StudioError("tinystudio rejected the credentials: pass an API key (TINYSTUDIO_API_KEY; create one under API Keys)")
         if response.status_code >= 400:
             try:
                 detail = response.json().get("detail", response.text)
@@ -136,10 +131,7 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
 
     def get_task(task_id: str) -> dict[str, Any]:
         """State and log tail of one task. Poll until state is succeeded or failed."""
-        for task in studio.call("GET", "/api/tasks"):
-            if task["id"] == task_id:
-                return task
-        raise StudioError(f"task {task_id!r} not found (tasks are kept for the life of the server)")
+        return studio.call("GET", f"/api/tasks/{task_id}")
 
     def list_traces(limit: int = 20) -> list[dict[str, Any]]:
         """Recent traces: served prompts, responses, latency, scores."""
@@ -233,13 +225,12 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
     def chat(model: str, user: str, system: str = "", temperature: float = 0.0, max_tokens: int = 256, repositories: list[str] | None = None, repository_limit: int = 3, similarity_threshold: float = 0.0) -> dict[str, Any]:
         """Send one chat turn to a model and return its reply (logged as a trace). repositories=[names] retrieves chunks from those repositories first (RAG) and returns them as document_chunks."""
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
-        studio.ensure_running()
         text: list[str] = []
         body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if repositories:
             body["repositories"] = {"ids": repositories, "limit": repository_limit, "similarity_threshold": similarity_threshold}
         chunks: list[dict[str, Any]] = []
-        with studio.http.stream("POST", "/api/playground/chat", json=body, timeout=600.0) as response:
+        with studio.http.stream("POST", scoped("/api/playground/chat", studio.project), json=body, timeout=600.0) as response:
             if response.status_code >= 400:
                 raise StudioError(f"chat failed: {response.read().decode()[:300]}")
             for line in response.iter_lines():
@@ -336,8 +327,8 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
         return studio.call("POST", f"/api/tasks/{task_id}/stop")
 
     def delete(kind: str, name: str) -> dict[str, Any]:
-        """Delete a dataset, snapshot, job, experiment (job/number), metric, or evaluation. Irreversible."""
-        routes = {"dataset": "/api/datasets/{}", "snapshot": "/api/snapshots/{}", "job": "/api/jobs/{}", "metric": "/api/metrics/{}", "evaluation": "/api/evals/{}"}
+        """Delete a dataset, snapshot, job, experiment (job/number), metric, evaluation, repository, capture, or comparison. Irreversible."""
+        routes = {"dataset": "/api/datasets/{}", "snapshot": "/api/snapshots/{}", "job": "/api/jobs/{}", "metric": "/api/metrics/{}", "evaluation": "/api/evals/{}", "repository": "/api/repositories/{}", "capture": "/api/interp/captures/{}", "comparison": "/api/interp/diffs/{}"}
         if kind == "experiment":
             job, _, number = name.partition("/")
             return studio.call("DELETE", f"/api/jobs/{job}/experiments/{number}")
