@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from tinystudio import evaluate
-from tinystudio.documents import chunk_text, extract_text
-from tinystudio.llm import LLMError, extract_json
-from tinystudio.project import Project, ProjectError
+from tinystudio.evaluation import evaluate
+from tinystudio.core.documents import chunk_text, extract_text
+from tinystudio.core.llm import LLMError, extract_json
+from tinystudio.core.project import Project, ProjectError
 
 
 def test_code_metrics():

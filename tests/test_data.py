@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tinystudio import data
-from tinystudio.project import Project, ProjectError
+from tinystudio.core import data
+from tinystudio.core.project import Project, ProjectError
 
 
 def row(user: str, answer: str, **extra):

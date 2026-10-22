@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from tinystudio import data
-from tinystudio.documents import chunk_text
-from tinystudio.evaluate import _passed
-from tinystudio.project import Project, write_json
-from tinystudio.runner import resolve_model
-from tinystudio.train import claim_experiment_dir, create_job
+from tinystudio.core import data
+from tinystudio.core.documents import chunk_text
+from tinystudio.evaluation.evaluate import _passed
+from tinystudio.core.project import Project, write_json
+from tinystudio.serving.runner import resolve_model
+from tinystudio.training.train import claim_experiment_dir, create_job
 
 
 def row(user: str, answer: str, **extra):
@@ -87,7 +87,7 @@ def test_tree_ignores_partial_dirs_and_keeps_orphan_snapshots(project: Project):
 
 
 def test_eval_failed_state_can_be_rerun(project: Project):
-    from tinystudio import evaluate
+    from tinystudio.evaluation import evaluate
 
     eval_dir = project.eval_dir("e")
     write_json(eval_dir / "eval.json", {"name": "e", "state": "failed"})

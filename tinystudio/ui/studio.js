@@ -23,7 +23,10 @@ async function api(path, options = {}) {
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   const type = response.headers.get("content-type") || "";
-  return type.includes("json") ? response.json() : response.text();
+  if (!type.includes("json")) return response.text();
+  const data = await response.json();
+  if (!options.method || options.method === "GET") recordApi(path, data);
+  return data;
 }
 const post = (path, body) => api(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
 const put = (path, body) => api(path, { method: "PUT", body: JSON.stringify(body ?? {}) });
@@ -61,6 +64,7 @@ function confirmModal(title, text, action, label = "Delete") {
 const routes = [
   [/^#\/?$/, () => go("#/datasets")],
   [/^#\/datasets$/, () => pageDatasets()],
+  [/^#\/repositories$/, () => pageRepositories()],
   [/^#\/datasets\/([^/]+)$/, (m) => pageDataset(decodeURIComponent(m[1]))],
   [/^#\/finetuning$/, () => pageFinetuning()],
   [/^#\/finetuning\/([^/]+)$/, (m) => pageJob(decodeURIComponent(m[1]))],
@@ -73,6 +77,10 @@ const routes = [
   [/^#\/stats$/, () => pageStats()],
   [/^#\/api-keys$/, () => pageKeys()],
   [/^#\/assistant$/, () => pageAssistant()],
+  [/^#\/settings$/, () => pageSettings()],
+  [/^#\/interp$/, () => pageInterp()],
+  [/^#\/interp\/c\/([^/?]+)(?:\?(.*))?$/, (m) => pageCapture(decodeURIComponent(m[1]), new URLSearchParams(m[2] || ""))],
+  [/^#\/interp\/d\/([^/?]+)(?:\?(.*))?$/, (m) => pageDiff(decodeURIComponent(m[1]), new URLSearchParams(m[2] || ""))],
 ];
 function go(hash) { location.hash = hash; }
 async function render() {
@@ -97,6 +105,8 @@ const ICONS = {
   traces: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
   docs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h7M9 17h7"/></svg>',
   assistant: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z"/><path d="M5 17l.8 2 2 .8-2 .8L5 22l-.8-1.6-2-.8 2-.8z"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  interp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 9V4M12 20v-5M9 12H3M21 12h-6M9.9 9.9L6 6M18 18l-3.9-3.9M14.1 9.9L18 6M6 18l3.9-3.9"/></svg>',
 };
 function sidebar(active) {
   const o = state.overview || {};
@@ -105,16 +115,19 @@ function sidebar(active) {
     <div class="brand"><div class="logo"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M8 22 L13 12 L18 18 L24 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div>tinystudio<small>${esc(o.project?.name || "")}</small></div></div>
     <nav class="nav">
       ${item("#/datasets", "datasets", "Datasets", "datasets")}
+      ${item("#/repositories", "repositories", "Repositories", "docs")}
       ${item("#/finetuning", "finetuning", "Finetuning", "finetune")}
       ${item("#/evaluations", "evaluations", "Evaluations", "evals")}
       <div class="sub">${item("#/evaluations", "evaluations-sub", "Eval", "evals").replace(ICONS.evals, "")}${item("#/metrics", "metrics", "Metrics", "evals").replace(ICONS.evals, "")}</div>
       ${item("#/playground", "playground", "Playground", "play")}
       ${item("#/assistant", "assistant", "Assistant", "assistant")}
+      ${item("#/interp", "interp", "Interpretability", "interp")}
       <hr>
       ${item("#/models", "models", "Models", "models")}
       ${item("#/traces", "traces", "Traces", "traces")}
       ${item("#/api-keys", "keys", "API Keys", "keys")}
       ${item("#/stats", "stats", "Stats", "stats")}
+      ${item("#/settings", "settings", "Settings", "settings")}
       <hr>
       <a href="/docs" target="_blank">${ICONS.docs}<span>API reference</span><span class="external">↗</span></a>
     </nav>
@@ -270,9 +283,10 @@ async function pageDataset(name) {
 
   $("#btnFinetune", content).onclick = () => snaps.length ? createJobDialog(snaps[snaps.length - 1].name) : toast("create a snapshot first", true);
   $("#btnEnrich", content).onclick = () => {
-    const m = modal({ title: "Enrich dataset", body: `<p class="muted">Paraphrase existing user turns with the helper model so the model sees more ways of asking. Split before you enrich if you want a clean validation set.</p><div class="field"><label>Datapoints to generate</label><input id="enCount" type="number" min="1" max="2000" value="50"></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Enrich</button>` });
+    const m = modal({ title: "Enrich dataset", body: `<p class="muted">Paraphrase existing user turns with the helper model so the model sees more ways of asking. Split before you enrich if you want a clean validation set.</p><div class="field"><label>Datapoints to generate</label><input id="enCount" type="number" min="1" max="2000" value="50"></div><div class="field"><label>Creativity level <span class="muted" id="enTempVal">0.8</span></label><input id="enTemp" type="range" min="0" max="1.5" step="0.1" value="0.8"></div><div class="field"><label>Positive instructions (generate more of…)</label><input id="enMore" placeholder="terse voice commands, room names, numbers spelled out"></div><div class="field"><label>Negative instructions (avoid…)</label><input id="enAvoid" placeholder="questions, chit-chat, requests outside the home"></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Enrich</button>` });
+    $("#enTemp", m.el).oninput = () => { $("#enTempVal", m.el).textContent = $("#enTemp", m.el).value; };
     $("[data-cancel]", m.el).onclick = m.close;
-    $("[data-ok]", m.el).onclick = guard(async () => { await post("/api/augment", { dataset: name, count: Number($("#enCount", m.el).value) }); m.close(); showTasks(); pollTasks(); });
+    $("[data-ok]", m.el).onclick = guard(async () => { await post("/api/augment", { dataset: name, count: Number($("#enCount", m.el).value), temperature: Number($("#enTemp", m.el).value), instructions: $("#enMore", m.el).value, avoid: $("#enAvoid", m.el).value }); m.close(); showTasks(); pollTasks(); });
   };
   $("#btnSplit", content).onclick = () => {
     const m = modal({ title: "Autosplit dataset", body: `<p class="muted">Assign every uncategorized datapoint to training or validation. Existing assignments are kept.</p><div class="field"><label>Training percentage: <b id="spV">80</b>%</label><input id="sp" type="range" min="1" max="99" value="80"></div><label class="radio-card" id="synthCard"><input type="checkbox" id="allowSynth"><div><b>Allow synthetic data in validation</b><span>Off keeps generated rows out of the validation split so the score reflects real data.</span></div></label>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Split</button>` });
@@ -356,6 +370,7 @@ async function qualityDialog(dataset, after) {
         <button data-k="drop_empty">Drop empty-like rows (${o.empty_like.length})</button>
         <button data-k="trim_whitespace">Trim whitespace</button>
         <button data-k="require_json_answer">Keep only JSON answers (${p.format.answers_json}/${p.count})</button>
+        <button data-k="redact_pii" title="Emails, card numbers, national ids, and phone numbers become [EMAIL] [CARD] [ID] [PHONE]; rows are kept">Redact PII (${p.pii.redactable_rows ?? 0} rows)</button>
       </div>
       <div class="row" style="margin-top:10px"><div class="field"><label>Min total chars (short outliers below ${o.fences.low})</label><input id="clMin" type="number" placeholder="${o.fences.low}"></div><div class="field"><label>Max total chars (long outliers above ${o.fences.high})</label><input id="clMax" type="number" placeholder="${o.fences.high}"></div><div class="field"><label>Min rating (1–10)</label><input id="clRating" type="number" step="0.5" min="0" max="10"></div><div class="field"><label>Drop labels (comma separated)</label><input id="clDrop" placeholder="poor, off-topic"></div></div>
       <div class="row"><button class="btn primary" id="clApply">Apply cleaning</button><span class="muted" id="clResult"></span></div>
@@ -368,7 +383,7 @@ async function qualityDialog(dataset, after) {
     Object.assign(spec, { min_total_chars: num("#clMin"), max_total_chars: num("#clMax"), min_rating: num("#clRating"), drop_labels: $("#clDrop", body).value.split(",").map((s) => s.trim()).filter(Boolean) });
     if (!Object.keys(spec).some((k) => spec[k] === true) && spec.min_total_chars === null && spec.max_total_chars === null && spec.min_rating === null && !spec.drop_labels.length) throw new Error("pick at least one cleaning rule");
     const r = await post(`/api/datasets/${encodeURIComponent(dataset)}/clean`, spec);
-    $("#clResult", body).textContent = `${r.before} → ${r.after} datapoints; removed ${JSON.stringify(r.removed)}`;
+    $("#clResult", body).textContent = `${r.before} → ${r.after} datapoints; removed ${JSON.stringify(r.removed)}${r.redacted_rows ? `; redacted PII in ${r.redacted_rows} rows` : ""}`;
     toast(`cleaned: ${r.before} → ${r.after}`); after();
   });
 }
@@ -390,15 +405,61 @@ function createJobDialog(defaultSnapshot = null) {
     m.close(); go(`#/finetuning/${encodeURIComponent(job.name)}`);
   });
 }
+function autopilotPanel(pilots) {
+  if (!pilots.length) return "";
+  return `<div class="panel" style="margin-bottom:14px"><div class="head"><h2>Autopilot</h2><span class="muted">continuous fine-tuning: traces → dataset → snapshot → refinetune → evaluate → winner</span></div><div class="body"><table><thead><tr><th>Name</th><th>Dataset</th><th>Cycles</th><th>Current winner</th><th>Last run</th><th></th></tr></thead><tbody>${pilots.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.dataset || "")}</td><td class="num">${p.cycles}</td><td class="mono">${esc(p.winner || "—")}</td><td class="muted">${p.last ? fmtDate(p.last) : "—"}</td><td><button class="btn small" data-ap="${esc(p.name)}">History</button> <button class="btn small primary" data-apnext="${esc(p.name)}" data-apds="${esc(p.dataset || "")}">Next cycle</button></td></tr>`).join("")}</tbody></table></div></div>`;
+}
+
+function autopilotDialog(preset = {}) {
+  const datasets = state.overview.tree.datasets.filter((d) => !d.missing);
+  if (!datasets.length) return toast("create a dataset first", true);
+  const metrics = (state.overview.tree.metrics || state.overview.metrics || []).map((m) => (typeof m === "string" ? m : m.name));
+  const catalog = state.overview.catalog || [];
+  const m = modal({ title: preset.name ? `Autopilot · next cycle of ${preset.name}` : "Autopilot cycle", wide: true, body: `
+    <p class="muted">One cycle: promote scored traces into the dataset → clean → split → snapshot <span class="mono">NAME-cN</span> → train job <span class="mono">NAME-cN</span> refined from the previous cycle's winner → evaluate against it → record the winner. Run it again whenever new traces or data arrive.</p>
+    <div class="grid">
+      <div class="field"><label>Autopilot name</label><input id="apName" value="${esc(preset.name || "")}" placeholder="home-loop" ${preset.name ? "readonly" : ""}></div>
+      <div class="field"><label>Dataset</label><select id="apDs">${datasets.map((d) => `<option ${d.name === preset.dataset ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
+      <div class="field"><label>Base model (first cycle only; later cycles refine the winner)</label><input id="apModel" list="apCatalog" value="${esc(catalog[0]?.id || "")}"><datalist id="apCatalog">${catalog.map((c) => `<option value="${esc(c.id)}">${c.params_b}B · ${esc(c.notes || "")}</option>`).join("")}</datalist></div>
+      <div class="field"><label>Training type</label><select id="apType"><option value="lora">LoRA</option><option value="full">Full fine-tuning</option><option value="dpo">DPO (preference pairs)</option></select></div>
+      <div class="field"><label>Epochs</label><input id="apEpochs" type="number" step="0.5" min="0.5" value="2"></div>
+      <div class="field"><label>Promote traces scored ≥ (blank = none)</label><input id="apScore" type="number" step="0.1" min="0" max="1" placeholder="0.9"></div>
+      <div class="field"><label>Metrics (first decides the winner)</label><select id="apMetrics" multiple size="4">${metrics.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></div>
+      <div class="field"><label>Evaluate at most N validation rows (blank = all)</label><input id="apLimit" type="number" min="1" placeholder="all"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="apPref"> Promote corrected traces as DPO preference pairs (correction = chosen, original = rejected)</label>
+    <label class="check"><input type="checkbox" id="apClean" checked> Clean first (dedupe user turns, drop empty rows, trim whitespace)</label>`,
+    footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Run cycle</button>` });
+  $("#apType", m.el).onchange = () => { if ($("#apType", m.el).value === "dpo") $("#apPref", m.el).checked = true; };
+  $("[data-cancel]", m.el).onclick = m.close;
+  $("[data-ok]", m.el).onclick = guard(async () => {
+    const name = $("#apName", m.el).value.trim(); if (!name) throw new Error("give the autopilot a name");
+    const score = $("#apScore", m.el).value, limit = $("#apLimit", m.el).value;
+    await post("/api/autopilot", { name, dataset: $("#apDs", m.el).value, base_model: $("#apModel", m.el).value.trim() || null, training_type: $("#apType", m.el).value, epochs: Number($("#apEpochs", m.el).value), min_trace_score: score === "" ? null : Number(score), preference: $("#apPref", m.el).checked, clean: $("#apClean", m.el).checked, metrics: [...$("#apMetrics", m.el).selectedOptions].map((o) => o.value), eval_limit: limit === "" ? null : Number(limit) });
+    m.close(); toast(`autopilot ${name}: cycle started`); showTasks(); pollTasks();
+  });
+}
+
+async function autopilotHistoryDialog(name) {
+  const rows = await api(`/api/autopilot/${encodeURIComponent(name)}`);
+  const cell = (r) => { const e = r.experiment || {}, ev = r.evaluation; return `<tr><td class="num">${r.cycle}</td><td class="mono">${esc(r.snapshot?.name || "—")}<div class="muted">${r.snapshot?.training ?? "?"} / ${r.snapshot?.validation ?? "?"}</div></td><td class="mono">${esc(e.model || "—")} <span class="pill ${e.state === "succeeded" ? "completed" : e.state === "failed" ? "failed" : "pending"}">${esc(e.state || "?")}</span><div class="muted">from ${esc(r.parent || "base")}${r.promoted_traces ? ` · +${r.promoted_traces} traces` : ""}</div></td><td class="num">${e.eval_loss != null ? e.eval_loss.toFixed(4) : "—"}</td><td>${ev ? `<span class="mono">${esc(ev.primary_metric)}</span> ${ev.candidate ?? "—"} vs ${ev.baseline ?? "—"}` : "<span class='muted'>no metrics</span>"}</td><td class="mono"><b>${esc(r.winner || "—")}</b><div class="muted">${esc(r.decision || e.error || "")}</div></td></tr>`; };
+  const m = modal({ title: `Autopilot · ${name}`, wide: true, body: `<table><thead><tr><th>Cycle</th><th>Snapshot (train / val)</th><th>Experiment</th><th>eval_loss</th><th>Evaluation</th><th>Winner</th></tr></thead><tbody>${rows.map(cell).join("") || `<tr><td colspan="6" class="muted">no cycles yet</td></tr>`}</tbody></table>`, footer: `<button class="btn" data-close>Close</button>` });
+  $("[data-close]", m.el).onclick = m.close;
+}
+
 async function pageFinetuning() {
   await ensureOverview(true);
   const jobs = await api("/api/jobs");
-  const content = layout("finetuning", `<div class="page-head"><h1>Finetuning</h1><div class="actions"><button class="btn primary" id="newJob">+ Create finetuning job</button></div></div><div class="cards">${jobs.map(({ job, experiments }) => {
+  const pilots = await api("/api/autopilot").catch(() => []);
+  const content = layout("finetuning", `<div class="page-head"><h1>Finetuning</h1><div class="actions"><button class="btn" id="autopilotBtn">Autopilot cycle</button><button class="btn primary" id="newJob">+ Create finetuning job</button></div></div>${autopilotPanel(pilots)}<div class="cards">${jobs.map(({ job, experiments }) => {
     const states = experiments.map((e) => e.state);
     const label = !experiments.length ? ["Ready to start experiments", "ready"] : states.includes("running") ? ["Running", "running"] : states.every((s) => s === "pending") ? ["Ready to start experiments", "ready"] : states.some((s) => s === "pending") ? ["Partially run", "pending"] : states.every((s) => s === "succeeded") ? ["Completed", "completed"] : states.some((s) => s === "failed") ? ["Failed", "failed"] : ["Completed", "completed"];
     return `<div class="card clickable" data-job="${esc(job.name)}"><h3>${esc(job.name)}</h3><span class="pill ${label[1]}">${label[0]}</span><div class="sub" style="margin-top:8px">snapshot ${esc(job.snapshot)} · ${experiments.length} experiment${experiments.length === 1 ? "" : "s"}${job.reasoning ? " · reasoning" : ""}</div><div class="foot"><span>Created on: ${fmtDate(job.created)}</span><span class="arrow">→</span></div></div>`;
   }).join("") || `<div class="empty"><b>No finetuning jobs yet</b>Create one from a snapshot.</div>`}</div>`, [{ label: "Finetuning" }]);
   $("#newJob", content).onclick = () => createJobDialog();
+  $("#autopilotBtn", content).onclick = () => autopilotDialog();
+  $$("[data-ap]", content).forEach((b) => b.onclick = () => autopilotHistoryDialog(b.dataset.ap));
+  $$("[data-apnext]", content).forEach((b) => b.onclick = () => autopilotDialog({ name: b.dataset.apnext, dataset: b.dataset.apds }));
   $$("[data-job]", content).forEach((c) => c.onclick = () => go(`#/finetuning/${encodeURIComponent(c.dataset.job)}`));
 }
 
@@ -428,13 +489,15 @@ async function pageJob(name) {
     // ---- configuration mode: editable experiment cards + analysis panel
     const drafts = experiments.map((e) => ({ number: e.number, ...e.config }));
     const rec = analysis?.recommendation || null;
+    const finished = (await api("/api/models")).filter((m) => m.kind === "fine-tuned").map((m) => m.alias);
     const drawDrafts = () => {
       left.innerHTML = drafts.map((d, i) => `<div class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${i + 1}</h3>${d.number ? `<span class="pill pending">pending · ft-${esc(name)}-${d.number}</span>` : `<span class="pill">draft</span>`}<div class="right">${d.number ? `<button class="btn sm danger" data-rm="${d.number}">Delete</button>` : `<button class="btn sm" data-drop="${i}">Remove</button>`}</div></div>
-        ${d.number ? `<div class="kv"><div><div class="k">Base model</div><div class="v mono">${esc(d.base_model)}</div></div><div><div class="k">Training type</div><div class="v">${d.training_type === "lora" ? "LoRA training" : "Full fine-tuning"}</div></div><div><div class="k">Batch size × accumulation</div><div class="v">${d.batch_size} × ${d.gradient_accumulation_steps}</div></div><div><div class="k">Learning rate</div><div class="v">${d.learning_rate}</div></div><div><div class="k">Epochs</div><div class="v">${d.epochs}</div></div><div><div class="k">Max length</div><div class="v">${d.max_length}</div></div></div>`
-        : `<div class="grid"><div class="field"><label>Base model</label><input list="catalogList" data-f="base_model" data-i="${i}" value="${esc(d.base_model)}"></div><div class="field"><label>Training type</label><select data-f="training_type" data-i="${i}"><option value="lora" ${d.training_type === "lora" ? "selected" : ""}>LoRA</option><option value="full" ${d.training_type === "full" ? "selected" : ""}>Full fine-tuning</option></select></div><div class="field"><label>Batch size</label><input type="number" min="1" max="64" data-f="batch_size" data-i="${i}" value="${d.batch_size}"></div><div class="field"><label>Learning rate</label><input type="number" step="any" data-f="learning_rate" data-i="${i}" value="${d.learning_rate}"></div><div class="field"><label>Number of epochs</label><input type="number" step="0.5" min="0.5" max="50" data-f="epochs" data-i="${i}" value="${d.epochs}"></div><div class="field"><label>Max length (tokens)</label><input type="number" data-f="max_length" data-i="${i}" value="${d.max_length}"></div><div class="field"><label>Gradient accumulation</label><input type="number" min="1" data-f="gradient_accumulation_steps" data-i="${i}" value="${d.gradient_accumulation_steps}"></div><div class="field"><label>LoRA rank / alpha</label><div class="row"><input type="number" data-f="lora_r" data-i="${i}" value="${d.lora_r}"><input type="number" data-f="lora_alpha" data-i="${i}" value="${d.lora_alpha}"></div></div></div>`}
+        ${d.number ? `<div class="kv"><div><div class="k">Base model</div><div class="v mono">${esc(d.base_model)}</div></div><div><div class="k">Training type</div><div class="v">${d.training_type === "lora" ? "LoRA training" : d.training_type === "qlora" ? "QLoRA (4-bit)" : d.training_type === "dpo" ? "DPO alignment (LoRA)" : "Full fine-tuning"}</div></div><div><div class="k">Batch size × accumulation</div><div class="v">${d.batch_size} × ${d.gradient_accumulation_steps}</div></div><div><div class="k">Learning rate</div><div class="v">${d.learning_rate}</div></div><div><div class="k">Epochs</div><div class="v">${d.epochs}</div></div><div><div class="k">Max length</div><div class="v">${d.max_length}</div></div></div>`
+        : `<div class="grid"><div class="field"><label>Base model</label><input list="catalogList" data-f="base_model" data-i="${i}" value="${esc(d.base_model)}"></div><div class="field"><label>Training type</label><select data-f="training_type" data-i="${i}"><option value="lora" ${d.training_type === "lora" ? "selected" : ""}>LoRA</option><option value="full" ${d.training_type === "full" ? "selected" : ""}>Full fine-tuning</option><option value="qlora" ${d.training_type === "qlora" ? "selected" : ""}>QLoRA (4-bit base; CUDA + bitsandbytes)</option><option value="dpo" ${d.training_type === "dpo" ? "selected" : ""}>DPO (preference pairs; datapoints need a rejected answer)</option></select></div><div class="field" style="grid-column:1/-1"><label>Refine from a finished experiment (optional)</label><select data-f="refinetune_from" data-i="${i}"><option value="">— start from the base model —</option>${finished.map((f) => `<option value="${esc(f)}" ${d.refinetune_from === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select></div><div class="field"><label>Batch size</label><input type="number" min="1" max="64" data-f="batch_size" data-i="${i}" value="${d.batch_size}"></div><div class="field"><label>Learning rate</label><input type="number" step="any" data-f="learning_rate" data-i="${i}" value="${d.learning_rate}"></div><div class="field"><label>Number of epochs</label><input type="number" step="0.5" min="0.5" max="50" data-f="epochs" data-i="${i}" value="${d.epochs}"></div><div class="field"><label>Max length (tokens)</label><input type="number" data-f="max_length" data-i="${i}" value="${d.max_length}"></div><div class="field"><label>Gradient accumulation</label><input type="number" min="1" data-f="gradient_accumulation_steps" data-i="${i}" value="${d.gradient_accumulation_steps}"></div><div class="field"><label>LoRA rank / alpha</label><div class="row"><input type="number" data-f="lora_r" data-i="${i}" value="${d.lora_r}"><input type="number" data-f="lora_alpha" data-i="${i}" value="${d.lora_alpha}"></div></div><div class="field"><label>Checkpoint every N steps (0 = off; for neuron drift)</label><input type="number" min="0" data-f="checkpoint_every_steps" data-i="${i}" value="${d.checkpoint_every_steps ?? 0}"></div><div class="field"><label>Keep newest K checkpoints (0 = all)</label><input type="number" min="0" data-f="keep_checkpoints" data-i="${i}" value="${d.keep_checkpoints ?? 0}"></div></div>`}
         </div>`).join("") + `<datalist id="catalogList">${catalog.map((c) => `<option value="${esc(c.id)}">${c.params_b}B · ${esc(c.notes)}</option>`).join("")}</datalist>
         <div class="row"><button class="btn" id="addExp">+ Add experiment</button>${rec ? `<button class="btn" id="addRec">+ Add recommended experiment</button>` : ""}<span class="spacer" style="flex:1"></span><button class="btn primary" id="saveStart" ${drafts.length ? "" : "disabled"}>Save &amp; start experiments</button></div>`;
-      const collect = () => $$("[data-f]", left).forEach((el) => { const d = drafts[Number(el.dataset.i)]; d[el.dataset.f] = el.type === "number" ? Number(el.value) : el.value; });
+      const collect = () => $$("[data-f]", left).forEach((el) => { const d = drafts[Number(el.dataset.i)]; d[el.dataset.f] = el.type === "number" ? Number(el.value) : (el.value || (el.dataset.f === "refinetune_from" ? null : el.value)); });
+      $$('select[data-f="training_type"]', left).forEach((s) => s.onchange = () => { const lr = $(`input[data-f="learning_rate"][data-i="${s.dataset.i}"]`, left); if (s.value === "dpo" && Number(lr.value) >= 1e-4) lr.value = 0.000005; if (s.value !== "dpo" && Number(lr.value) <= 1e-5) lr.value = s.value === "full" ? 0.00005 : 0.0002; });
       $("#addExp", left).onclick = () => { collect(); const base = rec?.recommended || { base_model: catalog[0].id, training_type: "lora", hyperparameters: { epochs: 3, learning_rate: 2e-4, batch_size: 8, gradient_accumulation_steps: 2, max_length: 512, lora_r: 16, lora_alpha: 32 } }; drafts.push(draftFrom(base)); drawDrafts(); };
       if ($("#addRec", left)) $("#addRec", left).onclick = () => { collect(); const options = rec.options || []; const next = options[drafts.length % Math.max(1, options.length)] || rec.recommended; drafts.push(draftFrom(next)); drawDrafts(); };
       $$("[data-drop]", left).forEach((b) => b.onclick = () => { collect(); drafts.splice(Number(b.dataset.drop), 1); drawDrafts(); });
@@ -449,18 +512,19 @@ async function pageJob(name) {
       $("#saveStart", left).onclick = startAll;
       if ($("#btnStart", content)) $("#btnStart", content).onclick = startAll;
     };
-    const draftFrom = (option) => ({ base_model: option.base_model, training_type: option.training_type, epochs: option.hyperparameters.epochs, learning_rate: option.hyperparameters.learning_rate, batch_size: option.hyperparameters.batch_size, gradient_accumulation_steps: option.hyperparameters.gradient_accumulation_steps, max_length: option.hyperparameters.max_length, lora_r: option.hyperparameters.lora_r, lora_alpha: option.hyperparameters.lora_alpha, assistant_only_loss: false });
+    const draftFrom = (option) => ({ base_model: option.base_model, training_type: option.training_type, epochs: option.hyperparameters.epochs, learning_rate: option.hyperparameters.learning_rate, batch_size: option.hyperparameters.batch_size, gradient_accumulation_steps: option.hyperparameters.gradient_accumulation_steps, max_length: option.hyperparameters.max_length, lora_r: option.hyperparameters.lora_r, lora_alpha: option.hyperparameters.lora_alpha, assistant_only_loss: false, refinetune_from: null, checkpoint_every_steps: 0, keep_checkpoints: 0 });
     if (!drafts.length && rec?.recommended) drafts.push(draftFrom(rec.recommended));
     drawDrafts();
     right.innerHTML = analysisPanel(analysis, name);
     wireAnalysis(right, name);
   } else {
     // ---- running / completed: experiment cards + training loss comparison
-    left.innerHTML = experiments.map((e, i) => `<div class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${e.number}</h3>${e.state === "succeeded" ? `<a class="btn primary sm" href="#/playground?model=${encodeURIComponent(name + "/" + e.number)}">Test model</a><a class="btn sm icon" title="Download weights" href="/api/jobs/${encodeURIComponent(name)}/experiments/${e.number}/download">⬇</a>` : ""}<div class="right"><span class="pill ${e.state}">${e.state[0].toUpperCase() + e.state.slice(1)}</span>${e.state !== "running" ? `<button class="btn sm danger" data-rm="${e.number}">✕</button>` : ""}</div></div>
+    left.innerHTML = experiments.map((e, i) => `<div class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${e.number}</h3>${e.state === "succeeded" ? `<a class="btn primary sm" href="#/playground?model=${encodeURIComponent(name + "/" + e.number)}">Test model</a><a class="btn sm icon" title="Download weights" href="/api/jobs/${encodeURIComponent(name)}/experiments/${e.number}/download">⬇</a>${(e.checkpoints || []).length ? `<button class="btn sm" data-ckcap="${e.number}" title="Steps ${e.checkpoints.join(", ")}: capture every checkpoint on a dataset to see neuron drift on the Interpretability page">${e.checkpoints.length} checkpoint${e.checkpoints.length === 1 ? "" : "s"} · capture for drift</button>` : ""}` : ""}<div class="right"><span class="pill ${e.state}">${e.state[0].toUpperCase() + e.state.slice(1)}</span>${e.state !== "running" ? `<button class="btn sm danger" data-rm="${e.number}">✕</button>` : ""}</div></div>
       <div class="kv"><div><div class="k">Base model ID</div><div class="v mono">${esc(e.config.base_model)}</div></div><div><div class="k">Batch size</div><div class="v">${e.config.batch_size} × ${e.config.gradient_accumulation_steps}</div></div><div><div class="k">Learning rate</div><div class="v">${e.config.learning_rate}</div></div><div><div class="k">Number of epochs</div><div class="v">${e.config.epochs}</div></div><div><div class="k">${e.config.training_type === "lora" ? "LoRA training" : "Full fine-tuning"}</div><div class="v">${e.config.training_type === "lora" ? `r=${e.config.lora_r} α=${e.config.lora_alpha}` : "all weights"}</div></div><div><div class="k">Result</div><div class="v">${e.state === "succeeded" ? `train loss ${fmtNum(e.train_loss)} · eval loss ${fmtNum(e.metrics?.eval_loss)} · ${e.seconds}s` : e.state === "failed" ? `<span class="error">${esc(e.error || "failed")}</span>` : e.state}</div></div></div>
       ${e.state === "succeeded" ? `<div style="margin-top:10px"><span class="alias">${esc(e.alias)} <button title="copy" data-copy="${esc(e.alias)}">⧉</button></span> <span class="muted" style="font-size:12px">· ${fmtParams(e.total_parameters)} parameters</span></div>` : ""}
       </div>`).join("");
     $$("[data-copy]", left).forEach((b) => b.onclick = () => navigator.clipboard?.writeText(b.dataset.copy).then(() => toast("alias copied")));
+    $$("[data-ckcap]", left).forEach((b) => b.onclick = guard(() => checkpointCaptureDialog(name, Number(b.dataset.ckcap))));
     $$("[data-rm]", left).forEach((b) => b.onclick = () => confirmModal("Delete experiment", `Delete experiment ${b.dataset.rm} and its weights?`, async () => { await del(`/api/jobs/${encodeURIComponent(name)}/experiments/${b.dataset.rm}`); pageJob(name); }));
     right.innerHTML = `<div class="panel"><div class="head"><h2>Training loss comparison</h2><div class="right"><label style="font-size:12px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="showEval" checked> eval loss</label></div></div><div class="body"><div class="legend" id="legend"></div><div class="chart" id="lossChart"></div></div></div>` + (analysis ? `<div style="height:16px"></div>${analysisPanel(analysis, name)}` : "");
     const series = experiments.map((e, i) => ({ name: `Exp ${e.number}`, color: SERIES[i % SERIES.length], train: e.loss.filter((r) => r.loss !== undefined).map((r) => ({ x: r.step, y: r.loss })), eval: e.loss.filter((r) => r.eval_loss !== undefined).map((r) => ({ x: r.step, y: r.eval_loss })), on: true }));
@@ -665,6 +729,7 @@ function editMetricDialog(me) {
 async function pagePlayground(preset) {
   await ensureOverview(true);
   const models = await api("/api/models");
+  try { state.repositories = await api("/api/repositories"); } catch (_) { state.repositories = []; }
   const p = state.playground;
   if (preset) { p.model = preset; p.history = []; }
   if (!p.model) p.model = (models.find((m) => m.kind === "fine-tuned") || models[0])?.id || null;
@@ -672,6 +737,7 @@ async function pagePlayground(preset) {
     <div class="play"><div class="panel"><div class="head"><h2>Settings</h2></div><div class="body">
       <div class="field"><label>Model</label><select id="pgModel">${models.map((m) => `<option value="${esc(m.id)}" ${m.id === p.model ? "selected" : ""}>${esc(m.kind === "fine-tuned" ? m.alias : m.id)}${m.status === "up" ? " ●" : ""}</option>`).join("")}</select><div class="hint">● = loaded in memory. Others load on first message.</div></div>
       <div class="field"><label>System prompt</label><textarea id="pgSystem" placeholder="You are a helpful assistant.">${esc(p.system)}</textarea></div>
+      <div class="field"><label>Repositories (RAG): retrieved passages are added to the system prompt</label><select id="pgRepos" multiple size="3">${(state.repositories || []).map((r) => `<option value="${esc(r.name)}" ${(p.repositories || []).includes(r.name) ? "selected" : ""}>${esc(r.name)} (${r.chunk_count} chunks)</option>`).join("")}</select><div class="row"><div class="field"><label>Passages</label><input id="pgRepoLimit" type="number" min="1" max="20" value="${p.repoLimit ?? 3}"></div><div class="field"><label>Min similarity</label><input id="pgRepoThreshold" type="number" min="-1" max="1" step="0.05" value="${p.repoThreshold ?? 0}"></div></div></div>
       <div class="field"><label>Creativity level: <b id="pgTempV">${p.temperature}</b></label><input id="pgTemp" type="range" min="0" max="1" step="0.05" value="${p.temperature}"><div class="hint">0 = deterministic. The slider sets the sampling temperature.</div></div>
       <button class="btn" id="pgReset">Reset conversation</button>
     </div></div>
@@ -690,7 +756,8 @@ async function pagePlayground(preset) {
     $("#pgSend", content).disabled = true;
     const messages = [...(p.system.trim() ? [{ role: "system", content: p.system.trim() }] : []), ...p.history.slice(0, -1)];
     try {
-      const response = await fetch("/api/playground/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: p.model, messages, temperature: p.temperature, max_tokens: 512 }) });
+      p.repositories = [...$("#pgRepos", content).selectedOptions].map((o) => o.value); p.repoLimit = Number($("#pgRepoLimit", content).value) || 3; p.repoThreshold = Number($("#pgRepoThreshold", content).value) || 0;
+      const response = await fetch("/api/playground/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: p.model, messages, temperature: p.temperature, max_tokens: 512, repositories: p.repositories.length ? { ids: p.repositories, limit: p.repoLimit, similarity_threshold: p.repoThreshold } : null }) });
       if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
       for (;;) {
@@ -700,6 +767,7 @@ async function pagePlayground(preset) {
           const line = buffer.slice(0, idx).trim(); buffer = buffer.slice(idx + 2);
           if (!line.startsWith("data:")) continue;
           const payload = JSON.parse(line.slice(5));
+          if (payload.document_chunks) { reply.content += "Retrieved: " + payload.document_chunks.map((c, i) => `[${i + 1}] ${c.document} (${c.similarity_score.toFixed(2)})`).join(", ") + "\n\n"; drawLog(); }
           if (payload.delta) { reply.content += payload.delta; drawLog(); }
           if (payload.error) throw new Error(payload.error);
           if (payload.done) $("#pgLatency", content).textContent = `${payload.seconds}s`;
@@ -719,7 +787,7 @@ async function pageModels() {
     <div class="panel"><div class="head"><h2>Fine-tuned and catalog models</h2></div><table><thead><tr><th>Model</th><th>Kind</th><th>Base model</th><th class="num">Parameters</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${models.map((m) => `<tr><td><b class="mono">${esc(m.alias)}</b>${m.kind === "fine-tuned" ? `<div class="muted mono" style="font-size:11px">${esc(m.id)}</div>` : `<div class="muted" style="font-size:12px">${esc(m.notes || "")}</div>`}</td><td><span class="pill ${m.kind === "fine-tuned" ? "info" : ""}">${m.kind}${m.training_type ? " · " + m.training_type : ""}</span></td><td class="mono">${esc(m.base_model)}</td><td class="num">${fmtParams(m.parameters)}</td><td><span class="pill ${m.status}">${m.status}</span></td><td>${fmtDate(m.created)}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-toggle="${esc(m.id)}" data-status="${m.status}">${m.status === "up" ? "Unload" : "Load"}</button> <a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a>${m.kind === "fine-tuned" ? ` <a class="btn sm icon" title="Download" href="/api/jobs/${encodeURIComponent(m.id.split("/")[0])}/experiments/${m.id.split("/")[1]}/download">⬇</a> <button class="btn sm" data-upload="${esc(m.id)}">Upload to Hub</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
     <div class="panel" style="margin-top:16px"><div class="head"><h2>Hugging Face Hub</h2><span class="muted">token: ${hubInfo.token.configured ? `<span class="pill good">${esc(hubInfo.token.masked)}</span>` : '<span class="pill warn">not set (needed for gated models and uploads)</span>'}</span><div class="right"><input id="hfToken" placeholder="hf_… token" style="width:220px"><button class="btn sm" id="hfSave">Save token</button></div></div>
       <div class="body">
-        <div class="row"><div class="field" style="flex:2"><label>Search text-generation models</label><input id="hubQ" placeholder="SmolLM2, Qwen2.5, gemma-3, phi…"></div><div class="field" style="max-width:150px"><label>Max parameters (B)</label><input id="hubMax" type="number" step="0.1" value="2"></div><button class="btn primary" id="hubSearch">Search</button></div>
+        <div class="row"><div class="field" style="flex:2"><label>Search the Hugging Face Hub (any open model)</label><input id="hubQ" placeholder="SmolLM2, Qwen2.5, gemma-3, phi, all-MiniLM…"></div><div class="field" style="max-width:170px"><label>Task</label><select id="hubTask"><option value="text-generation">text generation</option><option value="embeddings">embeddings (RAG)</option><option value="sentence-similarity">sentence similarity</option><option value="any">any</option></select></div><div class="field" style="max-width:150px"><label>Max parameters (B)</label><input id="hubMax" type="number" step="0.1" value="2"></div><button class="btn primary" id="hubSearch">Search</button></div>
         <div id="hubResults"></div>
         <h3 style="margin:16px 0 6px">Downloaded (local cache)</h3>
         <table><thead><tr><th>Repository</th><th class="num">Size</th><th>Loadable</th><th>Last used</th><th></th></tr></thead><tbody>${hubInfo.models.map((m) => `<tr><td class="mono">${esc(m.id)}</td><td class="num">${m.size_gb} GB</td><td>${m.transformers_loadable ? '<span class="pill good">transformers</span>' : m.mlx ? '<span class="pill info">MLX (helper LLM only)</span>' : '<span class="pill">other</span>'}</td><td>${m.last_accessed ? fmtDate(new Date(m.last_accessed * 1000).toISOString()) : "–"}</td><td style="text-align:right;white-space:nowrap">${m.transformers_loadable ? `<a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a> ` : ""}<button class="btn sm danger" data-hubdel="${esc(m.id)}">Remove</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing cached yet.</td></tr>`}</tbody></table>
@@ -736,7 +804,7 @@ async function pageModels() {
   const search = guard(async () => {
     const q = $("#hubQ", content).value.trim(); const max = $("#hubMax", content).value;
     $("#hubResults", content).innerHTML = `<div class="muted"><span class="spinner"></span> searching the Hub…</div>`;
-    const rows = await api(`/api/hub/search?q=${encodeURIComponent(q)}&limit=15${max ? `&max_params_b=${max}` : "&max_params_b="}`);
+    const rows = await api(`/api/hub/search?q=${encodeURIComponent(q)}&limit=15${max ? `&max_params_b=${max}` : "&max_params_b="}&task=${encodeURIComponent($("#hubTask", content).value)}`);
     $("#hubResults", content).innerHTML = rows.length ? `<table><thead><tr><th>Repository</th><th class="num">Params</th><th>License</th><th>Downloads</th><th>Loadable</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr><td><a class="mono" href="${r.url}" target="_blank">${esc(r.id)}</a>${r.gated ? ' <span class="pill warn">gated</span>' : ""}</td><td class="num">${r.params_b ? r.params_b + "B" : "?"}</td><td>${esc(r.license || "?")}</td><td class="num">${(r.downloads || 0).toLocaleString()}</td><td>${r.transformers_loadable ? '<span class="pill good">transformers</span>' : `<span class="pill">${esc(r.format_tags.join(", ") || r.library || "?")}</span>`}</td><td style="text-align:right">${r.transformers_loadable ? `<button class="btn sm primary" data-dl="${esc(r.id)}">Download</button>` : ""}</td></tr>`).join("")}</tbody></table>` : `<div class="muted">No results.</div>`;
     $$("[data-dl]", content).forEach((b) => b.onclick = guard(async () => { await post("/api/hub/download", { repo_id: b.dataset.dl }); showTasks(); pollTasks(); toast(`downloading ${b.dataset.dl}`); }));
   });
@@ -745,62 +813,310 @@ async function pageModels() {
 }
 
 // ------------------------------------------------------------------ assistant
+// ------------------------------------------------------------------ repositories (RAG)
+async function pageRepositories() {
+  await ensureOverview(true);
+  const repos = await api("/api/repositories");
+  state.repositories = repos;
+  const content = layout("repositories", `<div class="page-head"><h1>Repositories</h1><span class="meta">document collections with embeddings; chat with them from the Playground or the API (<span class="mono">repositories</span> on /v1/chat/completions)</span><div class="actions"><button class="btn primary" id="newRepo">+ New repository</button></div></div>
+    <div class="cards">${repos.map((r) => `<div class="card" data-repo="${esc(r.name)}"><h3>${esc(r.name)}</h3><div class="sub">${esc(r.description || "")}</div><div class="sub" style="margin-top:6px">${r.documents.length} document${r.documents.length === 1 ? "" : "s"} · ${r.chunk_count} chunks · <span class="mono">${esc(r.embedding_model)}</span></div>
+      <div class="row" style="margin-top:10px"><button class="btn small" data-add="${esc(r.name)}">Add documents</button><button class="btn small" data-query="${esc(r.name)}">Query</button><button class="btn small danger" data-del="${esc(r.name)}">Delete</button></div>
+      ${r.documents.length ? `<table style="margin-top:8px">${r.documents.map((d) => `<tr><td>${esc(d.name)}</td><td class="muted">${esc(d.kind)}</td><td class="num">${d.chunks} chunks</td><td><button class="btn small" data-deldoc="${esc(r.name)}|${esc(d.name)}">✕</button></td></tr>`).join("")}</table>` : ""}
+    </div>`).join("") || `<div class="empty"><b>No repositories yet</b>Create one, add PDFs, docs, pages, or videos, then chat with them.</div>`}</div>`, [{ label: "Repositories" }]);
+  $("#newRepo", content).onclick = guard(async () => {
+    let cached = [];
+    try { cached = (await api("/api/hub/models")).models.map((m) => m.id); } catch (_) {}
+    const m = modal({ title: "New repository", body: `<div class="field"><label>Name</label><input id="rpName" placeholder="manuals"></div><div class="field"><label>Description</label><input id="rpDesc"></div><div class="field"><label>Embedding model (any Hugging Face feature-extraction model; search the Models page with task "embeddings")</label><input id="rpModel" list="rpModels" value="sentence-transformers/all-MiniLM-L6-v2"><datalist id="rpModels">${cached.map((id) => `<option value="${esc(id)}">`).join("")}</datalist></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Create</button>` });
+    $("[data-cancel]", m.el).onclick = m.close;
+    $("[data-ok]", m.el).onclick = guard(async () => { const name = $("#rpName", m.el).value.trim(); if (!name) throw new Error("give the repository a name"); await post("/api/repositories", { name, description: $("#rpDesc", m.el).value, embedding_model: $("#rpModel", m.el).value.trim() || null }); m.close(); pageRepositories(); });
+  });
+  $$("[data-add]", content).forEach((b) => b.onclick = () => {
+    const name = b.dataset.add;
+    const m = modal({ title: `Add documents to ${name}`, body: `<div class="field"><label>Files (txt, md, html, pdf, docx, pptx)</label><input id="rpFiles" type="file" multiple></div><div class="field"><label>URLs (web pages or YouTube videos, one per line)</label><textarea id="rpUrls" placeholder="https://…"></textarea></div><p class="muted">Text is extracted, split into ~1,200-character chunks, embedded with the repository's model, and indexed as a background task.</p>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Index</button>` });
+    $("[data-cancel]", m.el).onclick = m.close;
+    $("[data-ok]", m.el).onclick = guard(async () => {
+      const fd = new FormData();
+      for (const f of $("#rpFiles", m.el).files) fd.append("files", f);
+      fd.append("urls", $("#rpUrls", m.el).value);
+      if (!$("#rpFiles", m.el).files.length && !$("#rpUrls", m.el).value.trim()) throw new Error("add at least one file or URL");
+      await post(`/api/repositories/${encodeURIComponent(name)}/documents`, fd);
+      m.close(); toast("indexing started"); showTasks(); pollTasks();
+    });
+  });
+  $$("[data-query]", content).forEach((b) => b.onclick = () => {
+    const name = b.dataset.query;
+    const m = modal({ title: `Query ${name}`, wide: true, body: `<div class="row"><div class="field" style="flex:3"><label>Text</label><input id="rpQ" placeholder="how do I reset the thermostat?"></div><div class="field"><label>Passages</label><input id="rpLimit" type="number" min="1" max="50" value="5"></div><div class="field"><label>Min similarity</label><input id="rpThr" type="number" min="-1" max="1" step="0.05" value="0"></div></div><div id="rpResults" class="muted">results appear here</div>`, footer: `<button class="btn" data-close>Close</button><button class="btn primary" data-ok>Search</button>` });
+    $("[data-close]", m.el).onclick = m.close;
+    const run = guard(async () => { const rows = await post(`/api/repositories/${encodeURIComponent(name)}/query`, { text: $("#rpQ", m.el).value, limit: Number($("#rpLimit", m.el).value) || 5, similarity_threshold: Number($("#rpThr", m.el).value) || 0 }); $("#rpResults", m.el).innerHTML = rows.length ? `<table>${rows.map((r) => `<tr><td class="num mono">${r.similarity_score.toFixed(3)}</td><td class="muted">${esc(r.document)}</td><td style="white-space:pre-wrap">${esc(r.text.slice(0, 600))}</td></tr>`).join("")}</table>` : `<div class="muted">no chunks above the threshold</div>`; });
+    $("[data-ok]", m.el).onclick = run;
+    $("#rpQ", m.el).onkeydown = (e) => { if (e.key === "Enter") run(); };
+  });
+  $$("[data-del]", content).forEach((b) => b.onclick = () => confirmModal("Delete repository", `Delete repository "${b.dataset.del}" and its index?`, async () => { await del(`/api/repositories/${encodeURIComponent(b.dataset.del)}`); pageRepositories(); }));
+  $$("[data-deldoc]", content).forEach((b) => b.onclick = () => { const [repo, doc] = b.dataset.deldoc.split("|"); confirmModal("Remove document", `Remove "${doc}" from ${repo}?`, async () => { await del(`/api/repositories/${encodeURIComponent(repo)}/documents/${encodeURIComponent(doc)}`); pageRepositories(); }, "Remove"); });
+}
+
+// ------------------------------------------------------------------ settings (stored on the server, shared by everyone using this instance)
+async function pageSettings() {
+  await ensureOverview(true);
+  const data = await api("/api/settings");
+  const groups = [
+    ["anthropic", "Claude (assistant)", "Used by the ✦ assistant and the Assistant page. Any model the account lists becomes selectable.", "anthropic"],
+    ["openai", "OpenAI (assistant)", "Same assistant, OpenAI models.", "openai"],
+    ["helper", "Helper LLM", "Synthetic data, auto-labelling, rubric judging, neuron explanations and tests. Any OpenAI-compatible server: a local mlx_lm / llama-server / Ollama / vLLM, or a hosted API.", "helper"],
+    ["rag", "Embeddings (repositories)", "The feature-extraction model new repositories embed with. Existing repositories keep theirs.", null],
+    ["hub", "Hugging Face", "Token for gated models and uploads.", "hub"],
+    ["compute", "Compute", "Applies to tasks started after saving. auto = CUDA, then Apple MPS, then CPU; dtype auto = bf16 on CUDA, fp32 elsewhere.", null],
+  ];
+  const byGroup = (g) => data.settings.filter((s) => s.group === g);
+  const field = (s) => `<div class="field"><label>${esc(s.label)} <span class="muted">(${s.source}${s.set ? "" : ", not set"})</span></label>${s.secret
+    ? `<div class="row"><input type="password" data-key="${s.key}" placeholder="${s.set ? "•••••••• (saved; type to replace)" : "not set"}" autocomplete="new-password"><label class="chk"><input type="checkbox" data-clear="${s.key}"> clear</label></div>`
+    : `<input data-key="${s.key}" value="${esc(s.value || "")}" placeholder="default">`}</div>`;
+  const content = layout("settings", `<div class="page-head"><div><h1>Settings</h1><div class="meta"><span>Saved on the server in <span class="mono">${esc(data.store)}</span> (owner-only file) and applied to every task, the API, the MCP server, and the assistant. Values here win over the shell and <span class="mono">.env</span>, which remain for ops.</span></div></div><div class="actions"><button class="btn primary" id="stSave">Save</button></div></div>
+    <div class="cards settings">${groups.map(([g, title, blurb, test]) => `<div class="card"><h3>${title}</h3><div class="sub">${blurb}</div><div style="margin-top:10px">${byGroup(g).map(field).join("")}</div>${test ? `<div class="row" style="margin-top:8px"><button class="btn small" data-test="${test}">Test connection</button><span class="muted" data-result="${test}"></span></div>` : ""}</div>`).join("")}
+    <div class="card"><h3>Server</h3><div class="sub">Bind address and port are process settings: start with <span class="mono">tinystudio serve --host 0.0.0.0 --port ${esc(data.server.port)}</span> (or TINYSTUDIO_HOST / TINYSTUDIO_PORT) to reach this instance from other machines. There is no login on the web interface: put it behind your network or a reverse proxy with auth; <span class="mono">/v1</span> is gated by API keys.</div><div class="sub" style="margin-top:8px">Currently <span class="mono">${esc(data.server.host)}:${esc(data.server.port)}</span>.</div></div></div>`, [{ label: "Settings" }]);
+  $("#stSave", content).onclick = guard(async () => {
+    const values = {};
+    $$("[data-key]", content).forEach((el) => { const key = el.dataset.key; const spec = data.settings.find((s) => s.key === key); if (spec.secret) { if (el.value) values[key] = el.value; } else if ((el.value || "") !== (spec.value || "")) values[key] = el.value || null; });
+    $$("[data-clear]", content).forEach((el) => { if (el.checked) values[el.dataset.clear] = null; });
+    if (!Object.keys(values).length) return toast("nothing changed");
+    await put("/api/settings", { values });
+    ASSIST.models = null; state.overview = null;
+    toast("settings saved"); pageSettings();
+  });
+  $$("[data-test]", content).forEach((b) => b.onclick = guard(async () => { const out = $(`[data-result="${b.dataset.test}"]`, content); out.textContent = "testing…"; const r = await post("/api/settings/test", { what: b.dataset.test }); out.innerHTML = `<span class="pill ${r.ok ? "good" : "bad"}">${r.ok ? "ok" : "failed"}</span> ${esc(r.detail)}`; }));
+}
+
+// ------------------------------------------------------------------ assistant (available on every page)
+const ASSIST = { open: false, provider: "anthropic", model: null, models: null, attach: true, destructive: false, history: [], busy: false, usage: "" };
+const assistKey = () => `tinystudio.assistant.${state.overview?.project?.name || "default"}`;
+function assistLoad() { try { const raw = localStorage.getItem(assistKey()); if (raw) { const saved = JSON.parse(raw); for (const k of ["provider", "model", "attach", "destructive", "history", "open"]) if (k in saved) ASSIST[k] = saved[k]; } } catch (_) { /* storage unavailable */ } }
+function assistSave() { try { localStorage.setItem(assistKey(), JSON.stringify({ provider: ASSIST.provider, model: ASSIST.model, attach: ASSIST.attach, destructive: ASSIST.destructive, open: ASSIST.open, history: ASSIST.history.slice(-40).map((m) => ({ role: m.role, content: m.content, calls: (m.calls || []).slice(-12) })) })); } catch (_) { /* storage unavailable */ } }
+
+// --- what the page shows: text, recent data, and an element tree with ref ids (the shape Claude in Chrome's read_page uses)
+function recordApi(path, data) {
+  if (!path.startsWith("/api/") || path.startsWith("/api/tasks") || path.startsWith("/api/assistant") || path.startsWith("/api/overview")) return;
+  let text; try { text = JSON.stringify(data); } catch (_) { return; }
+  if (text.length > 6000) text = text.slice(0, 6000) + `… [${text.length} chars total]`;
+  state.recentApi = (state.recentApi || []).filter((r) => r.path !== path).concat([{ path, data: text, at: Date.now() }]).slice(-8);
+}
+const uiRefs = new Map();
+function visible(el) { if (!(el instanceof Element)) return false; if (el.closest("#assist, script, style, template")) return false; const cs = getComputedStyle(el); if (cs.display === "none" || cs.visibility === "hidden") return false; return el.getClientRects().length > 0; }
+function labelFor(el) {
+  const own = (el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("placeholder") || "").trim();
+  if (own) return own;
+  if (el.id) { const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (lab) return lab.innerText.trim(); }
+  const field = el.closest(".field"); if (field && field.querySelector("label")) return field.querySelector("label").innerText.trim();
+  const text = (el.innerText || el.value || "").trim().replace(/\s+/g, " ");
+  return text.slice(0, 90) || el.name || el.id || el.tagName.toLowerCase();
+}
+function snapshotPage({ interactive_only = false, max_chars = 12000 } = {}) {
+  uiRefs.clear();
+  const lines = [`route: ${location.hash || "#/"}`, `page: ${(document.querySelector("#app h1") || {}).innerText?.trim() || document.title}`];
+  const roots = [...document.querySelectorAll(".modal-back .modal")];
+  if (roots.length) lines.push("(a dialog is open; its elements come first)");
+  const content = document.querySelector("#app .content"); if (content) roots.push(content);
+  const seenText = new Set();
+  const isInteractive = (el) => el.matches("button, a[href], input, select, textarea, [role=button], tr.clickable, .card.clickable, summary, [data-k]");
+  const walk = (el, depth) => {
+    if (!visible(el)) return;
+    if (isInteractive(el)) {
+      const ref = `ref_${uiRefs.size + 1}`; uiRefs.set(ref, el); el.dataset.aref = ref;
+      const tag = el.tagName.toLowerCase();
+      let kind = tag === "a" ? "link" : tag === "tr" ? "row" : tag === "input" ? `input:${el.type || "text"}` : tag;
+      let stateText = "";
+      if (tag === "input" && (el.type === "checkbox" || el.type === "radio")) stateText = el.checked ? " [checked]" : " [unchecked]";
+      else if (tag === "input" || tag === "textarea") stateText = el.value ? ` = ${JSON.stringify(String(el.value).slice(0, 80))}` : "";
+      else if (tag === "select") stateText = ` = ${JSON.stringify(el.options[el.selectedIndex]?.text || "")} (options: ${[...el.options].slice(0, 12).map((o) => o.text).join(" / ")}${el.options.length > 12 ? " / …" : ""})`;
+      else if (tag === "a") stateText = el.getAttribute("href") ? ` -> ${el.getAttribute("href")}` : "";
+      if (el.disabled) stateText += " [disabled]";
+      if (el.classList.contains("on") || el.classList.contains("active") || el.classList.contains("sel")) stateText += " [selected]";
+      lines.push(`${"  ".repeat(Math.min(depth, 4))}${ref} | ${kind} | ${labelFor(el)}${stateText}`);
+      if (tag !== "tr") return;
+    }
+    if (!interactive_only) {
+      if (/^H[1-4]$/.test(el.tagName)) { lines.push(`${"#".repeat(Number(el.tagName[1]))} ${el.innerText.trim().replace(/\s+/g, " ").slice(0, 160)}`); return; }
+      if (el.tagName === "TABLE") {
+        const rows = [...el.querySelectorAll("tr")].slice(0, 40);
+        for (const r of rows) { if (r.matches("tr.clickable")) walk(r, depth + 1); else { const t = [...r.children].map((c) => c.innerText.trim().replace(/\s+/g, " ").slice(0, 60)).join(" | "); if (t.trim()) lines.push(`${"  ".repeat(Math.min(depth, 4))}| ${t}`); } }
+        if (el.querySelectorAll("tr").length > 40) lines.push(`  … ${el.querySelectorAll("tr").length - 40} more rows`);
+        return;
+      }
+      if (el.children.length === 0 || el.matches("p, li, .muted, .meta, .k, .v, .sub, .note, .pill, .tile")) {
+        const t = el.innerText.trim().replace(/\s+/g, " ");
+        if (t && t.length > 1 && !seenText.has(t)) { seenText.add(t); lines.push(`${"  ".repeat(Math.min(depth, 4))}${t.slice(0, 300)}`); }
+        if (el.matches(".tile, .pill, .note, .meta")) return;
+      }
+    }
+    for (const child of el.children) walk(child, depth + 1);
+  };
+  roots.forEach((r) => walk(r, 0));
+  let out = lines.join("\n");
+  if (out.length > max_chars) out = out.slice(0, max_chars) + `\n[output truncated at ${max_chars} of ${out.length} chars; pass a larger max_chars or use interactive_only]`;
+  return out;
+}
+function pageText(max = 20000) {
+  const parts = [...document.querySelectorAll(".modal-back .modal")].map((m) => "DIALOG:\n" + m.innerText);
+  const content = document.querySelector("#app .content"); if (content) parts.push(content.innerText);
+  const text = parts.join("\n\n").replace(/\n{3,}/g, "\n\n");
+  return text.length > max ? text.slice(0, max) + `\n[truncated at ${max} of ${text.length} chars]` : text;
+}
+function captureContext() {
+  const sel = String(window.getSelection?.() || "").trim();
+  return { route: location.hash || "#/", title: `${document.title} · ${(document.querySelector("#app h1") || {}).innerText?.trim() || ""}`.trim(), text: pageText(8000), api: (state.recentApi || []).slice(-6), selection: sel.slice(0, 2000) };
+}
+const settle = (ms = 700) => new Promise((r) => setTimeout(r, ms));
+async function uiPerform(action, args = {}) {
+  const need = (ref) => { const el = uiRefs.get(ref); if (!el || !el.isConnected) throw new Error(`element ${ref} not found; call ui_read_page again, the page may have re-rendered`); return el; };
+  switch (action) {
+    case "read_page": return snapshotPage(args);
+    case "get_text": return pageText(args.max_chars || 20000);
+    case "navigate": { let h = String(args.hash || ""); if (!h.startsWith("#")) h = "#" + (h.startsWith("/") ? h : "/" + h); if (location.hash === h) render(); else location.hash = h; await settle(1000); return snapshotPage({ interactive_only: false, max_chars: 8000 }); }
+    case "click": { const el = need(args.ref); el.click(); await settle(800); return { clicked: args.ref, page: snapshotPage({ interactive_only: false, max_chars: 6000 }) }; }
+    case "fill": { const el = need(args.ref); if (!el.matches("input, textarea")) throw new Error(`${args.ref} is not an input`); el.focus(); el.value = String(args.value ?? ""); el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { filled: args.ref, value: el.value }; }
+    case "select": { const el = need(args.ref); if (!el.matches("select")) throw new Error(`${args.ref} is not a select`); const want = String(args.value ?? ""); const opt = [...el.options].find((o) => o.value === want) || [...el.options].find((o) => o.text.trim().toLowerCase() === want.toLowerCase()) || [...el.options].find((o) => o.text.toLowerCase().includes(want.toLowerCase())); if (!opt) throw new Error(`no option matching ${JSON.stringify(want)}; options: ${[...el.options].map((o) => o.text).join(" / ")}`); el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); await settle(500); return { selected: args.ref, value: opt.value, label: opt.text }; }
+    default: throw new Error(`unknown interface action ${action}`);
+  }
+}
+
+// --- streaming turn shared by the widget and the Assistant page
+async function streamChat(body, onEvent) {
+  const response = await fetch("/api/assistant/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read(); if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx; while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const line = buffer.slice(0, idx).trim(); buffer = buffer.slice(idx + 2);
+      if (!line.startsWith("data:")) continue;
+      const ev = JSON.parse(line.slice(5));
+      if (ev.type === "keepalive") continue;
+      if (ev.type === "ui_request") {
+        let result; try { result = await uiPerform(ev.action, ev.args || {}); } catch (e) { result = { error: e.message }; }
+        onEvent({ type: "ui_action", action: ev.action, args: ev.args, result });
+        post("/api/assistant/ui-result", { id: ev.id, result }).catch((e) => toast(`assistant: ${e.message}`, true));
+        continue;
+      }
+      onEvent(ev);
+    }
+  }
+}
+function md(text) {
+  let s = esc(text);
+  s = s.replace(/```([a-z]*)\n([\s\S]*?)```/g, (_, l, c) => `<pre class="mono">${c}</pre>`);
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/^(?:[-*] )(.*)$/gm, "• $1");
+  return s;
+}
+function bubbleHtml(m) {
+  const calls = (m.calls || []).map((c) => `<details class="muted call"><summary><span class="mono">${esc(c.name)}</span>${c.kind === "ui" ? ' <span class="pill info">interface</span>' : ""}(${esc(JSON.stringify(c.input ?? {})).slice(0, 140)}) ${c.output === undefined ? '<span class="spinner"></span>' : ""}</summary>${c.output !== undefined ? `<pre class="mono">${esc(typeof c.output === "string" ? c.output : JSON.stringify(c.output, null, 1)).slice(0, 3000)}</pre>` : ""}</details>`).join("");
+  return calls + (m.content ? `<div class="mdtext">${md(m.content)}</div>` : "");
+}
+
+async function loadAssistantModels(force = false) {
+  if (ASSIST.models && !force) return ASSIST.models;
+  ASSIST.models = await api("/api/assistant/models");
+  const prov = ASSIST.models;
+  if (!prov[ASSIST.provider]?.available) ASSIST.provider = prov.anthropic.available ? "anthropic" : prov.openai.available ? "openai" : ASSIST.provider;
+  const ids = (prov[ASSIST.provider]?.models || []).map((m) => m.id);
+  if (!ASSIST.model || (ids.length && !ids.includes(ASSIST.model))) ASSIST.model = prov[ASSIST.provider]?.default || ids[0] || null;
+  return ASSIST.models;
+}
+
+function renderAssistant(container, { full = false } = {}) {
+  const prov = ASSIST.models || { anthropic: { available: false, models: [] }, openai: { available: false, models: [] } };
+  const p = prov[ASSIST.provider] || { models: [] };
+  const modelOptions = (p.models || []).map((m) => `<option value="${esc(m.id)}" ${m.id === ASSIST.model ? "selected" : ""}>${esc(m.name || m.id)}</option>`).join("") || (ASSIST.model ? `<option selected>${esc(ASSIST.model)}</option>` : "");
+  const none = !prov.anthropic.available && !prov.openai.available;
+  container.innerHTML = `
+    <div class="head">
+      <select id="asProvider" title="Provider"><option value="anthropic" ${ASSIST.provider === "anthropic" ? "selected" : ""} ${prov.anthropic.available ? "" : "disabled"}>Claude${prov.anthropic.available ? "" : " (no key)"}</option><option value="openai" ${ASSIST.provider === "openai" ? "selected" : ""} ${prov.openai.available ? "" : "disabled"}>OpenAI${prov.openai.available ? "" : " (no key)"}</option></select>
+      <select id="asModel" title="Model (from the provider's live model list)">${modelOptions || "<option value=''>no models listed</option>"}</select>
+      <label class="chk" title="Send what this page shows (route, visible text, the data it fetched, your selection) with each message"><input type="checkbox" id="asAttach" ${ASSIST.attach ? "checked" : ""}> page</label>
+      <label class="chk" title="Offer the delete tool (the assistant still asks before using it)"><input type="checkbox" id="asDestructive" ${ASSIST.destructive ? "checked" : ""}> deletions</label>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn small" id="asReset" title="Clear the conversation">clear</button>
+      ${full ? "" : `<a class="btn small" href="#/assistant" title="Open the full page">⤢</a><button class="btn small" id="asClose" title="Close">✕</button>`}
+    </div>
+    ${p.error ? `<div class="note">${esc(p.error)}</div>` : ""}
+    ${none ? `<div class="note">No API credentials found. Set <span class="mono">ANTHROPIC_API_KEY</span> (or run <span class="mono">ant auth login</span>) and/or <span class="mono">OPENAI_API_KEY</span> before starting <span class="mono">tinystudio serve</span>.</div>` : ""}
+    <div class="chatlog ${full ? "" : "compact"}" id="asLog"></div>
+    <div class="composer"><textarea id="asInput" placeholder="Ask about what you see, or ask for something to be done… (Enter to send, Shift+Enter for a new line)"></textarea><button class="btn primary" id="asSend" ${ASSIST.busy ? "disabled" : ""}>Send</button></div>
+    <div class="muted mono" id="asUsage" style="padding:4px 12px;font-size:11px">${esc(ASSIST.usage || "")}</div>`;
+  const log = $("#asLog", container);
+  const draw = () => { log.innerHTML = ASSIST.history.map((m) => m.role === "user" ? `<div class="bubble user">${esc(m.content)}</div>` : `<div class="bubble assistant">${bubbleHtml(m)}</div>`).join("") || `<div class="muted" style="font-size:12.5px">I can see this page when "page" is ticked, read or operate the interface with the ui_* tools, and run every tinystudio tool: datasets, cleaning, synthetic data, training, evaluation, serving, interpretability. Try: "what is on this page?", "explain the top three neurons of layer 12", "start a LoRA job on the latest snapshot".</div>`; log.scrollTop = log.scrollHeight; };
+  draw();
+  $("#asProvider", container).onchange = guard(async (e) => { ASSIST.provider = e.target.value; ASSIST.model = null; await loadAssistantModels(); assistSave(); renderAssistant(container, { full }); });
+  $("#asModel", container).onchange = (e) => { ASSIST.model = e.target.value; assistSave(); };
+  $("#asAttach", container).onchange = (e) => { ASSIST.attach = e.target.checked; assistSave(); };
+  $("#asDestructive", container).onchange = (e) => { ASSIST.destructive = e.target.checked; assistSave(); };
+  $("#asReset", container).onclick = () => { ASSIST.history = []; ASSIST.usage = ""; assistSave(); renderAssistant(container, { full }); };
+  if ($("#asClose", container)) $("#asClose", container).onclick = () => toggleAssistant(false);
+  const send = guard(async () => {
+    const text = $("#asInput", container).value.trim(); if (!text || ASSIST.busy) return;
+    $("#asInput", container).value = "";
+    ASSIST.history.push({ role: "user", content: text });
+    const reply = { role: "assistant", content: "", calls: [] }; ASSIST.history.push(reply);
+    ASSIST.busy = true; $("#asSend", container).disabled = true; draw();
+    const redraw = () => { const last = log.lastElementChild; if (last) last.innerHTML = bubbleHtml(reply); log.scrollTop = log.scrollHeight; };
+    try {
+      const body = { provider: ASSIST.provider, model: ASSIST.model, allow_destructive: ASSIST.destructive, with_ui: true, messages: ASSIST.history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })), context: ASSIST.attach ? captureContext() : null };
+      await streamChat(body, (ev) => {
+        if (ev.type === "text") reply.content += ev.delta;
+        else if (ev.type === "tool_call") reply.calls.push({ id: ev.id, name: ev.name, input: ev.input, kind: ev.name.startsWith("ui_") ? "ui" : "tool" });
+        else if (ev.type === "tool_result") { const c = reply.calls.find((x) => x.id === ev.id && x.output === undefined) || reply.calls[reply.calls.length - 1]; if (c) c.output = ev.output; pollTasks(); }
+        else if (ev.type === "ui_action") { /* already reflected by the tool_result that follows */ }
+        else if (ev.type === "error") throw new Error(ev.message);
+        else if (ev.type === "done") { ASSIST.usage = `${ev.model} · ${ev.usage.input_tokens} in / ${ev.usage.output_tokens} out`; $("#asUsage", container).textContent = ASSIST.usage; }
+        redraw();
+      });
+      if (!reply.content && !reply.calls.length) reply.content = "(no reply)";
+      redraw();
+    } catch (e) { if (!reply.content && !reply.calls.length) ASSIST.history.pop(); draw(); throw e; }
+    finally { ASSIST.busy = false; if ($("#asSend", container)) $("#asSend", container).disabled = false; assistSave(); }
+  });
+  $("#asSend", container).onclick = send;
+  $("#asInput", container).onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+}
+
+function toggleAssistant(open) {
+  ASSIST.open = open ?? !ASSIST.open;
+  const drawer = $("#assist .drawer"); if (!drawer) return;
+  drawer.hidden = !ASSIST.open;
+  $("#assist .fab").classList.toggle("on", ASSIST.open);
+  assistSave();
+  if (ASSIST.open) guard(async () => { await loadAssistantModels(); renderAssistant(drawer); $("#asInput", drawer)?.focus(); })();
+}
+function mountAssistant() {
+  const host = document.getElementById("assist"); if (!host || host.dataset.mounted) return;
+  host.dataset.mounted = "1";
+  assistLoad();
+  host.innerHTML = `<button class="fab" title="Assistant (Claude / OpenAI) — ask about this page or have it operate the interface">${ICONS.assistant}</button><div class="drawer" hidden></div>`;
+  $("#assist .fab").onclick = () => toggleAssistant();
+  window.tinystudio = { snapshotPage, uiPerform, captureContext, pageText, ASSIST, toggleAssistant };  // for scripts, tests, and the browser console
+  document.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); toggleAssistant(); } });
+  if (ASSIST.open && location.hash !== "#/assistant") toggleAssistant(true);
+}
+
 async function pageAssistant() {
   await ensureOverview(true);
   const st = await api("/api/assistant/status");
-  const content = layout("assistant", `<div class="page-head"><h1>Assistant</h1><span class="meta">A frontier model that drives the same ${st.mcp.tools} tools as the MCP server: datasets, cleaning, synthetic data, fine-tuning, evaluation, serving.</span></div>
+  await loadAssistantModels();
+  const content = layout("assistant", `<div class="page-head"><h1>Assistant</h1><span class="meta">A frontier model that sees the interface, operates it, and drives the same ${st.mcp.tools} tools as the MCP server. It is also available on every page from the ✦ button (⌘K).</span></div>
     <div class="play"><div>
-      <div class="panel"><div class="head"><h2>Provider</h2></div><div class="body">
-        <div class="field"><label>Model</label><select id="asProvider"><option value="anthropic" ${st.anthropic.available ? "" : "disabled"}>Claude · ${esc(st.anthropic.model)} ${st.anthropic.available ? "" : "(no credentials)"}</option><option value="openai" ${st.openai.available ? "" : "disabled"}>OpenAI · ${esc(st.openai.model || "set TINYSTUDIO_OPENAI_MODEL")} ${st.openai.available ? "" : "(no credentials)"}</option></select></div>
-        ${!st.anthropic.available && !st.openai.available ? `<div class="pill warn" style="margin-bottom:10px">No API credentials found</div><p class="muted">Set <span class="mono">ANTHROPIC_API_KEY</span> (or run <span class="mono">ant auth login</span>) and/or <span class="mono">OPENAI_API_KEY</span> + <span class="mono">TINYSTUDIO_OPENAI_MODEL</span> in the shell that starts <span class="mono">tinystudio serve</span>, then restart it. Your keys never leave this machine except for the provider's own API.</p>` : `<p class="muted">Effort ${esc(st.anthropic.effort)} · refusal fallbacks on · tool calls run against this project.</p>`}
-        <label class="radio-card"><input type="checkbox" id="asDestructive"><div><b>Allow deletions</b><span>Offer the delete tool to the assistant (it still asks before using it).</span></div></label>
-        <button class="btn" id="asReset" style="margin-top:10px">Reset conversation</button>
+      <div class="panel"><div class="head"><h2>How it sees the interface</h2></div><div class="body" style="font-size:12.5px">
+        <p>With <b>page</b> ticked, every message carries the route, the visible text, the data the page fetched, and your text selection. The <span class="mono">ui_read_page</span> tool returns the live element tree with ref ids; <span class="mono">ui_navigate</span>, <span class="mono">ui_click</span>, <span class="mono">ui_fill</span>, and <span class="mono">ui_select</span> operate it in your tab. Catalog tools run on the server, so long actions show up in the task drawer.</p>
+        <p class="muted">Models come from each provider's live model list; pick any Claude or OpenAI model your account can use. Credentials stay in the environment of <span class="mono">tinystudio serve</span>.</p>
       </div></div>
       <div class="panel" style="margin-top:16px"><div class="head"><h2>Use from Claude Code, Codex, Claude Desktop</h2></div><div class="body" style="font-size:12.5px">
         <p>tinystudio is an MCP server. Register it once and your coding assistant can run the whole pipeline in natural language:</p>
         <pre class="mono" style="white-space:pre-wrap;background:var(--panel-2);padding:10px;border-radius:8px">claude mcp add --scope user tinystudio -- ${esc(st.mcp.command)}</pre>
-        <p class="muted">Codex: add <span class="mono">[mcp_servers.tinystudio]</span> with the same command and args to <span class="mono">~/.codex/config.toml</span>. Claude Desktop: add it under <span class="mono">mcpServers</span> in <span class="mono">claude_desktop_config.json</span>. Then ask, for example: "profile the commands dataset, drop duplicates, snapshot it, and train SmolLM2-360M with LoRA for 3 epochs".</p>
+        <p class="muted">Codex: add <span class="mono">[mcp_servers.tinystudio]</span> with the same command and args to <span class="mono">~/.codex/config.toml</span> (Codex keeps one server process per thread; disable the entry when you are not using it). Claude Desktop: add it under <span class="mono">mcpServers</span>.</p>
       </div></div>
     </div>
-    <div class="panel" style="display:flex;flex-direction:column"><div class="head"><h2>Chat</h2><span class="muted mono" id="asUsage"></span></div><div class="chatlog" id="asLog"></div><div class="composer"><textarea id="asInput" placeholder="e.g. Clean the commands dataset, create a snapshot v2, and start a LoRA experiment on Qwen2.5-0.5B-Instruct"></textarea><button class="btn primary" id="asSend" ${!st.anthropic.available && !st.openai.available ? "disabled" : ""}>Send</button></div></div></div>`, [{ label: "Assistant" }]);
-  if (!st.anthropic.available && st.openai.available) $("#asProvider", content).value = "openai";
-  const history = state.assistant = state.assistant || [];
-  const log = $("#asLog", content);
-  const draw = () => { log.innerHTML = history.map((m) => m.role === "user" ? `<div class="bubble user">${esc(m.content)}</div>` : `<div class="bubble assistant" style="font-family:var(--font);font-size:13.5px">${m.html || esc(m.content)}</div>`).join("") || `<div class="empty"><b>Ask for anything in the pipeline</b>The assistant calls tools and shows every call and result here.</div>`; log.scrollTop = log.scrollHeight; };
-  draw();
-  $("#asReset", content).onclick = () => { history.length = 0; draw(); };
-  const send = guard(async () => {
-    const text = $("#asInput", content).value.trim(); if (!text) return;
-    $("#asInput", content).value = "";
-    history.push({ role: "user", content: text });
-    const reply = { role: "assistant", content: "", html: "", calls: [] }; history.push(reply); draw();
-    $("#asSend", content).disabled = true;
-    const render = () => { reply.html = reply.calls.map((c) => `<details class="muted" style="margin:4px 0"><summary><span class="mono">${esc(c.name)}</span>(${esc(JSON.stringify(c.input)).slice(0, 160)}) ${c.output === undefined ? '<span class="spinner"></span>' : ""}</summary><pre class="mono" style="white-space:pre-wrap;max-height:200px;overflow:auto">${esc(c.output || "")}</pre></details>`).join("") + `<div class="msg">${esc(reply.content)}</div>`; draw(); };
-    try {
-      const response = await fetch("/api/assistant/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: $("#asProvider", content).value, allow_destructive: $("#asDestructive", content).checked, messages: history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })) }) });
-      if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-      for (;;) {
-        const { value, done } = await reader.read(); if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx; while ((idx = buffer.indexOf("\n\n")) >= 0) {
-          const line = buffer.slice(0, idx).trim(); buffer = buffer.slice(idx + 2);
-          if (!line.startsWith("data:")) continue;
-          const ev = JSON.parse(line.slice(5));
-          if (ev.type === "text") reply.content += ev.delta;
-          else if (ev.type === "tool_call") reply.calls.push({ id: ev.id, name: ev.name, input: ev.input });
-          else if (ev.type === "tool_result") { const c = reply.calls.find((x) => x.id === ev.id) || reply.calls[reply.calls.length - 1]; if (c) c.output = ev.output; pollTasks(); }
-          else if (ev.type === "error") throw new Error(ev.message);
-          else if (ev.type === "done") $("#asUsage", content).textContent = `${ev.model} · ${ev.usage.input_tokens} in / ${ev.usage.output_tokens} out`;
-          render();
-        }
-      }
-      if (!reply.content && !reply.calls.length) reply.content = "(no reply)";
-      render();
-    } catch (e) { if (!reply.content && !reply.calls.length) history.pop(); draw(); throw e; } finally { $("#asSend", content).disabled = false; }
-  });
-  $("#asSend", content).onclick = send;
-  $("#asInput", content).onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+    <div class="panel assist-page" id="asPage"></div></div>`, [{ label: "Assistant" }]);
+  if (ASSIST.open) toggleAssistant(false);
+  renderAssistant($("#asPage", content), { full: true });
 }
 
 // ------------------------------------------------------------------ traces
@@ -819,6 +1135,207 @@ async function pageTraces() {
     $("[data-ok]", m.el).onclick = guard(async () => { await post(`/api/traces/${t.id}/score`, { score: 1, corrected: $("#fixText", m.el).value, note: $("#fixNote", m.el).value }); m.close(); pageTraces(); });
   });
   $("#trPromote", content).onclick = guard(async () => { const r = await post("/api/traces/promote", { dataset: $("#trDs", content).value, min_score: 0.9 }); toast(`added ${r.promoted} datapoints to ${$("#trDs", content).value}`); });
+}
+
+// ------------------------------------------------------------------ interpretability
+const flat = (t) => esc(String(t ?? "")).replace(/\n/g, "⏎");
+const ctxHtml = (e) => `<span class="ctx">${flat(e.before)}<b class="tok">${flat(e.token)}</b>${flat(e.after)}</span>`;
+const REGIME_NOTE = { "+/+": "open gate × positive value", "+/-": "open gate × negative value", "-/+": "closed gate × positive value (small negative leak)", "-/-": "closed gate × negative value: the double-negative echo (small positive)" };
+
+async function modelChoices() {
+  let finished = [];
+  try { finished = (await finishedExperiments()).flatMap((e) => [e.id, ...e.checkpoints.map((s) => `${e.id}@${s}`)]); } catch (_) { /* jobs unavailable */ }
+  const catalog = (state.overview?.catalog || []).map((c) => c.id);
+  return [...new Set([...finished, ...catalog])];
+}
+
+function parseLayers(text) {
+  const parts = String(text || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!parts.length || (parts.length === 1 && parts[0].toLowerCase() === "all")) return [];
+  const layers = parts.map(Number);
+  if (layers.some((n) => !Number.isInteger(n) || n < 0)) throw new Error("layers must be comma-separated non-negative integers, or 'all'");
+  return [...new Set(layers)].sort((a, b) => a - b);
+}
+
+async function finishedExperiments() {
+  const jobs = await api("/api/jobs");
+  return jobs.flatMap(({ job, experiments }) => experiments.filter((e) => e.state === "succeeded").map((e) => ({ id: `${job.name}/${e.number}`, checkpoints: e.checkpoints || [], base: e.config?.base_model })));
+}
+
+async function captureDialog(preset = {}) {
+  const datasets = (state.overview?.tree?.datasets || []).filter((d) => !d.missing);
+  const snaps = (state.overview?.tree?.datasets || []).flatMap((d) => d.snapshots || []);
+  if (!datasets.length && !snaps.length) return toast("create a dataset first", true);
+  const choices = await modelChoices();
+  const m = modal({ title: "New activation capture", body: `
+    <p class="muted">Runs the dataset through the model once and records, for every MLP neuron of the chosen layers, its strongest positive and negative tokens with their gate/value signs, a gate-open top list, and per-datapoint maxima. SmolLM2-135M over 240 datapoints takes a few seconds per run.</p>
+    <div class="field"><label>Model (job/number, job/number@step for a checkpoint, or a Hub id)</label><input id="cpModel" list="cpModels" value="${esc(preset.model || "")}" placeholder="smol-lora/1"><datalist id="cpModels">${choices.map((id) => `<option value="${esc(id)}">`).join("")}</datalist></div>
+    <div class="row"><div class="field"><label>Source</label><select id="cpSource">${datasets.map((d) => `<option value="dataset:${esc(d.name)}">dataset ${esc(d.name)} (${d.datapoints})</option>`).join("")}${snaps.map((s) => `<option value="snapshot:${esc(s.name)}">snapshot ${esc(s.name)}</option>`).join("")}</select></div>
+    <div class="field"><label>Layers (comma-separated, or all)</label><input id="cpLayers" value="${esc(preset.layers || "")}" placeholder="all"></div></div>
+    <div class="row"><div class="field"><label>Top-k per neuron</label><input id="cpTopk" type="number" min="5" max="500" value="40"></div><div class="field"><label>Name (optional)</label><input id="cpName" placeholder="model--dataset"></div></div>`,
+    footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Capture</button>` });
+  $("[data-cancel]", m.el).onclick = m.close;
+  $("[data-ok]", m.el).onclick = guard(async () => {
+    const model = $("#cpModel", m.el).value.trim(); if (!model) throw new Error("pick a model");
+    const [kind, src] = $("#cpSource", m.el).value.split(":");
+    const layers = parseLayers($("#cpLayers", m.el).value);
+    const body = { model, layers, topk: Number($("#cpTopk", m.el).value) || 40, name: $("#cpName", m.el).value.trim() || null };
+    body[kind] = src;
+    await post("/api/interp/captures", body);
+    m.close(); toast("capture started"); showTasks(); pollTasks();
+  });
+}
+
+async function diffDialog() {
+  const datasets = (state.overview?.tree?.datasets || []).filter((d) => !d.missing);
+  const experiments = await finishedExperiments();
+  if (!experiments.length) return toast("no finished experiments to compare", true);
+  const choices = await modelChoices();
+  const m = modal({ title: "Compare base vs experiment", body: `
+    <p class="muted">Runs the same tokens through the base weights and the experiment and reports, per neuron, the correlation of their activations, the relative change, and the datapoints and tokens that drove it. LoRA experiments toggle the adapter in place; full fine-tunes load both models.</p>
+    <div class="field"><label>Experiment</label><select id="dfExp">${experiments.map((e) => `<option value="${esc(e.id)}">${esc(e.id)} (base ${esc(e.base || "?")})</option>`).join("")}</select></div>
+    <div class="row"><div class="field"><label>Dataset</label><select id="dfDs">${datasets.map((d) => `<option>${esc(d.name)}</option>`).join("")}</select></div><div class="field"><label>Layers (comma-separated, or all)</label><input id="dfLayers" placeholder="all"></div></div>
+    <div class="field"><label>Compare against (optional; default = the experiment's own base weights)</label><input id="dfBase" list="dfModels" placeholder="leave empty"><datalist id="dfModels">${choices.map((id) => `<option value="${esc(id)}">`).join("")}</datalist></div>`,
+    footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Compare</button>` });
+  $("[data-cancel]", m.el).onclick = m.close;
+  $("[data-ok]", m.el).onclick = guard(async () => {
+    const layers = parseLayers($("#dfLayers", m.el).value);
+    await post("/api/interp/diffs", { experiment: $("#dfExp", m.el).value, dataset: $("#dfDs", m.el).value, layers, base: $("#dfBase", m.el).value.trim() || null });
+    m.close(); toast("comparison started"); showTasks(); pollTasks();
+  });
+}
+
+async function checkpointCaptureDialog(job, number) {
+  const datasets = (state.overview?.tree?.datasets || []).filter((d) => !d.missing);
+  const m = modal({ title: `Capture checkpoints of ${job}/${number}`, body: `<p class="muted">Captures every saved checkpoint plus the final weights on one dataset, so the neuron panel can show how a neuron's strongest examples drifted during training.</p><div class="row"><div class="field"><label>Dataset</label><select id="ckDs">${datasets.map((d) => `<option>${esc(d.name)}</option>`).join("")}</select></div><div class="field"><label>Layers</label><input id="ckLayers" placeholder="e.g. 8,12,16 or all"></div></div>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Capture</button>` });
+  $("[data-cancel]", m.el).onclick = m.close;
+  $("[data-ok]", m.el).onclick = guard(async () => {
+    const layers = parseLayers($("#ckLayers", m.el).value);
+    await post("/api/interp/checkpoint-captures", { job, number, dataset: $("#ckDs", m.el).value, layers });
+    m.close(); toast("checkpoint captures started"); showTasks(); pollTasks();
+  });
+}
+
+async function pageInterp() {
+  await ensureOverview(true);
+  const data = await api("/api/interp");
+  const content = layout("interp", `<div class="page-head"><h1>Interpretability</h1><span class="meta">neurons · poles · sign regimes · explanations · before/after · drift</span><div class="actions"><button class="btn" id="newDiff">Compare base vs experiment</button><button class="btn primary" id="newCapture">+ New capture</button></div></div>
+    <div class="panel" style="margin-bottom:14px"><div class="head"><h2>Captures</h2><span class="muted">per-neuron MLP activations of one model over one dataset</span></div><div class="body">${data.captures.length ? `<table><thead><tr><th>Name</th><th>Model</th><th>Source</th><th>Layers</th><th>Rows</th><th>Explained</th><th>Tested</th><th>Created</th><th></th></tr></thead><tbody>${data.captures.map((c) => `<tr class="clickable" data-cap="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.model_id)}</td><td>${esc(c.source)}</td><td class="mono">${c.layers.length === c.num_layers ? "all " + c.num_layers : c.layers.join(", ")}</td><td class="num">${c.rows}</td><td class="num">${c.explained}</td><td class="num">${c.tested}</td><td class="muted">${fmtDate(c.created)}</td><td><button class="btn small danger" data-delcap="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No captures yet</b>Capture a model over a dataset to browse its neurons.</div>`}</div></div>
+    <div class="panel"><div class="head"><h2>Before / after comparisons</h2><span class="muted">which neurons changed most between a base model and an experiment</span></div><div class="body">${data.comparisons.length ? `<table><thead><tr><th>Name</th><th>Experiment</th><th>Base</th><th>Source</th><th>Median r per layer</th><th></th></tr></thead><tbody>${data.comparisons.map((c) => `<tr class="clickable" data-diff="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.experiment)}</td><td class="mono">${esc(c.base)}</td><td>${esc(c.source)}</td><td class="mono">${Object.entries(c.layer_summary || {}).map(([l, s]) => `L${l} ${s.median_r.toFixed(2)}`).join(" · ")}</td><td><button class="btn small danger" data-deldiff="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No comparisons yet</b>Compare an experiment against its base to rank changed neurons.</div>`}</div></div>`, [{ label: "Interpretability" }]);
+  $("#newCapture", content).onclick = guard(() => captureDialog());
+  $("#newDiff", content).onclick = guard(() => diffDialog());
+  $$("[data-cap]", content).forEach((r) => r.onclick = (ev) => { if (ev.target.closest("button")) return; go(`#/interp/c/${encodeURIComponent(r.dataset.cap)}`); });
+  $$("[data-diff]", content).forEach((r) => r.onclick = (ev) => { if (ev.target.closest("button")) return; go(`#/interp/d/${encodeURIComponent(r.dataset.diff)}`); });
+  $$("[data-delcap]", content).forEach((b) => b.onclick = () => confirmModal("Delete capture", `Delete capture "${b.dataset.delcap}" and its explanations and tests?`, async () => { await del(`/api/interp/captures/${encodeURIComponent(b.dataset.delcap)}`); pageInterp(); }));
+  $$("[data-deldiff]", content).forEach((b) => b.onclick = () => confirmModal("Delete comparison", `Delete comparison "${b.dataset.deldiff}"?`, async () => { await del(`/api/interp/diffs/${encodeURIComponent(b.dataset.deldiff)}`); pageInterp(); }));
+}
+
+function labelBars(pairs) {
+  return pairs.length ? `<table>${pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${Math.round(v * 100)}%</td><td style="width:45%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, v * 100)}%"></div></td></tr>`).join("")}</table>` : `<div class="muted">no labels</div>`;
+}
+
+function entryRows(entries, limit = 12) {
+  if (!entries.length) return `<div class="muted">none</div>`;
+  return `<div class="entries">${entries.slice(0, limit).map((e) => `<div class="entry"><span class="mono val">${e.value.toFixed(2)}</span><span class="pill regime" title="${REGIME_NOTE[e.regime]} · g ${e.g.toFixed(2)}, v ${e.v.toFixed(2)}">${e.regime}</span>${e.first_token ? '<span class="pill warn" title="first token after the shared prefix">first</span>' : ""}${ctxHtml(e)}<span class="muted dp">dp ${e.datapoint}${e.labels?.length ? " · " + esc(e.labels.join(", ")) : ""}</span></div>`).join("")}</div>`;
+}
+
+let hideClosedPref = true;
+async function neuronPanel(right, capture, meta, layer, neuron) {
+  const tok = (right._tok = (right._tok || 0) + 1);
+  right.innerHTML = `<div class="muted"><span class="spinner"></span> loading neuron ${neuron}…</div>`;
+  let v;
+  try { v = await api(`/api/interp/captures/${encodeURIComponent(capture)}/layers/${layer}/neurons/${neuron}?limit=20`); }
+  catch (e) { if (right._tok === tok) right.innerHTML = `<div class="error">${esc(e.message)}</div>`; return; }
+  if (right._tok !== tok) return;
+  const s = v.stats;
+  const hideClosed = hideClosedPref && v.gate_open.length > 0;
+  const list = hideClosed ? v.gate_open : v.positives;
+  const exp = v.explanation, t = v.test;
+  const openMax = s.open_max == null ? "never open" : s.open_max.toFixed(3);
+  right.innerHTML = `
+    <div class="panel ipanel"><div class="head"><h2>L${layer} · N${neuron}</h2><span class="muted mono">max ${s.max.toFixed(3)} · gate-open ${openMax} · min ${s.min.toFixed(3)} · token density ${(s.density * 100).toFixed(1)}%</span></div><div class="body">
+      <div class="chips" style="margin-bottom:8px">${Object.entries(v.regimes).map(([r, n]) => `<button class="${r === "-/-" && s.echo_top ? "on" : ""}" title="${REGIME_NOTE[r]} · share of the top-${v.topk} positives" disabled>${r} <b>${n}</b></button>`).join("")}<button id="toggleClosed" class="${hideClosed ? "on" : ""}" title="The double-negative echo: closed gate (g < 0) times a negative value gives a positive activation that looks like the negative pole" ${v.gate_open.length ? "" : "disabled"}>${v.gate_open.length ? (hideClosed ? "hiding gate-closed" : "showing gate-closed") : "gate never opens"}</button></div>
+      ${s.echo_top ? `<div class="note">The echo dominates this neuron's positive list: its gate-open maximum is ${s.open_max == null ? "absent" : "below half of its overall maximum"}. Read the negative pole as its job.</div>` : ""}
+      ${s.first_token_peak ? `<div class="note">This neuron peaks on the first token after the shared prefix; first-token activations can be attention-sink artefacts.</div>` : ""}
+      <h3>Positive pole${hideClosed ? " (gate open)" : ""}</h3>${entryRows(list)}
+      <h3>Negative pole</h3>${entryRows(v.negatives, 8)}
+      <h3>Share of the top-${v.topk} datapoints carrying each label${hideClosed ? " (gate open)" : ""}</h3>${labelBars(hideClosed ? v.label_share : v.label_share_all)}
+    </div></div>
+    <div class="panel ipanel"><div class="head"><h2>Explanation</h2><div class="right"><button class="btn small" id="btnExplain">${exp ? "Re-explain" : "Explain with helper LLM"}</button><button class="btn small primary" id="btnTest" ${exp ? "" : "title='Explains first, then tests'"}>Run blind-maximum + near-miss test</button></div></div><div class="body">
+      ${exp ? `<p><b>${esc(exp.explanation)}</b></p><p class="muted">negative pole: ${esc(exp.negative_pole || "—")} · confidence ${exp.confidence} · ${esc(exp.helper)}${exp.gate_never_open ? " · gate never open, explained from the echo" : ""}</p>` : `<p class="muted">No explanation yet. The helper LLM reads the strongest contexts (token in bold) and writes a one-line, verb-like rule.</p>`}
+      ${t ? `<div class="tiles" style="margin-top:8px"><div class="tile"><div class="k">Blind maximum</div><div class="v">${t.blind_best == null ? "—" : t.blind_best.toFixed(2) + "×"}</div><div class="muted">of the ${esc(t.reference || "corpus max")} ${(t.open_max ?? t.corpus_max).toFixed(2)}${t.beats_corpus ? " · beats it" : ""}</div></div><div class="tile"><div class="k">Positives strong</div><div class="v">${t.counts.positives_strong}/${t.positives.length}</div></div><div class="tile"><div class="k">Near misses strong</div><div class="v">${t.counts.near_misses_strong}/${t.near_misses.length}</div></div><div class="tile"><div class="k">Distant strong</div><div class="v">${t.counts.distant_strong}/${t.distant.length}</div></div><div class="tile"><div class="k">Verdict</div><div class="v"><span class="pill ${t.verdict === "win" ? "good" : t.verdict === "loss" ? "bad" : "warn"}">${t.verdict}</span></div></div></div>
+        <details style="margin-top:8px"><summary class="muted">exchanges (strong = ≥ ${Math.round(t.strong_ratio * 100)}% of the ${esc(t.reference || "corpus max")}; ratio uses gate-open activations when the gate ever opened)</summary>${[["Blind maximum", t.blind], ["Should fire", t.positives], ["Near misses", t.near_misses], ["Distant", t.distant]].map(([h, arr]) => `<h3>${h}</h3><table>${arr.map((x) => `<tr><td>${esc(x.text)}</td><td class="num mono">${x.ratio.toFixed(2)}×</td><td>${x.strong ? '<span class="pill good">strong</span>' : ""}${x.gate_open === false ? '<span class="pill warn" title="the overall max token had its gate closed">echo</span>' : ""}</td><td class="muted mono">${flat(x.token)}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>`).join("")}</details>` : ""}
+    </div></div>
+    <div class="panel ipanel" id="driftPanel" hidden><div class="head"><h2>Drift across checkpoints</h2><span class="muted">share of the strongest datapoints per label, per checkpoint</span></div><div class="body" id="driftBody"></div></div>`;
+  $("#toggleClosed", right).onclick = guard(() => { hideClosedPref = !hideClosed; return neuronPanel(right, capture, meta, layer, neuron); });
+  $("#btnExplain", right).onclick = guard(async () => { await post(`/api/interp/captures/${encodeURIComponent(capture)}/layers/${layer}/explain`, { neurons: [neuron] }); toast("explanation requested"); showTasks(); pollTasks(); });
+  $("#btnTest", right).onclick = guard(async () => { await post(`/api/interp/captures/${encodeURIComponent(capture)}/layers/${layer}/test`, { neurons: [neuron] }); toast("test started"); showTasks(); pollTasks(); });
+  const match = /^([^/@]+)\/(\d+)(?:@\d+)?$/.exec(meta.model_id);
+  if (match) {
+    let d = null;
+    try { d = await api(`/api/interp/drift/${encodeURIComponent(match[1])}/${match[2]}?source=${encodeURIComponent(meta.source)}&layer=${layer}&neuron=${neuron}`); }
+    catch (e) { if (!/no captures/.test(e.message)) toast(`drift: ${e.message}`, true); }
+    if (right._tok !== tok || !d || d.steps.length < 2) return;
+    $("#driftPanel", right).hidden = false;
+    $("#driftBody", right).innerHTML = `<div class="muted" style="margin-bottom:6px">${esc(d.list === "gate_open" ? "gate-open" : "positive")} top-${d.topk} datapoint sets · labels present at the first checkpoint: ${esc(d.core_labels.join(", ") || "—")} · the first saved checkpoint is the baseline, not the base model</div><div class="drift">${d.steps.map((st) => `<div class="step"><div class="k">${st.final ? "final" : "step " + st.step}</div><div class="mono muted">max ${st.max.toFixed(2)} · ${st.datapoints} datapoints · overlap vs final ${st.jaccard_final}${st.jaccard_prev != null ? " · vs prev " + st.jaccard_prev : ""}</div>${labelBars(st.label_share.slice(0, 5))}${st.new_labels.length ? `<div class="note">new label${st.new_labels.length === 1 ? "" : "s"} ${esc(st.new_labels.join(", "))}: ${st.offshoot_candidates.slice(0, 3).map((o) => esc(o.labels.join("/")) + " (" + flat(o.token) + ")").join(", ")}</div>` : ""}</div>`).join("")}</div>`;
+  }
+}
+
+async function pageCapture(name, params) {
+  await ensureOverview(true);
+  const meta = await api(`/api/interp/captures/${encodeURIComponent(name)}`);
+  const layer = Number(params.get("layer") ?? meta.layers[Math.floor(meta.layers.length / 2)]);
+  const sort = params.get("sort") || "max";
+  const q = params.get("q") || "";
+  let neuron = params.has("neuron") ? Number(params.get("neuron")) : null;
+  const table = await api(`/api/interp/captures/${encodeURIComponent(name)}/layers/${layer}?sort=${encodeURIComponent(sort)}&limit=300&q=${encodeURIComponent(q)}`);
+  const ls = meta.layer_stats?.[String(layer)] || {};
+  const content = layout("interp", `
+    <div class="page-head"><div><h1>${esc(name)}</h1><div class="meta"><span class="mono">${esc(meta.model_id)}</span><span>· ${esc(meta.source)} · ${meta.rows} datapoints · ${meta.tokens.toLocaleString()} tokens</span><span>· shared prefix of ${meta.prefix_len ?? 0} tokens excluded</span></div></div>
+      <div class="actions"><select id="layerSel">${meta.layers.map((l) => `<option value="${l}" ${l === layer ? "selected" : ""}>layer ${l}</option>`).join("")}</select><select id="sortSel">${["max", "min", "open_max", "echo_share", "density"].map((k) => `<option value="${k}" ${k === sort ? "selected" : ""}>sort by ${k.replace("_", " ")}</option>`).join("")}</select><input id="qBox" placeholder="filter by explanation" value="${esc(q)}" style="width:180px"><button class="btn" id="explainTop">Explain top 20</button></div></div>
+    <div class="tiles" style="margin-bottom:12px"><div class="tile"><div class="k">Neurons</div><div class="v">${meta.neurons_per_layer}</div><div class="muted">${table.total > 300 ? "showing 300 of " + table.total : table.total + " listed"}</div></div><div class="tile"><div class="k">Median max</div><div class="v">${(ls.max_median ?? 0).toFixed(2)}</div></div><div class="tile"><div class="k">Echo dominates top</div><div class="v">${Math.round((ls.echo_top_share ?? 0) * 100)}%</div><div class="muted">gate-open max under half of max</div></div><div class="tile"><div class="k">Mean echo share</div><div class="v">${Math.round((ls.echo_share_mean ?? 0) * 100)}%</div><div class="muted">of top-${meta.topk} positives in −/−</div></div><div class="tile"><div class="k">First-token peaks</div><div class="v">${ls.first_token_peaks ?? 0}</div><div class="muted">neurons peaking right after the prefix</div></div><div class="tile"><div class="k">Never open / dead</div><div class="v">${ls.never_open ?? 0} / ${ls.near_dead ?? 0}</div></div></div>
+    <div class="wide-narrow"><div id="left"><div class="panel"><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>max</th><th>open</th><th>min</th><th>echo</th><th title="share of content tokens above 10% of the neuron's maximum">density</th><th>explanation</th><th>test</th></tr></thead><tbody>${table.rows.map((r) => `<tr class="clickable ${r.neuron === neuron ? "sel" : ""}" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.max.toFixed(2)}</td><td class="num">${r.open_max == null ? "—" : r.open_max.toFixed(2)}</td><td class="num">${r.min.toFixed(2)}</td><td class="num">${Math.round(r.echo_share * 100)}%${r.echo_top ? "*" : ""}</td><td class="num">${(r.density * 100).toFixed(1)}%</td><td class="truncate" style="max-width:260px">${esc(r.explanation || "")}</td><td>${r.verdict ? `<span class="pill ${r.verdict === "win" ? "good" : r.verdict === "loss" ? "bad" : "warn"}">${r.verdict}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>Click a row to see its poles, sign regimes, label shares, explanation, and tests.</div></div></div>`,
+    [{ label: "Interpretability", href: "#/interp" }, { label: name }]);
+  const nav = (changes) => { const p = new URLSearchParams(params); Object.entries(changes).forEach(([k, v]) => v == null || v === "" ? p.delete(k) : p.set(k, v)); go(`#/interp/c/${encodeURIComponent(name)}?${p}`); };
+  $("#layerSel", content).onchange = (e) => nav({ layer: e.target.value, neuron: null });
+  $("#sortSel", content).onchange = (e) => nav({ sort: e.target.value });
+  $("#qBox", content).onchange = (e) => nav({ q: e.target.value });
+  $("#explainTop", content).onclick = guard(async () => { await post(`/api/interp/captures/${encodeURIComponent(name)}/layers/${layer}/explain`, { top: 20, sort }); toast("explaining the top 20 neurons"); showTasks(); pollTasks(); });
+  const right = $("#right", content);
+  const select = (n) => { neuron = n; $$("tr[data-n]", content).forEach((tr) => tr.classList.toggle("sel", Number(tr.dataset.n) === n)); params.set("layer", layer); params.set("neuron", n); history.replaceState(null, "", `#/interp/c/${encodeURIComponent(name)}?${params}`); return neuronPanel(right, name, meta, layer, n); };
+  $$("tr[data-n]", content).forEach((tr) => tr.onclick = guard(() => select(Number(tr.dataset.n))));
+  if (neuron != null && Number.isInteger(neuron)) select(neuron);
+}
+
+async function pageDiff(name, params) {
+  await ensureOverview(true);
+  const meta = await api(`/api/interp/diffs/${encodeURIComponent(name)}`);
+  const layer = Number(params.get("layer") ?? meta.layers[meta.layers.length - 1]);
+  const sort = params.get("sort") || "change";
+  const data = await api(`/api/interp/diffs/${encodeURIComponent(name)}/layers/${layer}?limit=200&sort=${encodeURIComponent(sort)}`);
+  const s = data.summary || {};
+  const fr = (x) => (x == null ? "—" : x.toFixed(3));
+  const content = layout("interp", `
+    <div class="page-head"><div><h1>${esc(meta.experiment)} <span class="muted">vs</span> ${esc(meta.base)}</h1><div class="meta"><span>${esc(meta.source)} · ${meta.rows} datapoints · ${meta.mode === "adapter_toggle" ? "adapter toggled in place" : "two models"} · shared prefix of ${meta.prefix_len ?? 0} tokens excluded</span></div></div>
+      <div class="actions"><select id="layerSel">${meta.layers.map((l) => `<option value="${l}" ${l === layer ? "selected" : ""}>layer ${l} · median r ${fr(meta.layer_summary?.[String(l)]?.median_r)}</option>`).join("")}</select><select id="sortSel">${[["change", "sort by change (1 − r + relative change)"], ["r", "sort by lowest r"], ["rel_change", "sort by relative change"]].map(([k, l]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
+    <div class="tiles" style="margin-bottom:12px"><div class="tile"><div class="k">Median correlation r</div><div class="v">${fr(s.median_r)}</div></div><div class="tile"><div class="k">Neurons with r &lt; 0.9</div><div class="v">${s.below_0_9 ?? 0}</div></div><div class="tile"><div class="k">r &lt; 0.5</div><div class="v">${s.below_0_5 ?? 0}</div></div><div class="tile"><div class="k">Constant on one side</div><div class="v">${s.constant ?? 0}</div><div class="muted">r undefined (dead or revived)</div></div><div class="tile"><div class="k">Median relative change</div><div class="v">${(s.rel_change_median ?? 0).toFixed(2)}</div></div></div>
+    <div class="two" style="margin-bottom:12px"><div class="panel"><div class="head"><h2>Distribution of r across ${meta.neurons_per_layer} neurons</h2></div><div class="body">${s.hist ? histogram(s.hist, "var(--s2)", 420, 100) : ""}</div></div><div class="panel"><div class="head"><h2>Reading this</h2></div><div class="body muted">r is the Pearson correlation of a neuron's activations before and after fine-tuning over the same tokens (undefined when one side is constant); relative change is ‖after − before‖ / ‖before‖, so a neuron that only scaled still shows up; change = (1 − r) + min(relative change, 1). Click a neuron for the datapoints and tokens that moved it most. Shared-prefix tokens are excluded because causal attention makes them identical across datapoints.</div></div></div>
+    <div class="wide-narrow"><div id="left"><div class="panel"><div class="head"><h2>Most changed neurons</h2></div><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>change</th><th>r</th><th>rel. change</th><th>largest token change</th><th>context</th></tr></thead><tbody>${data.rows.map((r) => `<tr class="clickable" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.change.toFixed(2)}</td><td class="num">${fr(r.r)}</td><td class="num">${r.rel_change.toFixed(2)}</td><td class="num mono">${r.before.toFixed(2)} → ${r.after.toFixed(2)}</td><td class="ctxcell">${flat(r.context)}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>See which datapoints drove its change.</div></div></div>`,
+    [{ label: "Interpretability", href: "#/interp" }, { label: name }]);
+  $("#layerSel", content).onchange = (e) => go(`#/interp/d/${encodeURIComponent(name)}?layer=${e.target.value}&sort=${encodeURIComponent(sort)}`);
+  $("#sortSel", content).onchange = (e) => go(`#/interp/d/${encodeURIComponent(name)}?layer=${layer}&sort=${encodeURIComponent(e.target.value)}`);
+  const right = $("#right", content);
+  $$("tr[data-n]", content).forEach((tr) => tr.onclick = guard(async () => {
+    const n = Number(tr.dataset.n);
+    $$("tr[data-n]", content).forEach((x) => x.classList.toggle("sel", x === tr));
+    const d = await api(`/api/interp/diffs/${encodeURIComponent(name)}/layers/${layer}/neurons/${n}`);
+    const captures = (await api("/api/interp")).captures.filter((c) => c.model_id === meta.experiment && c.source === meta.source && c.layers.includes(layer));
+    right.innerHTML = `<div class="panel ipanel"><div class="head"><h2>L${layer} · N${n}</h2><span class="muted mono">change ${d.change.toFixed(2)} · r ${fr(d.r)} · rel. change ${d.rel_change.toFixed(2)}</span></div><div class="body">
+      <h3>Datapoints that drove the change</h3><table>${d.datapoints.map((x) => `<tr><td class="num mono">${x.delta_sum.toFixed(2)}</td><td>${esc(x.user)}</td><td class="muted">${esc((x.labels || []).join(", "))}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>
+      <h3>Tokens with the largest change</h3><div class="entries">${d.tokens.map((x) => `<div class="entry"><span class="mono val">${x.before.toFixed(2)} → ${x.after.toFixed(2)}</span><span class="ctx">${flat(x.context)}</span><span class="muted dp">dp ${x.datapoint}</span></div>`).join("")}</div>
+      ${captures.length ? `<p style="margin-top:10px"><a href="#/interp/c/${encodeURIComponent(captures[0].name)}?layer=${layer}&neuron=${n}">Open this neuron in capture ${esc(captures[0].name)} →</a></p>` : `<p class="muted" style="margin-top:10px">Capture ${esc(meta.experiment)} on ${esc(meta.source)} to browse this neuron's poles.</p>`}
+    </div></div>`;
+  }));
 }
 
 // ------------------------------------------------------------------ stats
@@ -870,4 +1387,4 @@ async function pollTasks() {
 }
 
 // ------------------------------------------------------------------ boot
-guard(async () => { await ensureOverview(); await render(); pollTasks(); })();
+guard(async () => { await ensureOverview(); mountAssistant(); await render(); pollTasks(); })();

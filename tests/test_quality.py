@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tinystudio import data, quality
-from tinystudio.project import Project
+from tinystudio.core import data
+
+from tinystudio.core import quality
+from tinystudio.core.project import Project
 
 
 def row(user: str, answer: str, **extra):

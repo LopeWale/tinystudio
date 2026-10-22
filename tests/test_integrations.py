@@ -7,18 +7,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinystudio import assistant, hub
-from tinystudio.tools import Studio, StudioError, tool_specs
+from tinystudio.integrations import assistant
+
+from tinystudio.integrations import hub
+from tinystudio.integrations.tools import Studio, StudioError, tool_specs
 
 
 def test_tool_catalog_shape():
     specs = tool_specs(Studio("http://127.0.0.1:1", None))
     names = [s.name for s in specs]
-    assert len(names) == len(set(names)) == 40
-    assert {"get_overview", "create_synthetic_dataset", "start_job", "run_eval", "chat", "delete", "search_hub_models", "download_hub_model", "clean_dataset"} <= set(names)
+    assert len(names) == len(set(names)) == 55
+    assert {"get_overview", "create_synthetic_dataset", "start_job", "run_eval", "chat", "delete", "search_hub_models", "download_hub_model", "clean_dataset", "run_autopilot_cycle", "get_autopilot_history", "capture_activations", "get_neuron", "test_neurons", "compare_models"} <= set(names)
     assert [s.name for s in specs if s.destructive] == ["delete"]
     assert all(s.description for s in specs)
-    assert sum(s.long_running for s in specs) == 8 and sum(s.read_only for s in specs) == 17
+    assert sum(s.long_running for s in specs) == 14 and sum(s.read_only for s in specs) == 25
 
 
 def test_studio_without_server_raises_clean_error():
@@ -63,3 +65,27 @@ def test_hub_describe_handles_missing_metadata():
 def test_hub_save_token_rejects_malformed():
     with pytest.raises(Exception, match="start with hf_"):
         hub.save_token("not-a-token")
+
+
+def test_mcp_server_registers_every_tool():
+    import asyncio
+
+    from tinystudio.integrations.mcp_server import build_server
+
+    server = build_server(Studio("http://127.0.0.1:1", None))
+    tools = asyncio.run(server.list_tools())
+    names = {t.name for t in tools}
+    assert len(names) == 55 and "delete" in names and "get_overview" in names
+    delete = next(t for t in tools if t.name == "delete")
+    assert delete.annotations.destructive_hint is True
+    assert next(t for t in tools if t.name == "get_overview").annotations.read_only_hint is True
+
+
+def test_json_tool_hardening_against_bad_arguments():
+    def strict(x: int) -> dict:
+        """strict"""
+        return {"x": x}
+
+    spec = SimpleNamespace(func=strict, name="strict", description="strict")
+    out = json.loads(assistant._json_tool(spec)(y=1))
+    assert "bad arguments" in out["error"]

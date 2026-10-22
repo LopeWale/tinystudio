@@ -6,9 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from tinystudio import data, evaluate, keys, synth
-from tinystudio.project import Project
-from tinystudio.train import TrainConfig, alias_for, create_job, create_pending_experiment, delete_experiment, list_experiments, parse_alias
+from tinystudio.core import data
+
+from tinystudio.evaluation import evaluate
+
+from tinystudio.serving import keys
+
+from tinystudio.core import synth
+from tinystudio.core.project import Project
+from tinystudio.training.train import TrainConfig, alias_for, create_job, create_pending_experiment, delete_experiment, list_experiments, parse_alias
 
 
 def row(user: str, answer: str, **extra):

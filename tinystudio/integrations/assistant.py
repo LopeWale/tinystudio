@@ -1,0 +1,462 @@
+"""In-app assistant: a frontier model that drives the same tool catalog the MCP server exposes, plus the interface itself.
+
+Providers: ``anthropic`` (Anthropic Python SDK tool runner; any model id the account lists, default Claude Opus 5.5) and
+``openai`` (Responses API with function calling; any model id the account lists). Credentials come from the
+environment: ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN`` / an ``ant auth login`` profile, and ``OPENAI_API_KEY``.
+
+The chat streams events the page renders live: text deltas, tool calls with their inputs, tool results, interface
+requests, and a final usage line. Two kinds of tools are offered:
+
+- the catalog tools (datasets, training, evaluation, serving, interpretability) that call the local HTTP API;
+- interface tools (``ui_read_page``, ``ui_navigate``, ``ui_click``, ``ui_fill``, ``ui_select``, ``ui_get_text``) that
+  the browser executes: the server emits a ``ui_request`` event, the page performs it on the live DOM and posts the
+  result back, and the tool call returns. The page also attaches a snapshot of what is on screen with every message,
+  so the model can review whatever you are looking at without a tool call.
+
+Destructive tools (``delete``) are only offered when the caller opts in.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import threading
+import time
+import uuid
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+from tinystudio.integrations.tools import Studio, StudioError, ToolSpec, tool_specs
+
+ANTHROPIC_MODEL = os.environ.get("TINYSTUDIO_ANTHROPIC_MODEL", "claude-opus-5-5")
+ANTHROPIC_EFFORT = os.environ.get("TINYSTUDIO_ASSISTANT_EFFORT", "medium")
+OPENAI_MODEL = os.environ.get("TINYSTUDIO_OPENAI_MODEL", "")
+MAX_RESULT_CHARS = 12000
+UI_TIMEOUT_SECONDS = 90.0
+MODEL_CACHE_SECONDS = 600.0
+
+SYSTEM = """You are the tinystudio assistant. tinystudio trains, evaluates, serves, and inspects tiny and domain-specific language models on the user's own machine. You act through tools that call the local server; nothing leaves the machine except your own API calls.
+
+Pipeline: dataset -> profile and clean -> split -> snapshot -> recommend -> job + experiments -> start_job -> get_job -> run_eval -> get_eval -> chat/serve. Interpretability: capture_activations -> list_neurons/get_neuron -> explain_neurons -> test_neurons; compare_models; get_neuron_drift. Long tools return a task id; poll get_task until it succeeds or fails, then read the result with the matching get_* tool.
+
+The user is looking at the tinystudio web interface. Each message may carry a "Current interface" section with the page they are on, its visible text, and the data it fetched: use it to answer questions about what they see. The ui_* tools let you read the live page as an element tree with ref ids, navigate between pages (hashes such as #/datasets, #/finetuning/<job>, #/interp/c/<capture>?layer=12&neuron=5), click buttons, and fill fields. Prefer catalog tools for data and actions; use ui_* tools to show the user something, to inspect what is rendered, or to operate a dialog on their behalf. Before destructive actions, say what would be deleted and ask. Prefer small, concrete steps and report numbers. When the helper LLM or credentials are missing, say so instead of retrying. Keep replies short and factual."""
+
+
+# ---------------------------------------------------------------------- availability and models
+def anthropic_available() -> bool:
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return True
+    profile_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "anthropic"
+    return profile_dir.exists() and any(profile_dir.iterdir())
+
+
+def openai_available() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY"))
+
+
+def anthropic_default() -> str:
+    return os.environ.get("TINYSTUDIO_ANTHROPIC_MODEL", ANTHROPIC_MODEL)
+
+
+def anthropic_effort() -> str:
+    return os.environ.get("TINYSTUDIO_ASSISTANT_EFFORT", ANTHROPIC_EFFORT)
+
+
+def openai_default() -> str:
+    return os.environ.get("TINYSTUDIO_OPENAI_MODEL", OPENAI_MODEL)
+
+
+def status() -> dict[str, Any]:
+    return {
+        "anthropic": {"available": anthropic_available(), "model": anthropic_default(), "effort": anthropic_effort()},
+        "openai": {"available": openai_available(), "model": openai_default() or None},
+    }
+
+
+def forget_models() -> None:
+    _MODEL_CACHE.clear()
+
+
+
+class ProviderError(Exception):
+    """A provider rejected the configuration; the message is already written for the user."""
+
+
+WORKSPACE_HINT = "this Anthropic key is not scoped to a workspace: enter its workspace id (ID column on https://platform.claude.com/settings/workspaces) under Settings > Claude, or use a key created inside one workspace"
+
+
+def anthropic_client() -> Any:
+    """An Anthropic client; organization-level keys need the anthropic-workspace-id header (TINYSTUDIO_ANTHROPIC_WORKSPACE_ID)."""
+    import anthropic
+
+    workspace = os.environ.get("TINYSTUDIO_ANTHROPIC_WORKSPACE_ID", "").strip()
+    if workspace:
+        return anthropic.Anthropic(default_headers={"anthropic-workspace-id": workspace})
+    return anthropic.Anthropic()
+
+
+def explain_provider_error(cause: BaseException) -> str:
+    """One line for the user: the workspace requirement gets its own wording, everything else keeps the SDK's text."""
+    if isinstance(cause, ProviderError):
+        return str(cause)
+    text = str(cause)
+    if "anthropic-workspace-id" in text or "not scoped to a workspace" in text:
+        return WORKSPACE_HINT
+    return f"{type(cause).__name__}: {cause}"
+
+
+_MODEL_CACHE: dict[str, tuple[float, list[dict[str, Any]], str | None]] = {}
+
+
+def _cached(provider: str, loader: Any) -> dict[str, Any]:
+    cached = _MODEL_CACHE.get(provider)
+    if cached and time.monotonic() - cached[0] < MODEL_CACHE_SECONDS:
+        return {"models": cached[1], "error": cached[2]}
+    try:
+        models, error = loader(), None
+    except Exception as cause:  # noqa: BLE001 - the picker shows the reason instead of an empty list
+        models, error = [], explain_provider_error(cause)
+    _MODEL_CACHE[provider] = (time.monotonic(), models, error)
+    return {"models": models, "error": error}
+
+
+def _anthropic_models() -> list[dict[str, Any]]:
+    client = anthropic_client()
+    rows = []
+    for m in client.models.list(limit=100):
+        rows.append({"id": m.id, "name": getattr(m, "display_name", None) or m.id, "created": str(getattr(m, "created_at", "") or "")})
+    rows.sort(key=lambda r: r["created"], reverse=True)
+    return rows
+
+
+def _openai_models() -> list[dict[str, Any]]:
+    import openai
+
+    client = openai.OpenAI()
+    rows = [{"id": m.id, "name": m.id, "created": str(getattr(m, "created", "") or "")} for m in client.models.list()]
+    chatty = [r for r in rows if not any(tag in r["id"] for tag in ("embedding", "whisper", "tts", "dall-e", "moderation", "realtime", "transcribe", "image", "audio", "search", "davinci", "babbage"))]
+    chatty.sort(key=lambda r: r["created"], reverse=True)
+    return chatty
+
+
+def list_models() -> dict[str, Any]:
+    """Model ids each configured provider lists for this account, with the defaults; errors are reported, not raised."""
+    out: dict[str, Any] = {"anthropic": {"available": anthropic_available(), "default": anthropic_default(), "models": [], "error": None}, "openai": {"available": openai_available(), "default": openai_default() or None, "models": [], "error": None}}
+    if anthropic_available():
+        out["anthropic"].update(_cached("anthropic", _anthropic_models))
+    if openai_available():
+        out["openai"].update(_cached("openai", _openai_models))
+    return out
+
+
+# ---------------------------------------------------------------------- tools
+def _selected(studio: Studio, allow_destructive: bool) -> list[ToolSpec]:
+    return [spec for spec in tool_specs(studio) if allow_destructive or not spec.destructive]
+
+
+def _truncate(value: Any) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text if len(text) <= MAX_RESULT_CHARS else text[:MAX_RESULT_CHARS] + f"... [truncated {len(text) - MAX_RESULT_CHARS} chars]"
+
+
+def _json_tool(spec: ToolSpec):
+    """Tool functions return JSON text so every SDK sees the same payload; expected errors become error results."""
+    import functools
+
+    @functools.wraps(spec.func)
+    def call(*args: Any, **kwargs: Any) -> str:
+        try:
+            return _truncate(spec.func(*args, **kwargs))
+        except StudioError as cause:
+            return json.dumps({"error": str(cause)})
+        except TypeError as cause:  # wrong or missing parameters from the model
+            return json.dumps({"error": f"bad arguments: {cause}"})
+        except Exception as cause:  # noqa: BLE001 - surfaced to the model as a tool error, never as a crashed turn
+            return json.dumps({"error": f"{type(cause).__name__}: {cause}"})
+
+    return call
+
+
+class UiBridge:
+    """Hands interface requests to the browser through the event stream and waits for the page to answer."""
+
+    pending: dict[str, "UiBridge"] = {}
+
+    def __init__(self, events: "queue.Queue[dict[str, Any]]") -> None:
+        self.events = events
+        self.waiting: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
+
+    def request(self, action: str, args: dict[str, Any]) -> str:
+        request_id = uuid.uuid4().hex[:12]
+        done = threading.Event()
+        slot: dict[str, Any] = {}
+        self.waiting[request_id] = (done, slot)
+        UiBridge.pending[request_id] = self
+        self.events.put({"type": "ui_request", "id": request_id, "action": action, "args": args})
+        try:
+            if not done.wait(UI_TIMEOUT_SECONDS):
+                return json.dumps({"error": f"the page did not answer the {action} request within {int(UI_TIMEOUT_SECONDS)} s (is the tinystudio tab still open?)"})
+            return _truncate(slot.get("result"))
+        finally:
+            self.waiting.pop(request_id, None)
+            UiBridge.pending.pop(request_id, None)
+
+    @classmethod
+    def deliver(cls, request_id: str, result: Any) -> bool:
+        bridge = cls.pending.get(request_id)
+        if bridge is None:
+            return False
+        entry = bridge.waiting.get(request_id)
+        if entry is None:
+            return False
+        entry[1]["result"] = result
+        entry[0].set()
+        return True
+
+
+def ui_tool_specs(bridge: UiBridge) -> list[ToolSpec]:
+    """Interface tools executed by the browser tab that opened the chat."""
+
+    def ui_read_page(interactive_only: bool = False, max_chars: int = 12000) -> Any:
+        """Read the tinystudio page the user is looking at as an element tree: the route, headings, text, tables, and every interactive element with a ref id (ref_1, ref_2, ...) for ui_click, ui_fill, and ui_select. interactive_only=True lists only buttons, links, inputs, and selects."""
+        return bridge.request("read_page", {"interactive_only": interactive_only, "max_chars": max_chars})
+
+    def ui_get_text(max_chars: int = 20000) -> Any:
+        """Plain text of the page the user is looking at (what is rendered right now, including open dialogs)."""
+        return bridge.request("get_text", {"max_chars": max_chars})
+
+    def ui_navigate(hash: str) -> Any:
+        """Open a page of the interface for the user: a hash route such as #/datasets, #/datasets/<name>, #/finetuning, #/finetuning/<job>, #/evaluations, #/metrics, #/playground, #/models, #/traces, #/interp, #/interp/c/<capture>?layer=12&neuron=5, #/interp/d/<comparison>. Returns the new page's element tree."""
+        return bridge.request("navigate", {"hash": hash})
+
+    def ui_click(ref: str) -> Any:
+        """Click an interactive element by its ref id from ui_read_page (opens dialogs, selects rows, presses buttons). Returns the page tree after the click."""
+        return bridge.request("click", {"ref": ref})
+
+    def ui_fill(ref: str, value: str) -> Any:
+        """Type a value into an input or textarea by its ref id from ui_read_page."""
+        return bridge.request("fill", {"ref": ref, "value": value})
+
+    def ui_select(ref: str, value: str) -> Any:
+        """Choose an option of a select element by its ref id; value is the option's value or visible label."""
+        return bridge.request("select", {"ref": ref, "value": value})
+
+    return [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f) for f in (ui_read_page, ui_get_text, ui_navigate, ui_click, ui_fill, ui_select)]
+
+
+def _context_block(context: dict[str, Any] | None) -> str:
+    if not context:
+        return ""
+    parts = ["\n\nCurrent interface (captured by the page when the user sent this message):"]
+    if context.get("route"):
+        parts.append(f"route: {context['route']}")
+    if context.get("title"):
+        parts.append(f"page: {context['title']}")
+    if context.get("selection"):
+        parts.append(f"user's text selection: {str(context['selection'])[:2000]}")
+    if context.get("text"):
+        parts.append("visible text:\n" + str(context["text"])[:12000])
+    for item in (context.get("api") or [])[:8]:
+        parts.append(f"data from {item.get('path')}:\n{str(item.get('data'))[:3000]}")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------- anthropic
+def run_anthropic(studio: Studio, messages: list[dict[str, str]], allow_destructive: bool = False, model: str | None = None, context: dict[str, Any] | None = None, bridge: UiBridge | None = None) -> Iterator[dict[str, Any]]:
+    """Yield stream events for one assistant turn: text, tool_call, tool_result, done, error."""
+    import anthropic
+    from anthropic import beta_tool
+
+    if not anthropic_available():
+        yield {"type": "error", "message": "no Anthropic credentials: set ANTHROPIC_API_KEY (or run `ant auth login`) before starting tinystudio serve"}
+        return
+    try:
+        client = anthropic_client()
+    except Exception as cause:  # noqa: BLE001 - the SDK raises a TypeError when no credential source resolves
+        yield {"type": "error", "message": f"Anthropic client could not be created: {cause}"}
+        return
+    model_id = model or anthropic_default()
+    specs = _selected(studio, allow_destructive) + (ui_tool_specs(bridge) if bridge else [])
+    tools = [beta_tool(_json_tool(spec), name=spec.name, description=spec.description) for spec in specs]
+    system = SYSTEM + _context_block(context)
+    base = {"model": model_id, "max_tokens": 16000, "system": system, "tools": tools, "messages": [{"role": m["role"], "content": m["content"]} for m in messages], "stream": True, "max_iterations": 40}
+    extras = {"output_config": {"effort": anthropic_effort()}, "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+    try:
+        try:
+            runner = client.beta.messages.tool_runner(**base, **extras)
+            stream_iter = iter(runner)
+            first = next(stream_iter)
+        except anthropic.BadRequestError as cause:  # a model that does not take effort or the fallback beta
+            if not any(word in str(cause).lower() for word in ("effort", "beta", "output_config", "fallback")):
+                raise
+            runner = client.beta.messages.tool_runner(**base)
+            stream_iter = iter(runner)
+            first = next(stream_iter)
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        stream = first
+        while True:
+            for event in stream:
+                if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                    yield {"type": "text", "delta": event.delta.text}
+            message = stream.get_final_message()
+            usage["input_tokens"] += message.usage.input_tokens
+            usage["output_tokens"] += message.usage.output_tokens
+            tool_uses = [b for b in message.content if b.type == "tool_use"]
+            if message.stop_reason == "refusal":
+                yield {"type": "error", "message": "the model declined this request"}
+                return
+            if message.stop_reason == "max_tokens" and tool_uses:
+                yield {"type": "error", "message": "the reply hit max_tokens mid tool call; ask again more narrowly"}
+                return
+            if not tool_uses:
+                break
+            for block in tool_uses:
+                yield {"type": "tool_call", "id": block.id, "name": block.name, "input": block.input}
+            response = runner.generate_tool_call_response()
+            if response:
+                names = {b.id: b.name for b in tool_uses}
+                for result in response["content"]:
+                    if isinstance(result, dict) and result.get("type") == "tool_result":
+                        content = result.get("content")
+                        text = content if isinstance(content, str) else json.dumps(content, default=str)
+                        yield {"type": "tool_result", "id": result.get("tool_use_id"), "name": names.get(result.get("tool_use_id"), "?"), "output": text[:4000]}
+            try:
+                stream = next(stream_iter)
+            except StopIteration:
+                break
+        yield {"type": "done", "usage": usage, "model": model_id}
+    except anthropic.AuthenticationError:
+        yield {"type": "error", "message": "Anthropic rejected the credentials: set ANTHROPIC_API_KEY (or run `ant auth login`) and restart tinystudio serve"}
+    except anthropic.NotFoundError as cause:
+        yield {"type": "error", "message": f"Anthropic does not know model {model_id!r}: {cause.message}"}
+    except anthropic.RateLimitError:
+        yield {"type": "error", "message": "Anthropic rate limit; try again in a moment"}
+    except anthropic.APIStatusError as cause:
+        workspace = "not scoped to a workspace" in str(cause) or "anthropic-workspace-id" in str(cause)
+        yield {"type": "error", "message": WORKSPACE_HINT if workspace else f"Anthropic API error {cause.status_code}: {cause.message}"}
+    except anthropic.APIConnectionError as cause:
+        yield {"type": "error", "message": f"could not reach the Anthropic API: {cause}"}
+
+
+# ---------------------------------------------------------------------- openai
+def _openai_tools(specs: list[ToolSpec]) -> list[dict[str, Any]]:
+    """Function-calling definitions derived from the same signatures the Anthropic SDK uses."""
+    from anthropic import beta_tool
+
+    definitions = []
+    for spec in specs:
+        schema = beta_tool(spec.func, name=spec.name, description=spec.description).to_dict()
+        definitions.append({"type": "function", "name": spec.name, "description": spec.description, "parameters": schema["input_schema"]})
+    return definitions
+
+
+def run_openai(studio: Studio, messages: list[dict[str, str]], allow_destructive: bool = False, model: str | None = None, context: dict[str, Any] | None = None, bridge: UiBridge | None = None) -> Iterator[dict[str, Any]]:
+    """Same event stream through the OpenAI Responses API (function calling)."""
+    import openai
+
+    model_id = model or openai_default()
+    if not model_id:
+        yield {"type": "error", "message": "pick an OpenAI model (or set TINYSTUDIO_OPENAI_MODEL)"}
+        return
+    if not openai_available():
+        yield {"type": "error", "message": "no OpenAI credentials: set OPENAI_API_KEY before starting tinystudio serve"}
+        return
+    try:
+        client = openai.OpenAI()
+    except Exception as cause:  # noqa: BLE001
+        yield {"type": "error", "message": f"OpenAI client could not be created: {cause}"}
+        return
+    specs = _selected(studio, allow_destructive) + (ui_tool_specs(bridge) if bridge else [])
+    functions = {spec.name: _json_tool(spec) for spec in specs}
+    tools = _openai_tools(specs)
+    conversation: list[Any] = [{"role": m["role"], "content": m["content"]} for m in messages]
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    instructions = SYSTEM + _context_block(context)
+    try:
+        for _ in range(40):
+            with client.responses.stream(model=model_id, instructions=instructions, input=conversation, tools=tools) as stream:
+                for event in stream:
+                    if event.type == "response.output_text.delta":
+                        yield {"type": "text", "delta": event.delta}
+                response = stream.get_final_response()
+            if response.usage:
+                usage["input_tokens"] += response.usage.input_tokens
+                usage["output_tokens"] += response.usage.output_tokens
+            calls = [item for item in response.output if item.type == "function_call"]
+            if not calls:
+                break
+            conversation.extend(item.model_dump(exclude_none=True) for item in response.output)
+            for call in calls:
+                try:
+                    arguments = json.loads(call.arguments or "{}")
+                    if not isinstance(arguments, dict):
+                        raise ValueError("arguments must be a JSON object")
+                except (json.JSONDecodeError, ValueError) as cause:
+                    arguments = None
+                    output = json.dumps({"error": f"invalid JSON arguments: {cause}"})
+                yield {"type": "tool_call", "id": call.call_id, "name": call.name, "input": arguments}
+                if arguments is not None:
+                    function = functions.get(call.name)
+                    if function is None:
+                        output = json.dumps({"error": f"unknown tool {call.name}"})
+                    else:
+                        try:
+                            output = function(**arguments)
+                        except TypeError as cause:  # wrong or missing parameters
+                            output = json.dumps({"error": f"bad arguments for {call.name}: {cause}"})
+                        except Exception as cause:  # noqa: BLE001 - the model must see the failure, not the server
+                            output = json.dumps({"error": f"{type(cause).__name__}: {cause}"})
+                yield {"type": "tool_result", "id": call.call_id, "name": call.name, "output": output[:4000]}
+                conversation.append({"type": "function_call_output", "call_id": call.call_id, "output": output})
+        yield {"type": "done", "usage": usage, "model": model_id}
+    except openai.AuthenticationError:
+        yield {"type": "error", "message": "OpenAI rejected the credentials: set OPENAI_API_KEY and restart tinystudio serve"}
+    except openai.NotFoundError as cause:
+        yield {"type": "error", "message": f"OpenAI does not know model {model_id!r}: {cause.message}"}
+    except openai.APIStatusError as cause:
+        yield {"type": "error", "message": f"OpenAI API error {cause.status_code}: {cause.message}"}
+    except openai.APIConnectionError as cause:
+        yield {"type": "error", "message": f"could not reach the OpenAI API: {cause}"}
+
+
+def run(provider: str, studio: Studio, messages: list[dict[str, str]], allow_destructive: bool = False, model: str | None = None, context: dict[str, Any] | None = None, bridge: UiBridge | None = None) -> Iterator[dict[str, Any]]:
+    if provider == "anthropic":
+        return run_anthropic(studio, messages, allow_destructive, model, context, bridge)
+    if provider == "openai":
+        return run_openai(studio, messages, allow_destructive, model, context, bridge)
+    raise StudioError(f"unknown provider {provider!r}")
+
+
+def stream_events(provider: str, studio: Studio, messages: list[dict[str, str]], allow_destructive: bool = False, model: str | None = None, context: dict[str, Any] | None = None, with_ui: bool = True, runner: Any = None) -> Iterator[dict[str, Any]]:
+    """Run one turn on a worker thread and yield its events as they happen, interleaved with ui_request events.
+
+    The worker blocks while the browser answers an interface request, so the stream is read from a queue rather
+    than from the generator directly; a keepalive event is emitted every few seconds while waiting.
+    """
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+    bridge = UiBridge(events) if with_ui else None
+    runner = runner or run
+
+    def work() -> None:
+        try:
+            for event in runner(provider, studio, messages, allow_destructive, model, context, bridge):
+                events.put(event)
+        except StudioError as cause:
+            events.put({"type": "error", "message": str(cause)})
+        except Exception as cause:  # noqa: BLE001 - the page must see why the stream ended
+            events.put({"type": "error", "message": f"{type(cause).__name__}: {cause}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, name="assistant-turn", daemon=True).start()
+    while True:
+        try:
+            event = events.get(timeout=5.0)
+        except queue.Empty:
+            yield {"type": "keepalive"}
+            continue
+        if event is None:
+            return
+        yield event

@@ -18,11 +18,14 @@ dependencies = [
   "httpx>=0.28",
   "pydantic>=2.9",
   "python-multipart>=0.0.20",
+  "mcp>=2.3",
   "pypdf>=5.0",
   "rich>=13.9",
 ]
 
 [project.optional-dependencies]
+youtube = ["youtube-transcript-api>=1.0"]
+assistant = ["anthropic>=2.1", "openai>=3.36"]
 mlx = ["mlx-lm>=0.24"]
 dev = ["pytest>=8.3"]
 
