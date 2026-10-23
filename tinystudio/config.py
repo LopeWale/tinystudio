@@ -51,6 +51,7 @@ class Config:
     cloudflare_access_audience: str | None = None
     cloudflare_access_required: bool = False
     public_url: str | None = None
+    sync_row_limit: int = 100_000  # dataset-wide operations above this many rows run as worker tasks, not inside the request
 
     @property
     def inference_in_process(self) -> bool:
@@ -97,6 +98,7 @@ def _load() -> Config:
         cloudflare_access_audience=_env("CF_ACCESS_AUD") or None,
         cloudflare_access_required=_env("TINYSTUDIO_CF_ACCESS_REQUIRED", "0").lower() in ("1", "true", "yes"),
         public_url=_env("TINYSTUDIO_PUBLIC_URL").rstrip("/") or None,
+        sync_row_limit=int(_env("TINYSTUDIO_SYNC_ROW_LIMIT", "100000")),
     )
 
 

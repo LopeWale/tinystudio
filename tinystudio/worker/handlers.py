@@ -93,6 +93,37 @@ def dataset_auto_label(ctx: Context) -> dict[str, Any]:
         return datasets_svc.replace_rows(db, datasets_svc.get_dataset(db, project, a["dataset"]), labeled)
 
 
+def dataset_clean(ctx: Context) -> dict[str, Any]:
+    from tinystudio.core.quality import CleanSpec
+    from tinystudio.services import datasets as datasets_svc
+
+    a = ctx.args
+    with session() as db:
+        result = datasets_svc.apply_cleaning(db, ctx.project(db), a["dataset"], CleanSpec(**a.get("spec", {})))
+    ctx.progress(f"cleaned {a['dataset']}: {result['before']} -> {result['after']} datapoints")
+    return result
+
+
+def dataset_split(ctx: Context) -> dict[str, Any]:
+    from tinystudio.services import datasets as datasets_svc
+
+    a = ctx.args
+    with session() as db:
+        meta = datasets_svc.autosplit(db, ctx.project(db), a["dataset"], int(a.get("train_pct", 80)), int(a.get("seed", 0)), bool(a.get("synthetic_in_validation", False)))
+    ctx.progress(f"split {a['dataset']}: {meta['buckets']}")
+    return meta
+
+
+def snapshot_create(ctx: Context) -> dict[str, Any]:
+    from tinystudio.services import snapshots as snapshots_svc
+
+    a = ctx.args
+    with session() as db:
+        snap = snapshots_svc.create_snapshot(db, ctx.project(db), a["dataset"], a["name"])
+    ctx.progress(f"snapshot {snap['name']}: {snap['training_count']} training, {snap['validation_count']} validation")
+    return snap
+
+
 # ---------------------------------------------------------------- metrics, jobs, evaluations
 def metric_generate(ctx: Context) -> dict[str, Any]:
     from tinystudio.evaluation.evaluate import generate_rules
@@ -259,6 +290,9 @@ HANDLERS: dict[str, Any] = {
     "dataset.synthetic": dataset_synthetic,
     "dataset.augment": dataset_augment,
     "dataset.auto_label": dataset_auto_label,
+    "dataset.clean": dataset_clean,
+    "dataset.split": dataset_split,
+    "snapshot.create": snapshot_create,
     "metric.generate": metric_generate,
     "job.run": job_run,
     "job.analyze": job_analyze,

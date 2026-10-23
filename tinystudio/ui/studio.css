@@ -271,3 +271,10 @@ table.neurons .ctxcell{font-family:var(--mono);font-size:11.5px;max-width:420px;
 .project-switch select{width:100%;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--border-2);background:var(--panel);color:var(--text)}
 .pill.queued{background:var(--panel-3)}
 .pill.stopped{background:var(--panel-3);color:var(--text-2)}
+
+/* Picker intercepts the next data selection before normal row/chart actions. */
+.assistant-picking #app :is(tr, svg, .panel, .card, .tile) { cursor: crosshair; }
+.assistant-picking #app :is(tr, svg, .panel, .card, .tile):hover { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* The drawer has its own close control; keep the launcher away from Send. */
+#assist .fab.on { display: none; }

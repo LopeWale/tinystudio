@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, Sequence, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -85,15 +85,22 @@ class Dataset(Base):
     name: Mapped[str] = mapped_column(String(80))
     origin: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     labels: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))  # datapoints per bucket, maintained on every write
     created: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Datapoint(Base):
+    """One chat datapoint. Hash-partitioned by dataset (16 partitions, see migration c5d8e2f71a04)."""
+
     __tablename__ = "datapoints"
-    __table_args__ = (Index("ix_datapoints_dataset_position", "dataset_id", "position"), Index("ix_datapoints_dataset_bucket", "dataset_id", "bucket"))
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"))
+    __table_args__ = (
+        Index("ix_datapoints_dataset_position", "dataset_id", "position", unique=True),
+        Index("ix_datapoints_dataset_bucket", "dataset_id", "bucket", "position"),
+        {"postgresql_partition_by": "HASH (dataset_id)"},
+    )
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("datapoints_id_seq"), primary_key=True)
     position: Mapped[int] = mapped_column(Integer)
     messages: Mapped[list[Any]] = mapped_column(JSONB)
     bucket: Mapped[str] = mapped_column(String(16), default="uncategorized")
@@ -334,3 +341,20 @@ class Task(Base):
     rq_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worker: Mapped[str | None] = mapped_column(String(120), nullable=True)
     log_tail: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+
+
+class AssistantConversation(Base):
+    """A private snapshot; empty history retains a revision to prevent resurrection."""
+
+    __tablename__ = "assistant_conversations"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="ck_assistant_conversation_revision"),
+        Index("ix_assistant_conversations_user", "user_id"),
+    )
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger)
+    history: Mapped[list[Any]] = mapped_column(JSONB)
+    provider: Mapped[str] = mapped_column(String(80))
+    model: Mapped[str] = mapped_column(String(300))
+    updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

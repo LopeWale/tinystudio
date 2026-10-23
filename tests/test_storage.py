@@ -169,9 +169,9 @@ def test_snapshot_parquet_roundtrip_preserves_heterogeneous_rows_and_legacy(back
 
     train = [{'id': 'one', 'messages': [{'role': 'user', 'content': 'alpha'}], 'score': 3, 'labels': ['x']}, {'id': 'two', 'messages': [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'beta'}]}], 'score': 'three', 'metadata': {'nested': [None, True]}}]
     val = [{'id': 'three', 'messages': [], 'labels': []}]
-    dataset = SimpleNamespace(id='d', name='dataset')
+    dataset = SimpleNamespace(id='d', name='dataset', counts={'training': len(train), 'validation': len(val)})
     monkeypatch.setattr(snapshots.datasets_svc, 'get_dataset', lambda *args: dataset)
-    monkeypatch.setattr(snapshots.datasets_svc, 'rows', lambda *args, bucket: train if bucket == 'training' else val)
+    monkeypatch.setattr(snapshots.datasets_svc, 'iter_rows', lambda *args, bucket: iter(train if bucket == 'training' else val))
     monkeypatch.setattr(snapshots, 'storage', lambda: backend)
     monkeypatch.setattr(snapshots, 'config', lambda: SimpleNamespace(project_dir=lambda p: tmp_path / p))
 

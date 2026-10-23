@@ -1,11 +1,22 @@
-"""Datasets and datapoints in PostgreSQL."""
+"""Datasets and datapoints in PostgreSQL.
+
+Storage and retrieval rules (see the phase-two research report for the sources):
+
+- ``datapoints`` is hash-partitioned by ``dataset_id``; every query filters on it, so one partition is read.
+- Writes go through ``COPY`` (psycopg 3), not multi-row INSERT.
+- Each dataset row carries its per-bucket ``counts``; reads never count rows. Every mutation locks the dataset
+  row first, which serializes appends (positions stay unique) and keeps the counts exact.
+- Paging uses a keyset on ``position`` (``after``); ``offset`` remains for numbered pages in the interface.
+- Whole-dataset reads stream in batches (``iter_rows``) instead of loading every row at once.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from tinystudio.core.data import BUCKETS, DatapointError, assign_split, read_jsonl, validate_datapoint
@@ -13,6 +24,8 @@ from tinystudio.core.project import ProjectError, check_name, iso
 from tinystudio.db.models import CleaningRun, Datapoint, Dataset, Project, Snapshot
 
 ROW_FIELDS = ("messages", "bucket", "labels", "source", "rating", "rejected")
+BATCH_ROWS = 5000
+COPY_SQL = "COPY datapoints (dataset_id, position, messages, bucket, labels, source, rating, rejected) FROM STDIN"
 
 
 def row_dict(dp: Datapoint) -> dict[str, Any]:
@@ -26,12 +39,43 @@ def row_dict(dp: Datapoint) -> dict[str, Any]:
     return row
 
 
-def _insert_rows(db: Session, dataset_id: str, rows: list[dict[str, Any]], start: int) -> None:
+def _copy_rows(db: Session, dataset_id: str, rows: list[dict[str, Any]], start: int) -> None:
+    """Bulk-load validated rows with COPY on the session's own connection (same transaction)."""
     if not rows:
         return
-    payload = [{"dataset_id": dataset_id, "position": start + i, "messages": r["messages"], "bucket": r.get("bucket", "uncategorized"), "labels": r.get("labels", []), "source": r.get("source"), "rating": r.get("rating"), "rejected": r.get("rejected")} for i, r in enumerate(rows)]
-    for offset in range(0, len(payload), 2000):
-        db.execute(insert(Datapoint), payload[offset : offset + 2000])
+    from psycopg.types.json import Jsonb
+
+    db.flush()  # the dataset row must exist before its datapoints reference it
+    raw = db.connection().connection.driver_connection
+    with raw.cursor() as cursor, cursor.copy(COPY_SQL) as copy:
+        for i, r in enumerate(rows):
+            copy.write_row((dataset_id, start + i, Jsonb(r["messages"]), r.get("bucket", "uncategorized"), Jsonb(r.get("labels", [])), r.get("source"), r.get("rating"), r.get("rejected")))
+
+
+def _lock(db: Session, dataset: Dataset, shared: bool = False) -> None:
+    """Row-lock the dataset for the rest of the transaction: writers exclusive, snapshot readers shared."""
+    db.execute(select(Dataset.id).where(Dataset.id == dataset.id).with_for_update(read=shared))
+
+
+def _recount(db: Session, dataset: Dataset) -> dict[str, int]:
+    out = {bucket: 0 for bucket in BUCKETS}
+    for bucket, n in db.execute(select(Datapoint.bucket, func.count()).where(Datapoint.dataset_id == dataset.id).group_by(Datapoint.bucket)).all():
+        out[bucket] = int(n)
+    dataset.counts = out
+    return out
+
+
+def _bump(dataset: Dataset, rows: list[dict[str, Any]]) -> None:
+    current = {bucket: int((dataset.counts or {}).get(bucket, 0)) for bucket in BUCKETS}
+    for r in rows:
+        current[r.get("bucket", "uncategorized")] += 1
+    dataset.counts = current
+
+
+def _touch(db: Session, dataset: Dataset) -> None:
+    dataset.updated = func.now()
+    db.flush()
+    db.refresh(dataset)
 
 
 def get_dataset(db: Session, project: Project, name: str) -> Dataset:
@@ -42,11 +86,8 @@ def get_dataset(db: Session, project: Project, name: str) -> Dataset:
 
 
 def counts(db: Session, dataset: Dataset) -> dict[str, int]:
-    rows = db.execute(select(Datapoint.bucket, func.count()).where(Datapoint.dataset_id == dataset.id).group_by(Datapoint.bucket)).all()
-    out = {bucket: 0 for bucket in BUCKETS}
-    for bucket, n in rows:
-        out[bucket] = int(n)
-    return out
+    """Datapoints per bucket from the maintained counters (no row scan)."""
+    return {bucket: int((dataset.counts or {}).get(bucket, 0)) for bucket in BUCKETS}
 
 
 def meta(db: Session, dataset: Dataset) -> dict[str, Any]:
@@ -64,10 +105,12 @@ def create_dataset(db: Session, project: Project, name: str, rows: list[dict[str
     if db.scalar(select(Dataset.id).where(Dataset.project_id == project.id, Dataset.name == name)) is not None:
         raise ProjectError(f"dataset {name!r} already exists")
     clean = [validate_datapoint(r, f"record {i + 1}") for i, r in enumerate(rows)]
-    dataset = Dataset(project_id=project.id, name=name, origin=origin, labels=[])
+    dataset = Dataset(project_id=project.id, name=name, origin=origin, labels=[], counts={})
     db.add(dataset)
     db.flush()
-    _insert_rows(db, dataset.id, clean, 0)
+    _copy_rows(db, dataset.id, clean, 0)
+    _bump(dataset, clean)
+    _touch(db, dataset)
     return meta(db, dataset)
 
 
@@ -79,13 +122,45 @@ def create_from_jsonl(db: Session, project: Project, name: str, source: Path, or
 
 
 def count(db: Session, dataset: Dataset) -> int:
-    return int(db.scalar(select(func.count()).select_from(Datapoint).where(Datapoint.dataset_id == dataset.id)) or 0)
+    return sum(counts(db, dataset).values())
+
+
+def _query(dataset: Dataset, bucket: str | None, after: int | None) -> Any:
+    query = select(Datapoint).where(Datapoint.dataset_id == dataset.id).order_by(Datapoint.position)
+    if bucket:
+        query = query.where(Datapoint.bucket == bucket)
+    if after is not None:
+        query = query.where(Datapoint.position > after)
+    return query
+
+
+def page(db: Session, dataset: Dataset, limit: int = 25, after: int | None = None, offset: int = 0, bucket: str | None = None) -> tuple[list[dict[str, Any]], int | None]:
+    """One page of rows and the cursor for the next one (None at the end). ``after`` wins over ``offset``."""
+    query = _query(dataset, bucket, after)
+    if offset and after is None:
+        query = query.offset(offset)
+    points = list(db.scalars(query.limit(limit + 1)))
+    more = len(points) > limit
+    points = points[:limit]
+    return [row_dict(dp) for dp in points], (points[-1].position if more and points else None)
+
+
+def iter_rows(db: Session, dataset: Dataset, bucket: str | None = None, batch: int = BATCH_ROWS) -> Iterator[dict[str, Any]]:
+    """Every row in position order, read in keyset batches so memory stays bounded."""
+    after: int | None = None
+    while True:
+        points = list(db.scalars(_query(dataset, bucket, after).limit(batch)))
+        for dp in points:
+            yield row_dict(dp)
+        if len(points) < batch:
+            return
+        after = points[-1].position
 
 
 def rows(db: Session, dataset: Dataset, offset: int = 0, limit: int | None = None, bucket: str | None = None) -> list[dict[str, Any]]:
-    query = select(Datapoint).where(Datapoint.dataset_id == dataset.id).order_by(Datapoint.position, Datapoint.id)
-    if bucket:
-        query = query.where(Datapoint.bucket == bucket)
+    if limit is None and not offset:
+        return list(iter_rows(db, dataset, bucket))
+    query = _query(dataset, bucket, None)
     if offset:
         query = query.offset(offset)
     if limit is not None:
@@ -104,35 +179,52 @@ def add_rows(db: Session, project: Project, name: str, new_rows: list[dict[str, 
         if bucket is not None:
             value["bucket"] = bucket
         clean.append(value)
+    _lock(db, dataset)
+    db.refresh(dataset)  # counters as of the lock, not as of an earlier read
     start = int(db.scalar(select(func.coalesce(func.max(Datapoint.position), -1)).where(Datapoint.dataset_id == dataset.id))) + 1
-    _insert_rows(db, dataset.id, clean, start)
-    dataset.updated = func.now()
+    _copy_rows(db, dataset.id, clean, start)
+    _bump(dataset, clean)
+    _touch(db, dataset)
     return meta(db, dataset)
 
 
 def replace_rows(db: Session, dataset: Dataset, new_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Overwrite every datapoint (cleaning, auto-labelling). One transaction, so readers see old or new, never half."""
     clean = [validate_datapoint(r, f"record {i + 1}") for i, r in enumerate(new_rows)]
+    _lock(db, dataset)
     db.execute(delete(Datapoint).where(Datapoint.dataset_id == dataset.id))
-    _insert_rows(db, dataset.id, clean, 0)
-    dataset.updated = func.now()
+    _copy_rows(db, dataset.id, clean, 0)
+    dataset.counts = {}
+    _bump(dataset, clean)
+    _touch(db, dataset)
     return meta(db, dataset)
 
 
 def delete_rows(db: Session, dataset: Dataset, ids: list[int]) -> dict[str, Any]:
     if ids:
+        _lock(db, dataset)
         db.execute(delete(Datapoint).where(Datapoint.dataset_id == dataset.id, Datapoint.id.in_(ids)))
-        dataset.updated = func.now()
+        _recount(db, dataset)
+        _touch(db, dataset)
     return meta(db, dataset)
 
 
 def autosplit(db: Session, project: Project, name: str, training_pct: int = 80, seed: int = 0, allow_synthetic_in_validation: bool = False) -> dict[str, Any]:
     dataset = get_dataset(db, project, name)
-    current = rows(db, dataset)
+    _lock(db, dataset)
+    # the split needs only id, bucket and source; skipping messages avoids de-TOASTing every row
+    current = [{"id": i, "bucket": b, "source": s or ""} for i, b, s in db.execute(select(Datapoint.id, Datapoint.bucket, Datapoint.source).where(Datapoint.dataset_id == dataset.id).order_by(Datapoint.position)).all()]
     moves = assign_split(current, training_pct, seed, allow_synthetic_in_validation)
     if moves:
-        db.execute(update(Datapoint), [{"id": current[index]["id"], "bucket": bucket} for index, bucket in moves.items()])
-        dataset.updated = func.now()
+        # one set-based UPDATE joined to unnested arrays, instead of one statement per row
+        ids = [current[index]["id"] for index in moves]
+        buckets = list(moves.values())
+        db.execute(
+            text("UPDATE datapoints AS d SET bucket = m.bucket FROM unnest(CAST(:ids AS bigint[]), CAST(:buckets AS text[])) AS m(id, bucket) WHERE d.dataset_id = :dataset AND d.id = m.id"),
+            {"ids": ids, "buckets": buckets, "dataset": dataset.id},
+        )
+        _recount(db, dataset)
+        _touch(db, dataset)
     return meta(db, dataset)
 
 
@@ -140,7 +232,10 @@ def set_bucket(db: Session, dataset: Dataset, ids: list[int], bucket: str) -> di
     if bucket not in BUCKETS:
         raise DatapointError(f"bucket must be one of {BUCKETS}")
     if ids:
+        _lock(db, dataset)
         db.execute(update(Datapoint).where(Datapoint.dataset_id == dataset.id, Datapoint.id.in_(ids)).values(bucket=bucket))
+        _recount(db, dataset)
+        _touch(db, dataset)
     return meta(db, dataset)
 
 
@@ -168,7 +263,8 @@ def apply_cleaning(db: Session, project: Project, name: str, spec: Any) -> dict[
     from tinystudio.core.quality import clean, redact_pii
 
     dataset = get_dataset(db, project, name)
-    current = rows(db, dataset)
+    _lock(db, dataset)
+    current = list(iter_rows(db, dataset))
     redacted = 0
     if spec.redact_pii:
         current, redacted = redact_pii(current)
@@ -187,4 +283,4 @@ def cleaning_history(db: Session, dataset: Dataset) -> list[dict[str, Any]]:
 def profile(db: Session, dataset: Dataset) -> dict[str, Any]:
     from tinystudio.core.quality import profile as quality_profile
 
-    return quality_profile(rows(db, dataset))
+    return quality_profile(list(iter_rows(db, dataset)))

@@ -140,3 +140,29 @@ def test_dotenv_parsing_and_redaction(tmp_path: Path, monkeypatch: pytest.Monkey
     assert os.environ["A_KEY"] == "quoted value" and os.environ["B_KEY"] == "preset" and os.environ["C_KEY"] == "single"
     assert redacted("postgresql+psycopg://user:secret@host:5432/db") == "postgresql+psycopg://user:***@host:5432/db"
     assert redacted("redis://host:6379/0") == "redis://host:6379/0"
+
+
+def test_indexed_near_duplicate_removal_matches_brute_force():
+    import random
+
+    rng = random.Random(7)
+    vocab = [f"w{i}" for i in range(400)]
+    base = [" ".join(rng.choice(vocab) for _ in range(rng.randint(6, 18))) for _ in range(300)]
+    texts = []
+    for text in base:
+        texts.append(text)
+        if rng.random() < 0.4:  # a near copy: one word changed
+            words = text.split()
+            words[rng.randrange(len(words))] = rng.choice(vocab)
+            texts.append(" ".join(words))
+    rows = [row(t, "a") for t in texts]
+    kept, removed = quality.clean(rows, quality.CleanSpec(drop_near_duplicates=True, near_duplicate_threshold=0.7))
+    # brute force: the previous all-pairs definition
+    expected, kept_sh = [], []
+    for r in rows:
+        sh = quality._shingles(r["messages"][0]["content"])
+        if sh and any(len(sh & o) / len(sh | o) >= 0.7 for o in kept_sh if o):
+            continue
+        kept_sh.append(sh)
+        expected.append(r)
+    assert kept == expected and removed.get("near_duplicate", 0) == len(rows) - len(expected) > 0

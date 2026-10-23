@@ -91,15 +91,14 @@ def import_directory(root: Path, name: str | None = None, link: bool = True, pro
         train = list(read_jsonl(child / "train.jsonl")) if (child / "train.jsonl").exists() else []
         val = list(read_jsonl(child / "val.jsonl")) if (child / "val.jsonl").exists() else []
         with session() as db:
-            from tinystudio.db.models import Dataset, Snapshot, SnapshotRow
+            from tinystudio.db.models import Dataset, Snapshot
+            from tinystudio.services.snapshots import freeze
 
             dataset = db.scalar(select(Dataset).where(Dataset.project_id == project_id, Dataset.name == meta.get("dataset", "")))
             snapshot = Snapshot(project_id=project_id, name=child.name, dataset_id=dataset.id if dataset else None, dataset_name=meta.get("dataset", ""), training_count=len(train), validation_count=len(val), created=_when(meta.get("created")))
             db.add(snapshot)
             db.flush()
-            payload = [{"snapshot_id": snapshot.id, "split": "train", "position": i, "row": r} for i, r in enumerate(train)] + [{"snapshot_id": snapshot.id, "split": "val", "position": i, "row": r} for i, r in enumerate(val)]
-            for offset in range(0, len(payload), 2000):
-                db.execute(insert(SnapshotRow), payload[offset : offset + 2000])
+            snapshot.storage_prefix, _ = freeze(project_id, snapshot.id, {"train": train, "val": val})
         summary["snapshots"] += 1
         progress(f"snapshot {child.name}: {len(train)} train, {len(val)} val")
 

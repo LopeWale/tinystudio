@@ -27,6 +27,7 @@ function rawFetch(path, options = {}) {
   return fetch(scoped(path), { credentials: "same-origin", ...options, headers });
 }
 async function api(path, options = {}) {
+  const pageCapture = state.pageContext;
   const response = await rawFetch(path, options);
   if (response.status === 401 && !path.startsWith("/api/auth/")) { showLogin(); throw new Error("sign in to continue"); }
   if (!response.ok) {
@@ -37,12 +38,15 @@ async function api(path, options = {}) {
   const type = response.headers.get("content-type") || "";
   if (!type.includes("json")) return response.text();
   const data = await response.json();
-  if (!options.method || options.method === "GET") recordApi(path, data);
+  if (pageCapture) assertRender(pageCapture);
+  if (!options.method || options.method === "GET") recordApi(path, data, pageCapture);
   return data;
 }
 const post = (path, body) => api(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
 const put = (path, body) => api(path, { method: "PUT", body: JSON.stringify(body ?? {}) });
 const patch = (path, body) => api(path, { method: "PATCH", body: JSON.stringify(body ?? {}) });
+// Large datasets are processed by a worker: the API answers 202 {queued, task} instead of the result.
+function queued(result, what) { if (!result || !result.queued) return false; toast(`${what} runs as a background task (large dataset); the page refreshes when it finishes`); showTasks(); pollTasks(); return true; }
 const del = (path) => api(path, { method: "DELETE" });
 
 function toast(message, isError = false) {
@@ -50,11 +54,12 @@ function toast(message, isError = false) {
   el.className = "toast" + (isError ? " err" : ""); el.textContent = message;
   document.body.appendChild(el); setTimeout(() => el.remove(), isError ? 9000 : 3500);
 }
-const guard = (fn) => async (...args) => { try { return await fn(...args); } catch (e) { toast(e.message, true); } };
+const guard = (fn) => async (...args) => { try { return await fn(...args); } catch (e) { if (e.name !== "StaleRenderError") toast(e.message, true); } };
 
 // ------------------------------------------------------------------ modal
-function modal({ title, body, footer = "", wide = false, onMount }) {
+function modal({ title, body, footer = "", wide = false, onMount, sensitive = false }) {
   const back = document.createElement("div"); back.className = "modal-back";
+  if (sensitive) back.dataset.assistantSensitive = "true";
   back.innerHTML = `<div class="modal ${wide ? "wide" : ""}"><div class="mhead">${esc(title)}<button class="x" aria-label="close">✕</button></div><div class="mbody"></div>${footer ? `<div class="mfoot">${footer}</div>` : ""}</div>`;
   const bodyEl = $(".mbody", back);
   if (typeof body === "string") bodyEl.innerHTML = body; else bodyEl.appendChild(body);
@@ -99,10 +104,15 @@ const routes = [
 ];
 function go(hash) { location.hash = hash; }
 async function render() {
+  syncAssistantScope();
+  state.pageContext = { route: location.hash || "#/", project: state.project, api: [] };
+  ASSIST.selection = null;
+  uiRefs.clear();
+  $$(".modal-back").forEach((el) => el.remove());
   const hash = location.hash || "#/";
   for (const [re, fn] of routes) {
     const m = hash.match(re);
-    if (m) { try { await fn(m); } catch (e) { toast(e.message, true); layout("Error", `<div class="error">${esc(e.message)}</div>`); } return; }
+    if (m) { try { await fn(m); } catch (e) { if (e.name === "StaleRenderError") return; toast(e.message, true); layout("Error", `<div class="error">${esc(e.message)}</div>`); } return; }
   }
   go("#/datasets");
 }
@@ -154,11 +164,12 @@ function sidebar(active) {
 function layout(active, contentHtml, crumbs = []) {
   const app = $("#app");
   app.innerHTML = `${sidebar(active)}<div class="main"><div class="topbar">${crumbs.map((c, i) => `${i ? '<span class="sep">›</span>' : ""}${c.href ? `<a href="${c.href}">${esc(c.label)}</a>` : `<span>${esc(c.label)}</span>`}`).join("")}<span class="spacer"></span><span id="llmStatus"></span></div><div class="content">${contentHtml}</div></div>`;
+  state.domContext = state.pageContext;
   const sw = $("#projectSwitch", app);
   if (sw) sw.onchange = guard(async () => {
     if (sw.value === "__new__") { sw.value = state.project; return newProjectModal(); }
     if (sw.value === "__all__") { sw.value = state.project; return go("#/projects"); }
-    await selectProject(sw.value); state.overview = null; ASSIST.models = null; go("#/datasets"); render();
+    await selectProject(sw.value); state.overview = null; go("#/datasets"); render();
   });
   const out = $("#signOut", app);
   if (out) out.onclick = guard(async (e) => { e.preventDefault(); const result = await post("/api/auth/logout", {}); if (result.logout_url) location.assign(result.logout_url); else location.reload(); });
@@ -171,14 +182,16 @@ async function ensureOverview(force = false) {
 
 // ------------------------------------------------------------------ datasets
 async function pageDatasets() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const datasets = await api("/api/datasets");
+  assertRender(view);
   const content = layout("datasets", `
     <div class="page-head"><h1>Datasets</h1><span class="meta">${datasets.length} dataset${datasets.length === 1 ? "" : "s"}</span><div class="actions"><input id="dsSearch" placeholder="Search" style="width:220px"><button class="btn primary" id="newDataset">+ Create Dataset</button></div></div>
     <div class="cards" id="dsCards"></div>`, [{ label: "Datasets" }]);
   const draw = (q = "") => {
     const rows = datasets.filter((d) => d.name.toLowerCase().includes(q.toLowerCase()));
-    $("#dsCards", content).innerHTML = rows.length ? rows.map((d) => `<div class="card clickable" data-ds="${esc(d.name)}"><h3>${esc(d.name)}</h3><div class="sub">${d.datapoints} datapoints · ${d.snapshot_count} snapshot${d.snapshot_count === 1 ? "" : "s"}${d.origin?.kind === "synthetic" ? ' · <span class="pill synthetic">Synthetic</span>' : ""}</div><div class="foot"><span>Created on: ${fmtDate(d.created)}</span><span class="arrow">→</span></div></div>`).join("") : `<div class="empty"><b>No datasets yet</b>Upload a JSONL file or generate one from your documents.</div>`;
+    $("#dsCards", content).innerHTML = rows.length ? rows.map((d) => `<div ${dataContext("Dataset", d)} class="card clickable" data-ds="${esc(d.name)}"><h3>${esc(d.name)}</h3><div class="sub">${d.datapoints} datapoints · ${d.snapshot_count} snapshot${d.snapshot_count === 1 ? "" : "s"}${d.origin?.kind === "synthetic" ? ' · <span class="pill synthetic">Synthetic</span>' : ""}</div><div class="foot"><span>Created on: ${fmtDate(d.created)}</span><span class="arrow">→</span></div></div>`).join("") : `<div class="empty"><b>No datasets yet</b>Upload a JSONL file or generate one from your documents.</div>`;
     $$("[data-ds]", content).forEach((c) => c.onclick = () => go(`#/datasets/${encodeURIComponent(c.dataset.ds)}`));
   };
   draw();
@@ -272,10 +285,12 @@ function createDatasetWizard() {
 }
 
 async function pageDataset(name) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   let offset = 0; const limit = 15;
   const info = state.overview.tree.datasets.find((d) => d.name === name);
   const snaps = info?.snapshots || [];
+  assertRender(view);
   const content = layout("datasets", `
     <div class="page-head"><div><h1>${esc(name)}</h1><div class="meta">Created on: ${fmtDate(info?.created)} ${info?.origin?.kind === "synthetic" ? '· <span class="pill synthetic">Synthetic</span>' : ""}</div></div>
       <div class="actions">
@@ -285,7 +300,7 @@ async function pageDataset(name) {
         <button class="btn" id="btnSplit">⚖ Autosplit</button>
         <button class="btn" id="btnLabels">🏷 Labels</button>
         <button class="btn" id="btnQuality">📊 Quality</button>
-        <a class="btn" href="/api/datasets/${encodeURIComponent(name)}/download">⬇</a>
+        <a class="btn" href="${scoped(`/api/datasets/${encodeURIComponent(name)}/download`)}">⬇</a>
         <button class="btn" id="btnAdd">+</button>
         <button class="btn danger" id="btnDelete">Delete</button>
       </div></div>
@@ -295,7 +310,7 @@ async function pageDataset(name) {
     [{ label: "Datasets", href: "#/datasets" }, { label: name }]);
   let filter = "";
   const drawTiles = (meta) => {
-    $("#tiles", content).innerHTML = [["uncategorized", "var(--text-3)"], ["training", "var(--s1)"], ["validation", "var(--s3)"]].map(([b, c]) => `<div class="tile ${filter === b ? "active" : ""}" data-b="${b}"><div class="k"><span class="dot" style="background:${c}"></span>${b[0].toUpperCase() + b.slice(1)}</div><div class="v">${meta.buckets[b]}</div></div>`).join("") + (meta.labels?.length ? `<div class="tile"><div class="k">Labels</div><div class="v" style="font-size:13px">${meta.labels.map((l) => esc(l.name)).join(", ")}</div></div>` : "");
+    $("#tiles", content).innerHTML = [["uncategorized", "var(--text-3)"], ["training", "var(--s1)"], ["validation", "var(--s3)"]].map(([b, c]) => `<div ${dataContext("Dataset bucket", {bucket:b,count:meta.buckets[b]})} class="tile ${filter === b ? "active" : ""}" data-b="${b}"><div class="k"><span class="dot" style="background:${c}"></span>${b[0].toUpperCase() + b.slice(1)}</div><div class="v">${meta.buckets[b]}</div></div>`).join("") + (meta.labels?.length ? `<div class="tile"><div class="k">Labels</div><div class="v" style="font-size:13px">${meta.labels.map((l) => esc(l.name)).join(", ")}</div></div>` : "");
     $$("[data-b]", content).forEach((t) => t.onclick = () => { filter = filter === t.dataset.b ? "" : t.dataset.b; $("#bucketFilter", content).value = filter; offset = 0; load(); });
   };
   const load = guard(async () => {
@@ -306,7 +321,7 @@ async function pageDataset(name) {
     $("#dpCount", content).textContent = `${rows.length} datapoints`;
     $("#dpTable", content).innerHTML = `<table><thead><tr><th>#</th><th>User message</th><th>Assistant response</th><th>Bucket</th><th>Labels</th><th>Data type</th></tr></thead><tbody>${page.map((r) => {
       const user = [...r.messages].reverse().find((m) => m.role === "user")?.content || "";
-      return `<tr class="clickable" data-i="${r.index}"><td class="mono muted">${r.index + 1}</td><td class="truncate">${esc(user)}</td><td class="truncate mono">${esc(r.messages[r.messages.length - 1].content)}</td><td><span class="pill">${r.bucket}</span></td><td class="muted">${esc((r.labels || []).filter((l) => l !== "synthetic" && l !== "augmented").join(", "))}</td><td>${r.source?.startsWith("synthetic") ? '<span class="pill synthetic">Synthetic</span>' : r.source?.startsWith("trace") ? '<span class="pill info">Trace</span>' : '<span class="pill">Uploaded</span>'}</td></tr>`;
+      return `<tr ${dataContext("Datapoint", r)} class="clickable" data-i="${r.index}"><td class="mono muted">${r.index + 1}</td><td class="truncate">${esc(user)}</td><td class="truncate mono">${esc(r.messages[r.messages.length - 1].content)}</td><td><span class="pill">${r.bucket}</span></td><td class="muted">${esc((r.labels || []).filter((l) => l !== "synthetic" && l !== "augmented").join(", "))}</td><td>${r.source?.startsWith("synthetic") ? '<span class="pill synthetic">Synthetic</span>' : r.source?.startsWith("trace") ? '<span class="pill info">Trace</span>' : '<span class="pill">Uploaded</span>'}</td></tr>`;
     }).join("") || `<tr><td colspan="6" class="empty">No datapoints in this bucket.</td></tr>`}</tbody></table>
     <div class="pager"><span>Results ${rows.length ? offset + 1 : 0} - ${Math.min(offset + limit, rows.length)} of ${rows.length}</span><span class="spacer"></span><button class="btn sm" id="prev" ${offset === 0 ? "disabled" : ""}>‹</button><span class="cur">${Math.floor(offset / limit) + 1}</span><button class="btn sm" id="next" ${offset + limit >= rows.length ? "disabled" : ""}>›</button></div>`;
     $("#prev", content).onclick = () => { offset -= limit; load(); };
@@ -327,7 +342,7 @@ async function pageDataset(name) {
     const m = modal({ title: "Autosplit dataset", body: `<p class="muted">Assign every uncategorized datapoint to training or validation. Existing assignments are kept.</p><div class="field"><label>Training percentage: <b id="spV">80</b>%</label><input id="sp" type="range" min="1" max="99" value="80"></div><label class="radio-card" id="synthCard"><input type="checkbox" id="allowSynth"><div><b>Allow synthetic data in validation</b><span>Off keeps generated rows out of the validation split so the score reflects real data.</span></div></label>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Split</button>` });
     $("#sp", m.el).oninput = (e) => $("#spV", m.el).textContent = e.target.value;
     $("[data-cancel]", m.el).onclick = m.close;
-    $("[data-ok]", m.el).onclick = guard(async () => { const meta = await post(`/api/datasets/${encodeURIComponent(name)}/split`, { train_pct: Number($("#sp", m.el).value), synthetic_in_validation: $("#allowSynth", m.el).checked }); toast(`training ${meta.buckets.training} · validation ${meta.buckets.validation}`); m.close(); load(); });
+    $("[data-ok]", m.el).onclick = guard(async () => { const meta = await post(`/api/datasets/${encodeURIComponent(name)}/split`, { train_pct: Number($("#sp", m.el).value), synthetic_in_validation: $("#allowSynth", m.el).checked }); m.close(); if (queued(meta, "the split")) return; toast(`training ${meta.buckets.training} · validation ${meta.buckets.validation}`); load(); });
   };
   $("#btnSnapshots", content).onclick = () => snapshotsDialog(name, snaps, () => { pageDataset(name); });
   $("#btnLabels", content).onclick = () => labelsDialog(name, info?.labels || [], load);
@@ -348,10 +363,10 @@ function showDatapoint(row, index) {
 }
 function snapshotsDialog(dataset, snaps, after) {
   const m = modal({ title: "Snapshots", body: `<p class="muted">A snapshot freezes the current training and validation buckets. Finetuning and evaluation run on snapshots.</p>
-    <table><thead><tr><th>Name</th><th>Training</th><th>Validation</th><th>Created</th><th></th></tr></thead><tbody>${snaps.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${s.training_count}</td><td>${s.validation_count}</td><td>${fmtDate(s.created)}</td><td style="text-align:right"><a class="btn sm" href="/api/snapshots/${encodeURIComponent(s.name)}/download">⬇ Download</a> <button class="btn sm danger" data-del="${esc(s.name)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">None yet.</td></tr>`}</tbody></table>
+    <table><thead><tr><th>Name</th><th>Training</th><th>Validation</th><th>Created</th><th></th></tr></thead><tbody>${snaps.map((s) => `<tr ${dataContext("Snapshot", s)}><td><b>${esc(s.name)}</b></td><td>${s.training_count}</td><td>${s.validation_count}</td><td>${fmtDate(s.created)}</td><td style="text-align:right"><a class="btn sm" href="${scoped(`/api/snapshots/${encodeURIComponent(s.name)}/download`)}">⬇ Download</a> <button class="btn sm danger" data-del="${esc(s.name)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">None yet.</td></tr>`}</tbody></table>
     <div class="row" style="margin-top:14px"><div class="field"><label>New snapshot name</label><input id="snName" placeholder="${esc(dataset)}-v${snaps.length + 1}"></div><button class="btn primary" id="snCreate">Create snapshot</button></div>`, footer: `<button class="btn" data-close>Close</button>` });
   $("[data-close]", m.el).onclick = m.close;
-  $("#snCreate", m.el).onclick = guard(async () => { const nm = $("#snName", m.el).value.trim() || `${dataset}-v${snaps.length + 1}`; const s = await post("/api/snapshots", { dataset, name: nm }); toast(`snapshot ${s.name}: ${s.training_count} / ${s.validation_count}`); m.close(); after(); });
+  $("#snCreate", m.el).onclick = guard(async () => { const nm = $("#snName", m.el).value.trim() || `${dataset}-v${snaps.length + 1}`; const s = await post("/api/snapshots", { dataset, name: nm }); m.close(); if (queued(s, `snapshot ${nm}`)) return; toast(`snapshot ${s.name}: ${s.training_count} / ${s.validation_count}`); after(); });
   $$("[data-del]", m.el).forEach((b) => b.onclick = () => confirmModal("Delete snapshot", `Delete snapshot "${b.dataset.del}"? Jobs that used it keep their results.`, async () => { await del(`/api/snapshots/${encodeURIComponent(b.dataset.del)}`); m.close(); after(); }));
 }
 function labelsDialog(dataset, labels, after) {
@@ -375,7 +390,7 @@ function histogram(h, color = "var(--s1)", width = 320, height = 90) {
   if (!h || !h.counts || !h.counts.length) return `<div class="muted">no data</div>`;
   const max = Math.max(...h.counts, 1), n = h.counts.length, gap = 2, bw = (width - gap * (n - 1)) / n;
   const bars = h.counts.map((c, i) => `<rect x="${(i * (bw + gap)).toFixed(1)}" y="${(height - 14 - (c / max) * (height - 18)).toFixed(1)}" width="${bw.toFixed(1)}" height="${((c / max) * (height - 18)).toFixed(1)}" rx="2" fill="${color}"><title>${h.bins[i]}–${h.bins[i + 1] ?? h.bins[i]}: ${c}</title></rect>`).join("");
-  return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:${height}px">${bars}<text x="0" y="${height - 2}" font-size="10" fill="var(--text-3)" font-family="var(--mono)">${h.bins[0]}</text><text x="${width}" y="${height - 2}" font-size="10" fill="var(--text-3)" text-anchor="end" font-family="var(--mono)">${h.bins[h.bins.length - 1]}</text></svg>`;
+  return `<svg ${dataContext("Histogram bins and counts", h)} viewBox="0 0 ${width} ${height}" style="width:100%;height:${height}px">${bars}<text x="0" y="${height - 2}" font-size="10" fill="var(--text-3)" font-family="var(--mono)">${h.bins[0]}</text><text x="${width}" y="${height - 2}" font-size="10" fill="var(--text-3)" text-anchor="end" font-family="var(--mono)">${h.bins[h.bins.length - 1]}</text></svg>`;
 }
 async function qualityDialog(dataset, after) {
   const body = document.createElement("div");
@@ -383,8 +398,8 @@ async function qualityDialog(dataset, after) {
   const m = modal({ title: `Data quality · ${dataset}`, body, wide: true, footer: `<button class="btn" data-close>Close</button>` });
   $("[data-close]", m.el).onclick = m.close;
   const p = await api(`/api/datasets/${encodeURIComponent(dataset)}/quality`);
-  const stat = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
-  const dist = (pairs) => pairs.length ? `<table>${pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v}</td><td style="width:40%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, 100 * v / pairs[0][1])}%"></div></td></tr>`).join("")}</table>` : `<div class="muted">none</div>`;
+  const stat = (k, v) => `<div ${dataContext(k, {label:k,value:v})} class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const dist = (pairs) => pairs.length ? `<table>${pairs.map(([k, v]) => `<tr ${dataContext("Distribution entry", {label:k,value:v})}><td>${esc(k)}</td><td class="num">${v}</td><td style="width:40%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, 100 * v / pairs[0][1])}%"></div></td></tr>`).join("")}</table>` : `<div class="muted">none</div>`;
   const o = p.outliers, d = p.duplicates;
   body.innerHTML = `
     <div class="tiles">${stat("Datapoints", p.count)}${stat("Approx. tokens", p.approx_tokens.total.toLocaleString())}${stat("Mean turns", p.turns.mean)}${stat("With system prompt", p.turns.with_system_prompt)}${stat("Exact duplicate user turns", d.exact_user_rows)}${stat("Near-duplicate pairs", d.near_pair_count)}${stat("Empty-like rows", o.empty_like.length)}${stat("Length outliers", o.too_short.length + o.too_long.length)}${stat("JSON answers", p.format.answers_json_pct + "%")}${p.ratings.count ? stat("Mean rating", p.ratings.mean) : ""}</div>
@@ -396,8 +411,8 @@ async function qualityDialog(dataset, after) {
       <div class="panel"><div class="head"><h2>Labels</h2></div><div class="body">${dist(p.labels)}</div></div>
       <div class="panel"><div class="head"><h2>Sources and buckets</h2></div><div class="body">${dist(p.sources)}<div style="height:8px"></div>${dist(Object.entries(p.buckets))}${p.ratings.count ? `<div style="margin-top:10px"><div class="muted">Curation ratings (1–10)</div>${histogram(p.ratings.histogram, "var(--s4)", 320, 70)}</div>` : ""}</div></div>
     </div>
-    ${d.examples.length ? `<div class="panel" style="margin-bottom:14px"><div class="head"><h2>Duplicate examples</h2></div><div class="body">${d.examples.map((g) => `<div class="mono" style="font-size:12px;margin-bottom:4px">${g.map(esc).join("  ·  ")}</div>`).join("")}${d.near_pairs.length ? `<div class="muted" style="margin-top:8px">Near duplicates (Jaccard over word n-grams ≥ 0.7): ${d.near_pairs.slice(0, 5).map((x) => `#${x.a + 1}≈#${x.b + 1} (${x.similarity})`).join(", ")}${d.near_pairs.length > 5 ? " …" : ""}</div>` : ""}</div></div>` : ""}
-    <div class="panel"><div class="head"><h2>Clean</h2><span class="muted">Applies in place; every run is logged to cleaning.jsonl. Snapshots are not affected.</span></div><div class="body">
+    ${d.examples.length ? `<div ${dataContext("Duplicate groups", d)} class="panel" style="margin-bottom:14px"><div class="head"><h2>Duplicate examples</h2></div><div class="body">${d.examples.map((g) => `<div class="mono" style="font-size:12px;margin-bottom:4px">${g.map(esc).join("  ·  ")}</div>`).join("")}${d.near_pairs.length ? `<div class="muted" style="margin-top:8px">Near duplicates (Jaccard over word n-grams ≥ 0.7): ${d.near_pairs.slice(0, 5).map((x) => `#${x.a + 1}≈#${x.b + 1} (${x.similarity})`).join(", ")}${d.near_pairs.length > 5 ? " …" : ""}</div>` : ""}</div></div>` : ""}
+    <div ${dataContext("Dataset quality profile", p)} class="panel"><div class="head"><h2>Clean</h2><span class="muted">Applies in place; every run is logged to cleaning.jsonl. Snapshots are not affected.</span></div><div class="body">
       <div class="chips" id="cleanOpts">
         <button data-k="dedupe_user">Drop exact duplicate user turns (${d.exact_user_rows})</button>
         <button data-k="dedupe_conversation">Drop exact duplicate conversations (${d.exact_conversation_rows})</button>
@@ -418,6 +433,7 @@ async function qualityDialog(dataset, after) {
     Object.assign(spec, { min_total_chars: num("#clMin"), max_total_chars: num("#clMax"), min_rating: num("#clRating"), drop_labels: $("#clDrop", body).value.split(",").map((s) => s.trim()).filter(Boolean) });
     if (!Object.keys(spec).some((k) => spec[k] === true) && spec.min_total_chars === null && spec.max_total_chars === null && spec.min_rating === null && !spec.drop_labels.length) throw new Error("pick at least one cleaning rule");
     const r = await post(`/api/datasets/${encodeURIComponent(dataset)}/clean`, spec);
+    if (queued(r, "cleaning")) { $("#clResult", body).textContent = "queued as a background task"; return; }
     $("#clResult", body).textContent = `${r.before} → ${r.after} datapoints; removed ${JSON.stringify(r.removed)}${r.redacted_rows ? `; redacted PII in ${r.redacted_rows} rows` : ""}`;
     toast(`cleaned: ${r.before} → ${r.after}`); after();
   });
@@ -442,7 +458,7 @@ function createJobDialog(defaultSnapshot = null) {
 }
 function autopilotPanel(pilots) {
   if (!pilots.length) return "";
-  return `<div class="panel" style="margin-bottom:14px"><div class="head"><h2>Autopilot</h2><span class="muted">continuous fine-tuning: traces → dataset → snapshot → refinetune → evaluate → winner</span></div><div class="body"><table><thead><tr><th>Name</th><th>Dataset</th><th>Cycles</th><th>Current winner</th><th>Last run</th><th></th></tr></thead><tbody>${pilots.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.dataset || "")}</td><td class="num">${p.cycles}</td><td class="mono">${esc(p.winner || "—")}</td><td class="muted">${p.last ? fmtDate(p.last) : "—"}</td><td><button class="btn small" data-ap="${esc(p.name)}">History</button> <button class="btn small primary" data-apnext="${esc(p.name)}" data-apds="${esc(p.dataset || "")}">Next cycle</button></td></tr>`).join("")}</tbody></table></div></div>`;
+  return `<div class="panel" style="margin-bottom:14px"><div class="head"><h2>Autopilot</h2><span class="muted">continuous fine-tuning: traces → dataset → snapshot → refinetune → evaluate → winner</span></div><div class="body"><table><thead><tr><th>Name</th><th>Dataset</th><th>Cycles</th><th>Current winner</th><th>Last run</th><th></th></tr></thead><tbody>${pilots.map((p) => `<tr ${dataContext("Autopilot", p)}><td><b>${esc(p.name)}</b></td><td>${esc(p.dataset || "")}</td><td class="num">${p.cycles}</td><td class="mono">${esc(p.winner || "—")}</td><td class="muted">${p.last ? fmtDate(p.last) : "—"}</td><td><button class="btn small" data-ap="${esc(p.name)}">History</button> <button class="btn small primary" data-apnext="${esc(p.name)}" data-apds="${esc(p.dataset || "")}">Next cycle</button></td></tr>`).join("")}</tbody></table></div></div>`;
 }
 
 function autopilotDialog(preset = {}) {
@@ -477,19 +493,21 @@ function autopilotDialog(preset = {}) {
 
 async function autopilotHistoryDialog(name) {
   const rows = await api(`/api/autopilot/${encodeURIComponent(name)}`);
-  const cell = (r) => { const e = r.experiment || {}, ev = r.evaluation; return `<tr><td class="num">${r.cycle}</td><td class="mono">${esc(r.snapshot?.name || "—")}<div class="muted">${r.snapshot?.training ?? "?"} / ${r.snapshot?.validation ?? "?"}</div></td><td class="mono">${esc(e.model || "—")} <span class="pill ${e.state === "succeeded" ? "completed" : e.state === "failed" ? "failed" : "pending"}">${esc(e.state || "?")}</span><div class="muted">from ${esc(r.parent || "base")}${r.promoted_traces ? ` · +${r.promoted_traces} traces` : ""}</div></td><td class="num">${e.eval_loss != null ? e.eval_loss.toFixed(4) : "—"}</td><td>${ev ? `<span class="mono">${esc(ev.primary_metric)}</span> ${ev.candidate ?? "—"} vs ${ev.baseline ?? "—"}` : "<span class='muted'>no metrics</span>"}</td><td class="mono"><b>${esc(r.winner || "—")}</b><div class="muted">${esc(r.decision || e.error || "")}</div></td></tr>`; };
+  const cell = (r) => { const e = r.experiment || {}, ev = r.evaluation; return `<tr ${dataContext("Autopilot cycle", r)}><td class="num">${r.cycle}</td><td class="mono">${esc(r.snapshot?.name || "—")}<div class="muted">${r.snapshot?.training ?? "?"} / ${r.snapshot?.validation ?? "?"}</div></td><td class="mono">${esc(e.model || "—")} <span class="pill ${e.state === "succeeded" ? "completed" : e.state === "failed" ? "failed" : "pending"}">${esc(e.state || "?")}</span><div class="muted">from ${esc(r.parent || "base")}${r.promoted_traces ? ` · +${r.promoted_traces} traces` : ""}</div></td><td class="num">${e.eval_loss != null ? e.eval_loss.toFixed(4) : "—"}</td><td>${ev ? `<span class="mono">${esc(ev.primary_metric)}</span> ${ev.candidate ?? "—"} vs ${ev.baseline ?? "—"}` : "<span class='muted'>no metrics</span>"}</td><td class="mono"><b>${esc(r.winner || "—")}</b><div class="muted">${esc(r.decision || e.error || "")}</div></td></tr>`; };
   const m = modal({ title: `Autopilot · ${name}`, wide: true, body: `<table><thead><tr><th>Cycle</th><th>Snapshot (train / val)</th><th>Experiment</th><th>eval_loss</th><th>Evaluation</th><th>Winner</th></tr></thead><tbody>${rows.map(cell).join("") || `<tr><td colspan="6" class="muted">no cycles yet</td></tr>`}</tbody></table>`, footer: `<button class="btn" data-close>Close</button>` });
   $("[data-close]", m.el).onclick = m.close;
 }
 
 async function pageFinetuning() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const jobs = await api("/api/jobs");
   const pilots = await api("/api/autopilot").catch(() => []);
+  assertRender(view);
   const content = layout("finetuning", `<div class="page-head"><h1>Finetuning</h1><div class="actions"><button class="btn" id="autopilotBtn">Autopilot cycle</button><button class="btn primary" id="newJob">+ Create finetuning job</button></div></div>${autopilotPanel(pilots)}<div class="cards">${jobs.map(({ job, experiments }) => {
     const states = experiments.map((e) => e.state);
     const label = !experiments.length ? ["Ready to start experiments", "ready"] : states.includes("running") ? ["Running", "running"] : states.every((s) => s === "pending") ? ["Ready to start experiments", "ready"] : states.some((s) => s === "pending") ? ["Partially run", "pending"] : states.every((s) => s === "succeeded") ? ["Completed", "completed"] : states.some((s) => s === "failed") ? ["Failed", "failed"] : ["Completed", "completed"];
-    return `<div class="card clickable" data-job="${esc(job.name)}"><h3>${esc(job.name)}</h3><span class="pill ${label[1]}">${label[0]}</span><div class="sub" style="margin-top:8px">snapshot ${esc(job.snapshot)} · ${experiments.length} experiment${experiments.length === 1 ? "" : "s"}${job.reasoning ? " · reasoning" : ""}</div><div class="foot"><span>Created on: ${fmtDate(job.created)}</span><span class="arrow">→</span></div></div>`;
+    return `<div ${dataContext("Finetuning job", {job,experiments})} class="card clickable" data-job="${esc(job.name)}"><h3>${esc(job.name)}</h3><span class="pill ${label[1]}">${label[0]}</span><div class="sub" style="margin-top:8px">snapshot ${esc(job.snapshot)} · ${experiments.length} experiment${experiments.length === 1 ? "" : "s"}${job.reasoning ? " · reasoning" : ""}</div><div class="foot"><span>Created on: ${fmtDate(job.created)}</span><span class="arrow">→</span></div></div>`;
   }).join("") || `<div class="empty"><b>No finetuning jobs yet</b>Create one from a snapshot.</div>`}</div>`, [{ label: "Finetuning" }]);
   $("#newJob", content).onclick = () => createJobDialog();
   $("#autopilotBtn", content).onclick = () => autopilotDialog();
@@ -499,12 +517,14 @@ async function pageFinetuning() {
 }
 
 async function pageJob(name) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const detail = await api(`/api/jobs/${encodeURIComponent(name)}`);
   const { job, experiments, analysis } = detail;
   const configuring = !experiments.length || experiments.every((e) => e.state === "pending");
   const running = experiments.some((e) => e.state === "running");
   const headPill = running ? ["Running", "running"] : configuring ? ["Ready to start experiments", "ready"] : experiments.every((e) => e.state === "succeeded") ? ["Completed", "completed"] : experiments.some((e) => e.state === "failed") ? ["Failed", "failed"] : ["Partially run", "pending"];
+  assertRender(view);
   const content = layout("finetuning", `
     <div class="page-head"><div><h1>${esc(name)} <span class="pill ${headPill[1]}">${headPill[0]}</span></h1><div class="meta"><span class="mono">${esc(job.snapshot)}</span><span>· dataset <a href="#/datasets/${encodeURIComponent(detail.snapshot?.dataset || "")}">${esc(detail.snapshot?.dataset || "?")}</a></span><span>· ${detail.snapshot?.training_count ?? "?"} training / ${detail.snapshot?.validation_count ?? "?"} validation</span>${job.reasoning ? "<span>· reasoning</span>" : ""}</div></div>
       <div class="actions">${!configuring && !running ? `<button class="btn" id="btnEval">Start evaluation</button>` : ""}${configuring ? `<button class="btn primary" id="btnStart" ${experiments.length ? "" : "disabled"}>Start experiments</button>` : ""}<button class="btn danger" id="btnDeleteJob">Delete job</button></div></div>
@@ -526,7 +546,7 @@ async function pageJob(name) {
     const rec = analysis?.recommendation || null;
     const finished = (await api("/api/models")).filter((m) => m.kind === "fine-tuned").map((m) => m.alias);
     const drawDrafts = () => {
-      left.innerHTML = drafts.map((d, i) => `<div class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${i + 1}</h3>${d.number ? `<span class="pill pending">pending · ft-${esc(name)}-${d.number}</span>` : `<span class="pill">draft</span>`}<div class="right">${d.number ? `<button class="btn sm danger" data-rm="${d.number}">Delete</button>` : `<button class="btn sm" data-drop="${i}">Remove</button>`}</div></div>
+      left.innerHTML = drafts.map((d, i) => `<div ${dataContext("Experiment configuration", d)} class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${i + 1}</h3>${d.number ? `<span class="pill pending">pending · ft-${esc(name)}-${d.number}</span>` : `<span class="pill">draft</span>`}<div class="right">${d.number ? `<button class="btn sm danger" data-rm="${d.number}">Delete</button>` : `<button class="btn sm" data-drop="${i}">Remove</button>`}</div></div>
         ${d.number ? `<div class="kv"><div><div class="k">Base model</div><div class="v mono">${esc(d.base_model)}</div></div><div><div class="k">Training type</div><div class="v">${d.training_type === "lora" ? "LoRA training" : d.training_type === "qlora" ? "QLoRA (4-bit)" : d.training_type === "dpo" ? "DPO alignment (LoRA)" : "Full fine-tuning"}</div></div><div><div class="k">Batch size × accumulation</div><div class="v">${d.batch_size} × ${d.gradient_accumulation_steps}</div></div><div><div class="k">Learning rate</div><div class="v">${d.learning_rate}</div></div><div><div class="k">Epochs</div><div class="v">${d.epochs}</div></div><div><div class="k">Max length</div><div class="v">${d.max_length}</div></div></div>`
         : `<div class="grid"><div class="field"><label>Base model</label><input list="catalogList" data-f="base_model" data-i="${i}" value="${esc(d.base_model)}"></div><div class="field"><label>Training type</label><select data-f="training_type" data-i="${i}"><option value="lora" ${d.training_type === "lora" ? "selected" : ""}>LoRA</option><option value="full" ${d.training_type === "full" ? "selected" : ""}>Full fine-tuning</option><option value="qlora" ${d.training_type === "qlora" ? "selected" : ""}>QLoRA (4-bit base; CUDA + bitsandbytes)</option><option value="dpo" ${d.training_type === "dpo" ? "selected" : ""}>DPO (preference pairs; datapoints need a rejected answer)</option></select></div><div class="field" style="grid-column:1/-1"><label>Refine from a finished experiment (optional)</label><select data-f="refinetune_from" data-i="${i}"><option value="">— start from the base model —</option>${finished.map((f) => `<option value="${esc(f)}" ${d.refinetune_from === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select></div><div class="field"><label>Batch size</label><input type="number" min="1" max="64" data-f="batch_size" data-i="${i}" value="${d.batch_size}"></div><div class="field"><label>Learning rate</label><input type="number" step="any" data-f="learning_rate" data-i="${i}" value="${d.learning_rate}"></div><div class="field"><label>Number of epochs</label><input type="number" step="0.5" min="0.5" max="50" data-f="epochs" data-i="${i}" value="${d.epochs}"></div><div class="field"><label>Max length (tokens)</label><input type="number" data-f="max_length" data-i="${i}" value="${d.max_length}"></div><div class="field"><label>Gradient accumulation</label><input type="number" min="1" data-f="gradient_accumulation_steps" data-i="${i}" value="${d.gradient_accumulation_steps}"></div><div class="field"><label>LoRA rank / alpha</label><div class="row"><input type="number" data-f="lora_r" data-i="${i}" value="${d.lora_r}"><input type="number" data-f="lora_alpha" data-i="${i}" value="${d.lora_alpha}"></div></div><div class="field"><label>Checkpoint every N steps (0 = off; for neuron drift)</label><input type="number" min="0" data-f="checkpoint_every_steps" data-i="${i}" value="${d.checkpoint_every_steps ?? 0}"></div><div class="field"><label>Keep newest K checkpoints (0 = all)</label><input type="number" min="0" data-f="keep_checkpoints" data-i="${i}" value="${d.keep_checkpoints ?? 0}"></div></div>`}
         </div>`).join("") + `<datalist id="catalogList">${catalog.map((c) => `<option value="${esc(c.id)}">${c.params_b}B · ${esc(c.notes)}</option>`).join("")}</datalist>
@@ -554,7 +574,7 @@ async function pageJob(name) {
     wireAnalysis(right, name);
   } else {
     // ---- running / completed: experiment cards + training loss comparison
-    left.innerHTML = experiments.map((e, i) => `<div class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${e.number}</h3>${e.state === "succeeded" ? `<a class="btn primary sm" href="#/playground?model=${encodeURIComponent(name + "/" + e.number)}">Test model</a><a class="btn sm icon" title="Download weights" href="/api/jobs/${encodeURIComponent(name)}/experiments/${e.number}/download">⬇</a>${(e.checkpoints || []).length ? `<button class="btn sm" data-ckcap="${e.number}" title="Steps ${e.checkpoints.join(", ")}: capture every checkpoint on a dataset to see neuron drift on the Interpretability page">${e.checkpoints.length} checkpoint${e.checkpoints.length === 1 ? "" : "s"} · capture for drift</button>` : ""}` : ""}<div class="right"><span class="pill ${e.state}">${e.state[0].toUpperCase() + e.state.slice(1)}</span>${e.state !== "running" ? `<button class="btn sm danger" data-rm="${e.number}">✕</button>` : ""}</div></div>
+    left.innerHTML = experiments.map((e, i) => `<div ${dataContext("Experiment configuration", e)} class="exp"><div class="head"><span class="dot" style="background:${SERIES[i % SERIES.length]}"></span><h3>Experiment ${e.number}</h3>${e.state === "succeeded" ? `<a class="btn primary sm" href="#/playground?model=${encodeURIComponent(name + "/" + e.number)}">Test model</a><a class="btn sm icon" title="Download weights" href="${scoped(`/api/jobs/${encodeURIComponent(name)}/experiments/${e.number}/download`)}">⬇</a>${(e.checkpoints || []).length ? `<button class="btn sm" data-ckcap="${e.number}" title="Steps ${e.checkpoints.join(", ")}: capture every checkpoint on a dataset to see neuron drift on the Interpretability page">${e.checkpoints.length} checkpoint${e.checkpoints.length === 1 ? "" : "s"} · capture for drift</button>` : ""}` : ""}<div class="right"><span class="pill ${e.state}">${e.state[0].toUpperCase() + e.state.slice(1)}</span>${e.state !== "running" ? `<button class="btn sm danger" data-rm="${e.number}">✕</button>` : ""}</div></div>
       <div class="kv"><div><div class="k">Base model ID</div><div class="v mono">${esc(e.config.base_model)}</div></div><div><div class="k">Batch size</div><div class="v">${e.config.batch_size} × ${e.config.gradient_accumulation_steps}</div></div><div><div class="k">Learning rate</div><div class="v">${e.config.learning_rate}</div></div><div><div class="k">Number of epochs</div><div class="v">${e.config.epochs}</div></div><div><div class="k">${e.config.training_type === "lora" ? "LoRA training" : "Full fine-tuning"}</div><div class="v">${e.config.training_type === "lora" ? `r=${e.config.lora_r} α=${e.config.lora_alpha}` : "all weights"}</div></div><div><div class="k">Result</div><div class="v">${e.state === "succeeded" ? `train loss ${fmtNum(e.train_loss)} · eval loss ${fmtNum(e.metrics?.eval_loss)} · ${e.seconds}s` : e.state === "failed" ? `<span class="error">${esc(e.error || "failed")}</span>` : e.state}</div></div></div>
       ${e.state === "succeeded" ? `<div style="margin-top:10px"><span class="alias">${esc(e.alias)} <button title="copy" data-copy="${esc(e.alias)}">⧉</button></span> <span class="muted" style="font-size:12px">· ${fmtParams(e.total_parameters)} parameters</span></div>` : ""}
       </div>`).join("");
@@ -575,7 +595,7 @@ async function pageJob(name) {
 function analysisPanel(analysis, job) {
   const a = analysis?.analysis;
   const list = (v) => Array.isArray(v) ? `<ul>${v.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p>${esc(v || "")}</p>`;
-  return `<div class="panel"><div class="head"><h2>Dataset analysis</h2><div class="right"><button class="btn sm" id="analyze">${a ? "Re-analyze" : "Analyze with the helper LLM"}</button></div></div><div class="body accordion">${a ? [["Task summary", a.task_summary], ["Task characterization", a.task_characterization], ["Knowledge requirements", a.knowledge_requirements], ["Success criteria", a.success_criteria], ["Edge cases", a.edge_cases], ["Datapoints input analysis", a.input_analysis], ["Datapoints output analysis", a.output_analysis]].map(([t, v], i) => `<details ${i === 0 ? "open" : ""}><summary>${t}</summary><div class="inner">${list(v)}</div></details>`).join("") : `<p class="muted">Run the analysis to get a task summary, success criteria, edge cases, and a model recommendation for this snapshot. Needs the helper LLM.</p>`}
+  return `<div ${dataContext("Dataset analysis", analysis)} class="panel"><div class="head"><h2>Dataset analysis</h2><div class="right"><button class="btn sm" id="analyze">${a ? "Re-analyze" : "Analyze with the helper LLM"}</button></div></div><div class="body accordion">${a ? [["Task summary", a.task_summary], ["Task characterization", a.task_characterization], ["Knowledge requirements", a.knowledge_requirements], ["Success criteria", a.success_criteria], ["Edge cases", a.edge_cases], ["Datapoints input analysis", a.input_analysis], ["Datapoints output analysis", a.output_analysis]].map(([t, v], i) => `<details ${i === 0 ? "open" : ""}><summary>${t}</summary><div class="inner">${list(v)}</div></details>`).join("") : `<p class="muted">Run the analysis to get a task summary, success criteria, edge cases, and a model recommendation for this snapshot. Needs the helper LLM.</p>`}
     ${analysis?.recommendation?.recommended ? `<details open><summary>Recommended experiment</summary><div class="inner"><b class="mono">${esc(analysis.recommendation.recommended.base_model)}</b> · ${analysis.recommendation.recommended.training_type} · ${analysis.recommendation.recommended.hyperparameters.epochs} epochs · lr ${analysis.recommendation.recommended.hyperparameters.learning_rate}<br><span class="muted">${esc(analysis.recommendation.recommended.why)}</span><br><span class="muted">${analysis.recommendation.dataset.training_count} rows on ${analysis.recommendation.host.memory_gib} GiB; budget ${analysis.recommendation.host.budget_gib} GiB</span></div></details>` : ""}
   </div></div>`;
 }
@@ -591,7 +611,7 @@ function drawLossChart(container, series, showEval) {
   const sx = (v) => m.l + (v / x1) * (W - m.l - m.r), sy = (v) => m.t + (1 - v / y1) * (H - m.t - m.b);
   const path = (p) => p.map((q, i) => `${i ? "L" : "M"}${sx(q.x).toFixed(1)},${sy(q.y).toFixed(1)}`).join(" ");
   const yT = [0, .25, .5, .75, 1].map((f) => f * y1), xT = [0, .25, .5, .75, 1].map((f) => Math.round(f * x1));
-  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><g class="grid">${yT.map((t) => `<line x1="${m.l}" x2="${W - m.r}" y1="${sy(t)}" y2="${sy(t)}"/>`).join("")}</g><g class="axis">${yT.map((t) => `<text x="${m.l - 8}" y="${sy(t) + 4}" text-anchor="end">${t.toFixed(2)}</text>`).join("")}${xT.map((t) => `<text x="${sx(t)}" y="${H - 20}" text-anchor="middle">${t}</text>`).join("")}<text class="axis-title" x="${(W + m.l) / 2}" y="${H - 4}" text-anchor="middle">Training steps</text><text class="axis-title" transform="translate(14 ${(H - m.b) / 2}) rotate(-90)" text-anchor="middle">Training loss</text></g>
+  container.innerHTML = `<svg ${dataContext("Training loss series", {series: series.filter((s) => s.on).map((s) => ({name:s.name,train:s.train,eval:showEval?s.eval:[]})), showEval})} viewBox="0 0 ${W} ${H}"><g class="grid">${yT.map((t) => `<line x1="${m.l}" x2="${W - m.r}" y1="${sy(t)}" y2="${sy(t)}"/>`).join("")}</g><g class="axis">${yT.map((t) => `<text x="${m.l - 8}" y="${sy(t) + 4}" text-anchor="end">${t.toFixed(2)}</text>`).join("")}${xT.map((t) => `<text x="${sx(t)}" y="${H - 20}" text-anchor="middle">${t}</text>`).join("")}<text class="axis-title" x="${(W + m.l) / 2}" y="${H - 4}" text-anchor="middle">Training steps</text><text class="axis-title" transform="translate(14 ${(H - m.b) / 2}) rotate(-90)" text-anchor="middle">Training loss</text></g>
     ${series.map((s) => s.on ? `<path d="${path(s.train)}" fill="none" stroke="${s.color}" stroke-width="2"/>${showEval && s.eval.length ? `<path d="${path(s.eval)}" fill="none" stroke="${s.color}" stroke-width="2" stroke-dasharray="5 4"/>` : ""}` : "").join("")}
     <g>${series.map((s) => s.on ? [...s.train.map((p) => ({ ...p, l: `${s.name} train` })), ...(showEval ? s.eval.map((p) => ({ ...p, l: `${s.name} eval` })) : [])].map((p) => `<circle class="dot" cx="${sx(p.x)}" cy="${sy(p.y)}" r="4" fill="var(--panel)" stroke="${s.color}" stroke-width="2" opacity="0" data-l="step ${p.x} · ${p.l} ${p.y.toFixed(4)}"/>`).join("") : "").join("")}</g>
     <line id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="var(--text-3)" stroke-dasharray="3 3" opacity="0"/></svg><div class="tip"></div>`;
@@ -610,9 +630,11 @@ function drawLossChart(container, series, showEval) {
 
 // ------------------------------------------------------------------ evaluations
 async function pageEvaluations() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const evals = await api("/api/evals");
-  const content = layout("evaluations", `<div class="page-head"><h1>Evaluations</h1><div class="actions"><button class="btn primary" id="newEval">+ Create evaluation</button></div></div><div class="cards">${evals.map((e) => `<div class="card clickable" data-ev="${esc(e.name)}"><h3>${esc(e.name)}</h3><span class="pill ${e.state === "succeeded" ? "completed" : e.state}">${e.state === "succeeded" ? "Completed" : e.state}</span><div class="sub" style="margin-top:8px">${e.models.length} model${e.models.length === 1 ? "" : "s"} · ${e.metrics.join(", ")} · ${e.datapoints} datapoints · snapshot ${esc(e.snapshot)}</div><div class="foot"><span>Created on: ${fmtDate(e.created)}</span><span class="arrow">→</span></div></div>`).join("") || `<div class="empty"><b>No evaluations yet</b>Compare your experiments against a base model on the validation split.</div>`}</div>`, [{ label: "Evaluations" }]);
+  assertRender(view);
+  const content = layout("evaluations", `<div class="page-head"><h1>Evaluations</h1><div class="actions"><button class="btn primary" id="newEval">+ Create evaluation</button></div></div><div class="cards">${evals.map((e) => `<div ${dataContext("Evaluation", e)} class="card clickable" data-ev="${esc(e.name)}"><h3>${esc(e.name)}</h3><span class="pill ${e.state === "succeeded" ? "completed" : e.state}">${e.state === "succeeded" ? "Completed" : e.state}</span><div class="sub" style="margin-top:8px">${e.models.length} model${e.models.length === 1 ? "" : "s"} · ${e.metrics.join(", ")} · ${e.datapoints} datapoints · snapshot ${esc(e.snapshot)}</div><div class="foot"><span>Created on: ${fmtDate(e.created)}</span><span class="arrow">→</span></div></div>`).join("") || `<div class="empty"><b>No evaluations yet</b>Compare your experiments against a base model on the validation split.</div>`}</div>`, [{ label: "Evaluations" }]);
   $("#newEval", content).onclick = () => newEvaluationDialog({});
   $$("[data-ev]", content).forEach((c) => c.onclick = () => go(`#/evaluations/${encodeURIComponent(c.dataset.ev)}`));
 }
@@ -654,20 +676,26 @@ async function newEvaluationDialog({ snapshot = null, models = [] }) {
   });
 }
 async function pageEval(name) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const { summary, rows } = await api(`/api/evals/${encodeURIComponent(name)}`);
   const metrics = summary.metrics, models = summary.models;
   let metric = metrics[0], offset = 0; const limit = 10;
   const byKey = {}; rows.forEach((r) => { byKey[`${r.datapoint}|${r.model}|${r.metric}`] = r; });
   const datapoints = [...new Set(rows.map((r) => r.datapoint))].sort((a, b) => a - b);
+  assertRender(view);
   const content = layout("evaluations", `
     <div class="page-head"><div><h1>${esc(name)} <span class="pill ${summary.state === "succeeded" ? "completed" : summary.state}">${summary.state === "succeeded" ? "Completed" : summary.state}</span></h1><div class="meta"><span>snapshot <b>${esc(summary.snapshot)}</b></span><span>· ${models.length} models selected</span><span>· ${summary.datapoints} datapoints</span>${summary.error ? `<span class="error">${esc(summary.error)}</span>` : ""}</div></div><div class="actions"><button class="btn danger" id="delEval">Delete</button></div></div>
     <div class="cards" style="margin-bottom:18px">${(summary.leaderboard || []).map((b) => `<div class="card"><div style="display:flex;align-items:center;gap:10px"><h3 style="flex:1;font-size:14px" class="mono">${esc(b.model)}</h3><span class="pct ${pctClass(b.overall ?? 0)}" style="font-size:15px">${fmtPct(b.overall)}</span></div>${metrics.map((mt) => `<div style="display:flex;justify-content:space-between;margin-top:6px"><span>${esc(mt)}</span><span class="pct ${pctClass(b.scores[mt] ?? 0)}">${fmtPct(b.scores[mt])}</span></div>`).join("")}</div>`).join("")}</div>
     <div class="chips" id="metricTabs" style="margin-bottom:12px">${metrics.map((mt) => `<button data-mt="${esc(mt)}" class="${mt === metric ? "on" : ""}">${esc(mt)}</button>`).join("")}</div>
     <div class="panel" style="margin-bottom:14px"><div class="head"><h2>Score distribution</h2><span class="muted">per model for the selected metric; 10 bins from 0% to 100%</span></div><div class="body" id="scoreHist"></div></div>
     <div class="panel" id="grid"></div>`, [{ label: "Evaluations", href: "#/evaluations" }, { label: name }]);
+  $$(".cards > .card", content).forEach((el, i) => bindContext(el, `Evaluation leaderboard: ${summary.leaderboard[i]?.model}`, summary.leaderboard[i]));
   const drawHist = () => {
     $("#scoreHist", content).innerHTML = `<div class="cards">${models.map((mo, i) => { const vals = datapoints.map((d) => byKey[`${d}|${mo}|${metric}`]?.score).filter((v) => v !== undefined); const counts = Array(10).fill(0); vals.forEach((v) => counts[Math.min(9, Math.floor(v * 10))]++); return `<div><div class="mono" style="font-size:12px;margin-bottom:4px">${esc(mo)}</div>${histogram({ bins: Array.from({ length: 11 }, (_, k) => k * 10), counts }, SERIES[i % SERIES.length], 320, 80)}</div>`; }).join("")}</div>`;
+    const metricRows = rows.filter((r) => r.metric === metric);
+    bindContext($("#scoreHist", content).closest(".panel"), `Score distribution: ${metric}`, { evaluation: name, metric, rows: metricRows });
+    $$("#scoreHist svg", content).forEach((chart, i) => bindContext(chart, `Score distribution: ${models[i]} / ${metric}`, { evaluation: name, model: models[i], metric, rows: metricRows.filter((r) => r.model === models[i]) }));
   };
   $("#delEval", content).onclick = () => confirmModal("Delete evaluation", `Delete evaluation "${name}"?`, async () => { await del(`/api/evals/${encodeURIComponent(name)}`); go("#/evaluations"); });
   const draw = () => {
@@ -677,6 +705,9 @@ async function pageEval(name) {
       <tr class="avg"><td>● Average (${esc(metric)})</td>${models.map((mo) => `<td class="num"><span class="pct ${pctClass(avg(mo) ?? 0)}">${fmtPct(avg(mo))}</span></td>`).join("")}</tr>
       ${page.map((d) => { const any = models.map((mo) => byKey[`${d}|${mo}|${metric}`]).find(Boolean); return `<tr><td class="truncate">${esc(any?.user || `datapoint ${d}`)}</td>${models.map((mo) => { const r = byKey[`${d}|${mo}|${metric}`]; return `<td class="num">${r ? `<span class="pct ${pctClass(r.score)}" style="cursor:pointer" data-cell="${d}|${esc(mo)}">${fmtPct(r.score)}</span>` : "–"}</td>`; }).join("")}</tr>`; }).join("")}
       </tbody></table><div class="pager"><span>Results ${datapoints.length ? offset + 1 : 0} - ${Math.min(offset + limit, datapoints.length)} of ${datapoints.length}</span><span class="spacer"></span><button class="btn sm" id="prev" ${offset === 0 ? "disabled" : ""}>‹</button><span class="cur">${Math.floor(offset / limit) + 1}</span><button class="btn sm" id="next" ${offset + limit >= datapoints.length ? "disabled" : ""}>›</button></div>`;
+    bindContext($("#grid", content), `Evaluation results: ${name} / ${metric}`, { evaluation: name, metric, rows: rows.filter((r) => r.metric === metric && page.includes(r.datapoint)) });
+    $$("#grid tbody tr", content).forEach((el, i) => bindContext(el, i === 0 ? `Average: ${metric}` : `Datapoint ${page[i - 1]}`, { evaluation: name, metric, rows: rows.filter((r) => r.metric === metric && (i === 0 || r.datapoint === page[i - 1])) }));
+    $$("[data-cell]", content).forEach((el) => { const [d, mo] = el.dataset.cell.split("|"); bindContext(el, `Datapoint ${d}: ${mo} / ${metric}`, byKey[`${d}|${mo}|${metric}`]); });
     $("#prev", content).onclick = () => { offset -= limit; draw(); };
     $("#next", content).onclick = () => { offset += limit; draw(); };
     $$("[data-cell]", content).forEach((c) => c.onclick = () => { const [d, mo] = c.dataset.cell.split("|"); evalDetails(Number(d), mo, models, metrics, byKey); });
@@ -695,6 +726,8 @@ function evalDetails(d, model, models, metrics, byKey) {
     body.innerHTML = `<div class="tabs"><button class="${tab === "datapoint" ? "on" : ""}" data-t="datapoint">Datapoint</button><button class="${tab === "model" ? "on" : ""}" data-t="model">Model results</button></div>` + (tab === "datapoint"
       ? `<span class="tag system">System prompt</span><div class="msg" style="background:var(--panel-2);padding:10px 12px;border-radius:8px;margin:6px 0 14px">${esc(first?.system || "(none)")}</div><span class="tag user">User message</span><div class="msg" style="background:var(--panel-2);padding:10px 12px;border-radius:8px;margin:6px 0 14px">${esc(first?.user || "")}</div><span class="tag assistant">Original assistant response</span><div class="msg" style="background:var(--panel-2);padding:10px 12px;border-radius:8px;margin:6px 0">${esc(first?.reference || "")}</div>`
       : `<div class="chips" style="margin-bottom:12px">${models.map((mo) => `<button data-mo="${esc(mo)}" class="${mo === current ? "on" : ""}">${esc(mo)}</button>`).join("")}</div>` + metrics.map((mt) => { const r = byKey[`${d}|${current}|${mt}`]; if (!r) return ""; const verdicts = r.verdicts || []; return `<div class="panel" style="margin-bottom:12px"><div class="head"><h2>${esc(mt)}</h2><span class="pct ${pctClass(r.score)}">${fmtPct(r.score)}</span><span class="muted">${esc(r.reason)}</span></div><div class="body">${verdicts.length ? `<div class="two"><div><div class="muted" style="margin-bottom:6px">LLM should follow</div><ul class="rules">${verdicts.filter((v) => v.kind === "should").map((v) => `<li><span class="mark ${v.pass ? "pass" : "fail"}">${v.pass ? "✓" : "✕"}</span><div>${esc(v.rule)}<div class="muted" style="font-size:12px">${esc(v.reason)}</div></div></li>`).join("")}</ul></div><div><div class="muted" style="margin-bottom:6px">LLM should not follow</div><ul class="rules">${verdicts.filter((v) => v.kind === "should_not").map((v) => `<li><span class="mark ${v.pass ? "pass" : "fail"}">${v.pass ? "✓" : "✕"}</span><div>${esc(v.rule)}<div class="muted" style="font-size:12px">${esc(v.reason)}</div></div></li>`).join("")}</ul></div></div>` : ""}<div style="margin-top:10px"><span class="tag assistant">Model response</span><div class="msg mono" style="background:var(--panel-2);padding:10px 12px;border-radius:8px;margin-top:6px">${esc(r.prediction)}</div></div></div></div>`; }).join(""));
+    bindContext(body, `Evaluation datapoint ${d}: ${current}`, { datapoint: d, model: current, rows: metrics.map((mt) => byKey[`${d}|${current}|${mt}`]).filter(Boolean) });
+    $$(".panel", body).forEach((el) => { const mt = $("h2", el)?.textContent; bindContext(el, `Datapoint ${d}: ${current} / ${mt}`, byKey[`${d}|${current}|${mt}`]); });
     $$("[data-t]", body).forEach((b) => b.onclick = () => { tab = b.dataset.t; draw(); });
     $$("[data-mo]", body).forEach((b) => b.onclick = () => { current = b.dataset.mo; draw(); });
   };
@@ -703,9 +736,11 @@ function evalDetails(d, model, models, metrics, byKey) {
 
 // ------------------------------------------------------------------ metrics
 async function pageMetrics() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const metrics = await api("/api/metrics");
-  const content = layout("metrics", `<div class="page-head"><h1>Metrics</h1><div class="actions"><button class="btn primary" id="newMetric">+ Create metric</button></div></div><div class="cards">${metrics.map((me) => `<div class="card clickable" data-me="${esc(me.name)}"><h3>${esc(me.name)}</h3><div class="sub">${esc(me.description || (me.kind === "code" ? `code check: ${me.check}` : me.kind === "webhook" ? `webhook: ${me.webhook.url}` : ""))}</div><div class="foot"><span>${me.kind === "rubric" ? `<span class="pill good">${me.rules.should.length} should</span> <span class="pill bad">${me.rules.should_not.length} should not</span>` : `<span class="pill">${me.kind}</span>`}</span><span class="arrow">→</span></div></div>`).join("")}</div>`, [{ label: "Evaluations", href: "#/evaluations" }, { label: "Metrics" }]);
+  assertRender(view);
+  const content = layout("metrics", `<div class="page-head"><h1>Metrics</h1><div class="actions"><button class="btn primary" id="newMetric">+ Create metric</button></div></div><div class="cards">${metrics.map((me) => `<div ${dataContext("Metric", me)} class="card clickable" data-me="${esc(me.name)}"><h3>${esc(me.name)}</h3><div class="sub">${esc(me.description || (me.kind === "code" ? `code check: ${me.check}` : me.kind === "webhook" ? `webhook: ${me.webhook.url}` : ""))}</div><div class="foot"><span>${me.kind === "rubric" ? `<span class="pill good">${me.rules.should.length} should</span> <span class="pill bad">${me.rules.should_not.length} should not</span>` : `<span class="pill">${me.kind}</span>`}</span><span class="arrow">→</span></div></div>`).join("")}</div>`, [{ label: "Evaluations", href: "#/evaluations" }, { label: "Metrics" }]);
   $("#newMetric", content).onclick = () => createMetricDialog();
   $$("[data-me]", content).forEach((c) => c.onclick = () => editMetricDialog(metrics.find((x) => x.name === c.dataset.me)));
 }
@@ -762,12 +797,14 @@ function editMetricDialog(me) {
 
 // ------------------------------------------------------------------ playground
 async function pagePlayground(preset) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const models = await api("/api/models");
   try { state.repositories = await api("/api/repositories"); } catch (_) { state.repositories = []; }
   const p = state.playground;
   if (preset) { p.model = preset; p.history = []; }
   if (!p.model) p.model = (models.find((m) => m.kind === "fine-tuned") || models[0])?.id || null;
+  assertRender(view);
   const content = layout("playground", `<div class="page-head"><h1>Playground</h1><span class="meta">Test base and fine-tuned models before you deploy them.</span></div>
     <div class="play"><div class="panel"><div class="head"><h2>Settings</h2></div><div class="body">
       <div class="field"><label>Model</label><select id="pgModel">${models.map((m) => `<option value="${esc(m.id)}" ${m.id === p.model ? "selected" : ""}>${esc(m.kind === "fine-tuned" ? m.alias : m.id)}${m.status === "up" ? " ●" : ""}</option>`).join("")}</select><div class="hint">● = loaded in memory. Others load on first message.</div></div>
@@ -816,16 +853,18 @@ async function pagePlayground(preset) {
 
 // ------------------------------------------------------------------ models + hugging face hub
 async function pageModels() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const [models, hubInfo] = await Promise.all([api("/api/models"), api("/api/hub/models")]);
+  assertRender(view);
   const content = layout("models", `<div class="page-head"><h1>Models</h1><span class="meta">${models.filter((m) => m.kind === "fine-tuned").length} fine-tuned · ${models.filter((m) => m.kind === "base").length} catalog · ${hubInfo.models.length} in the Hub cache · ${hubInfo.free_disk_gb} GB free</span></div>
-    <div class="panel"><div class="head"><h2>Fine-tuned and catalog models</h2></div><table><thead><tr><th>Model</th><th>Kind</th><th>Base model</th><th class="num">Parameters</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${models.map((m) => `<tr><td><b class="mono">${esc(m.alias)}</b>${m.kind === "fine-tuned" ? `<div class="muted mono" style="font-size:11px">${esc(m.id)}</div>` : `<div class="muted" style="font-size:12px">${esc(m.notes || "")}</div>`}</td><td><span class="pill ${m.kind === "fine-tuned" ? "info" : ""}">${m.kind}${m.training_type ? " · " + m.training_type : ""}</span></td><td class="mono">${esc(m.base_model)}</td><td class="num">${fmtParams(m.parameters)}</td><td><span class="pill ${m.status}">${m.status}</span></td><td>${fmtDate(m.created)}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-toggle="${esc(m.id)}" data-status="${m.status}">${m.status === "up" ? "Unload" : "Load"}</button> <a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a>${m.kind === "fine-tuned" ? ` <a class="btn sm icon" title="Download" href="/api/p/${encodeURIComponent(state.project)}/jobs/${encodeURIComponent(m.id.split("/")[0])}/experiments/${m.id.split("/")[1]}/download">⬇</a> <button class="btn sm" data-upload="${esc(m.id)}">Upload to Hub</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
+    <div class="panel"><div class="head"><h2>Fine-tuned and catalog models</h2></div><table><thead><tr><th>Model</th><th>Kind</th><th>Base model</th><th class="num">Parameters</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${models.map((m) => `<tr ${dataContext("Model", m)}><td><b class="mono">${esc(m.alias)}</b>${m.kind === "fine-tuned" ? `<div class="muted mono" style="font-size:11px">${esc(m.id)}</div>` : `<div class="muted" style="font-size:12px">${esc(m.notes || "")}</div>`}</td><td><span class="pill ${m.kind === "fine-tuned" ? "info" : ""}">${m.kind}${m.training_type ? " · " + m.training_type : ""}</span></td><td class="mono">${esc(m.base_model)}</td><td class="num">${fmtParams(m.parameters)}</td><td><span class="pill ${m.status}">${m.status}</span></td><td>${fmtDate(m.created)}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-toggle="${esc(m.id)}" data-status="${m.status}">${m.status === "up" ? "Unload" : "Load"}</button> <a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a>${m.kind === "fine-tuned" ? ` <a class="btn sm icon" title="Download" href="/api/p/${encodeURIComponent(state.project)}/jobs/${encodeURIComponent(m.id.split("/")[0])}/experiments/${m.id.split("/")[1]}/download">⬇</a> <button class="btn sm" data-upload="${esc(m.id)}">Upload to Hub</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
     <div class="panel" style="margin-top:16px"><div class="head"><h2>Hugging Face Hub</h2><span class="muted">token: ${hubInfo.token.configured ? `<span class="pill good">${esc(hubInfo.token.masked)}</span>` : '<span class="pill warn">not set (needed for gated models and uploads)</span>'}</span><div class="right"><input id="hfToken" placeholder="hf_… token" style="width:220px"><button class="btn sm" id="hfSave">Save token</button></div></div>
       <div class="body">
         <div class="row"><div class="field" style="flex:2"><label>Search the Hugging Face Hub (any open model)</label><input id="hubQ" placeholder="SmolLM2, Qwen2.5, gemma-3, phi, all-MiniLM…"></div><div class="field" style="max-width:170px"><label>Task</label><select id="hubTask"><option value="text-generation">text generation</option><option value="embeddings">embeddings (RAG)</option><option value="sentence-similarity">sentence similarity</option><option value="any">any</option></select></div><div class="field" style="max-width:150px"><label>Max parameters (B)</label><input id="hubMax" type="number" step="0.1" value="2"></div><button class="btn primary" id="hubSearch">Search</button></div>
         <div id="hubResults"></div>
         <h3 style="margin:16px 0 6px">Downloaded (local cache)</h3>
-        <table><thead><tr><th>Repository</th><th class="num">Size</th><th>Loadable</th><th>Last used</th><th></th></tr></thead><tbody>${hubInfo.models.map((m) => `<tr><td class="mono">${esc(m.id)}</td><td class="num">${m.size_gb} GB</td><td>${m.transformers_loadable ? '<span class="pill good">transformers</span>' : m.mlx ? '<span class="pill info">MLX (helper LLM only)</span>' : '<span class="pill">other</span>'}</td><td>${m.last_accessed ? fmtDate(new Date(m.last_accessed * 1000).toISOString()) : "–"}</td><td style="text-align:right;white-space:nowrap">${m.transformers_loadable ? `<a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a> ` : ""}<button class="btn sm danger" data-hubdel="${esc(m.id)}">Remove</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing cached yet.</td></tr>`}</tbody></table>
+        <table><thead><tr><th>Repository</th><th class="num">Size</th><th>Loadable</th><th>Last used</th><th></th></tr></thead><tbody>${hubInfo.models.map((m) => `<tr ${dataContext("Model", m)}><td class="mono">${esc(m.id)}</td><td class="num">${m.size_gb} GB</td><td>${m.transformers_loadable ? '<span class="pill good">transformers</span>' : m.mlx ? '<span class="pill info">MLX (helper LLM only)</span>' : '<span class="pill">other</span>'}</td><td>${m.last_accessed ? fmtDate(new Date(m.last_accessed * 1000).toISOString()) : "–"}</td><td style="text-align:right;white-space:nowrap">${m.transformers_loadable ? `<a class="btn sm" href="#/playground?model=${encodeURIComponent(m.id)}">Test</a> ` : ""}<button class="btn sm danger" data-hubdel="${esc(m.id)}">Remove</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">Nothing cached yet.</td></tr>`}</tbody></table>
       </div></div>
     <p class="muted" style="margin-top:12px">OpenAI-compatible API: <span class="mono">${location.origin}/v1/chat/completions</span> with <span class="mono">"model": "&lt;alias or id&gt;"</span>. API keys (API Keys page) authenticate this endpoint; model ids are <span class="mono">${esc(state.project)}/&lt;job&gt;/&lt;n&gt;</span>. Any downloaded transformers model can be a base model in a fine-tuning job.</p>`, [{ label: "Models" }]);
   $$("[data-toggle]", content).forEach((b) => b.onclick = guard(async () => { b.disabled = true; b.innerHTML = '<span class="spinner"></span>'; await post(`/api/models/${slug(b.dataset.toggle)}/${b.dataset.status === "up" ? "down" : "up"}`, {}); pageModels(); }));
@@ -840,7 +879,7 @@ async function pageModels() {
     const q = $("#hubQ", content).value.trim(); const max = $("#hubMax", content).value;
     $("#hubResults", content).innerHTML = `<div class="muted"><span class="spinner"></span> searching the Hub…</div>`;
     const rows = await api(`/api/hub/search?q=${encodeURIComponent(q)}&limit=15${max ? `&max_params_b=${max}` : "&max_params_b="}&task=${encodeURIComponent($("#hubTask", content).value)}`);
-    $("#hubResults", content).innerHTML = rows.length ? `<table><thead><tr><th>Repository</th><th class="num">Params</th><th>License</th><th>Downloads</th><th>Loadable</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr><td><a class="mono" href="${r.url}" target="_blank">${esc(r.id)}</a>${r.gated ? ' <span class="pill warn">gated</span>' : ""}</td><td class="num">${r.params_b ? r.params_b + "B" : "?"}</td><td>${esc(r.license || "?")}</td><td class="num">${(r.downloads || 0).toLocaleString()}</td><td>${r.transformers_loadable ? '<span class="pill good">transformers</span>' : `<span class="pill">${esc(r.format_tags.join(", ") || r.library || "?")}</span>`}</td><td style="text-align:right">${r.transformers_loadable ? `<button class="btn sm primary" data-dl="${esc(r.id)}">Download</button>` : ""}</td></tr>`).join("")}</tbody></table>` : `<div class="muted">No results.</div>`;
+    $("#hubResults", content).innerHTML = rows.length ? `<table><thead><tr><th>Repository</th><th class="num">Params</th><th>License</th><th>Downloads</th><th>Loadable</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr ${dataContext("Result", r)}><td><a class="mono" href="${r.url}" target="_blank">${esc(r.id)}</a>${r.gated ? ' <span class="pill warn">gated</span>' : ""}</td><td class="num">${r.params_b ? r.params_b + "B" : "?"}</td><td>${esc(r.license || "?")}</td><td class="num">${(r.downloads || 0).toLocaleString()}</td><td>${r.transformers_loadable ? '<span class="pill good">transformers</span>' : `<span class="pill">${esc(r.format_tags.join(", ") || r.library || "?")}</span>`}</td><td style="text-align:right">${r.transformers_loadable ? `<button class="btn sm primary" data-dl="${esc(r.id)}">Download</button>` : ""}</td></tr>`).join("")}</tbody></table>` : `<div class="muted">No results.</div>`;
     $$("[data-dl]", content).forEach((b) => b.onclick = guard(async () => { await post("/api/hub/download", { repo_id: b.dataset.dl }); showTasks(); pollTasks(); toast(`downloading ${b.dataset.dl}`); }));
   });
   $("#hubSearch", content).onclick = search;
@@ -850,13 +889,15 @@ async function pageModels() {
 // ------------------------------------------------------------------ assistant
 // ------------------------------------------------------------------ repositories (RAG)
 async function pageRepositories() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const repos = await api("/api/repositories");
   state.repositories = repos;
+  assertRender(view);
   const content = layout("repositories", `<div class="page-head"><h1>Repositories</h1><span class="meta">document collections with embeddings; chat with them from the Playground or the API (<span class="mono">repositories</span> on /v1/chat/completions)</span><div class="actions"><button class="btn primary" id="newRepo">+ New repository</button></div></div>
-    <div class="cards">${repos.map((r) => `<div class="card" data-repo="${esc(r.name)}"><h3>${esc(r.name)}</h3><div class="sub">${esc(r.description || "")}</div><div class="sub" style="margin-top:6px">${r.documents.length} document${r.documents.length === 1 ? "" : "s"} · ${r.chunk_count} chunks · <span class="mono">${esc(r.embedding_model)}</span></div>
+    <div class="cards">${repos.map((r) => `<div ${dataContext("Repository", r)} class="card" data-repo="${esc(r.name)}"><h3>${esc(r.name)}</h3><div class="sub">${esc(r.description || "")}</div><div class="sub" style="margin-top:6px">${r.documents.length} document${r.documents.length === 1 ? "" : "s"} · ${r.chunk_count} chunks · <span class="mono">${esc(r.embedding_model)}</span></div>
       <div class="row" style="margin-top:10px"><button class="btn small" data-add="${esc(r.name)}">Add documents</button><button class="btn small" data-query="${esc(r.name)}">Query</button><button class="btn small danger" data-del="${esc(r.name)}">Delete</button></div>
-      ${r.documents.length ? `<table style="margin-top:8px">${r.documents.map((d) => `<tr><td>${esc(d.name)}</td><td class="muted">${esc(d.kind)}</td><td class="num">${d.chunks} chunks</td><td><button class="btn small" data-deldoc="${esc(r.name)}|${esc(d.name)}">✕</button></td></tr>`).join("")}</table>` : ""}
+      ${r.documents.length ? `<table style="margin-top:8px">${r.documents.map((d) => `<tr ${dataContext("Repository document", d)}><td>${esc(d.name)}</td><td class="muted">${esc(d.kind)}</td><td class="num">${d.chunks} chunks</td><td><button class="btn small" data-deldoc="${esc(r.name)}|${esc(d.name)}">✕</button></td></tr>`).join("")}</table>` : ""}
     </div>`).join("") || `<div class="empty"><b>No repositories yet</b>Create one, add PDFs, docs, pages, or videos, then chat with them.</div>`}</div>`, [{ label: "Repositories" }]);
   $("#newRepo", content).onclick = guard(async () => {
     let cached = [];
@@ -882,7 +923,7 @@ async function pageRepositories() {
     const name = b.dataset.query;
     const m = modal({ title: `Query ${name}`, wide: true, body: `<div class="row"><div class="field" style="flex:3"><label>Text</label><input id="rpQ" placeholder="how do I reset the thermostat?"></div><div class="field"><label>Passages</label><input id="rpLimit" type="number" min="1" max="50" value="5"></div><div class="field"><label>Min similarity</label><input id="rpThr" type="number" min="-1" max="1" step="0.05" value="0"></div></div><div id="rpResults" class="muted">results appear here</div>`, footer: `<button class="btn" data-close>Close</button><button class="btn primary" data-ok>Search</button>` });
     $("[data-close]", m.el).onclick = m.close;
-    const run = guard(async () => { const rows = await post(`/api/repositories/${encodeURIComponent(name)}/query`, { text: $("#rpQ", m.el).value, limit: Number($("#rpLimit", m.el).value) || 5, similarity_threshold: Number($("#rpThr", m.el).value) || 0 }); $("#rpResults", m.el).innerHTML = rows.length ? `<table>${rows.map((r) => `<tr><td class="num mono">${r.similarity_score.toFixed(3)}</td><td class="muted">${esc(r.document)}</td><td style="white-space:pre-wrap">${esc(r.text.slice(0, 600))}</td></tr>`).join("")}</table>` : `<div class="muted">no chunks above the threshold</div>`; });
+    const run = guard(async () => { const rows = await post(`/api/repositories/${encodeURIComponent(name)}/query`, { text: $("#rpQ", m.el).value, limit: Number($("#rpLimit", m.el).value) || 5, similarity_threshold: Number($("#rpThr", m.el).value) || 0 }); $("#rpResults", m.el).innerHTML = rows.length ? `<table>${rows.map((r) => `<tr ${dataContext("Result", r)}><td class="num mono">${r.similarity_score.toFixed(3)}</td><td class="muted">${esc(r.document)}</td><td style="white-space:pre-wrap">${esc(r.text.slice(0, 600))}</td></tr>`).join("")}</table>` : `<div class="muted">no chunks above the threshold</div>`; });
     $("[data-ok]", m.el).onclick = run;
     $("#rpQ", m.el).onkeydown = (e) => { if (e.key === "Enter") run(); };
   });
@@ -892,7 +933,8 @@ async function pageRepositories() {
 
 // ------------------------------------------------------------------ settings (stored on the server, shared by everyone using this instance)
 async function pageSettings() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const [data, cfg] = await Promise.all([api("/api/settings"), api("/api/config")]);
   const groups = [
     ["anthropic", "Claude (assistant)", "Used by the ✦ assistant and the Assistant page. Any model the account lists becomes selectable.", "anthropic"],
@@ -906,6 +948,7 @@ async function pageSettings() {
     ? `<div class="row"><input type="password" data-key="${s.key}" placeholder="${s.set ? "•••••••• (saved; type to replace)" : "not set"}" autocomplete="new-password"><label class="chk"><input type="checkbox" data-clear="${s.key}"> clear</label></div>`
     : `<input data-key="${s.key}" value="${esc(s.value || "")}" placeholder="default">`}</div>`;
   const store = (what, title, detail) => `<div class="card"><h3>${title}</h3><div class="sub mono" style="word-break:break-all">${esc(detail)}</div><div class="row" style="margin-top:8px"><button class="btn small" data-test="${what}">Test connection</button><span class="muted" data-result="${what}"></span></div></div>`;
+  assertRender(view);
   const content = layout("settings", `<div class="page-head"><div><h1>Settings</h1><div class="meta"><span>One set for this deployment, stored in PostgreSQL and applied to the API, the workers, the inference service, and the assistant. Admins only.${data.updated ? ` Last change ${fmtDate(data.updated)}.` : ""}</span></div></div><div class="actions"><button class="btn primary" id="stSave">Save</button></div></div>
     <div class="cards settings">${groups.map(([g, title, blurb, test]) => `<div class="card"><h3>${title}</h3><div class="sub">${blurb}</div><div style="margin-top:10px">${byGroup(g).map(field).join("")}</div>${test ? `<div class="row" style="margin-top:8px"><button class="btn small" data-test="${test}">Test connection</button><span class="muted" data-result="${test}"></span></div>` : ""}</div>`).join("")}
     ${store("database", "PostgreSQL", `${cfg.database_url} · ${cfg.database_version || "?"}`)}${store("redis", "Redis (queue)", cfg.redis_url)}${store("qdrant", "Qdrant (vectors)", cfg.qdrant_url)}${store("inference", "Inference", cfg.inference.mode === "remote" ? cfg.inference.url : "models load inside the API process")}
@@ -923,10 +966,12 @@ async function pageSettings() {
 }
 
 async function pageUsers() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const users = await api("/api/users");
+  assertRender(view);
   const content = layout("users", `<div class="page-head"><h1>Users</h1><span class="meta">${users.length} account${users.length === 1 ? "" : "s"}</span><div class="actions"><button class="btn primary" id="newUser">+ Add user</button></div></div>
-    <div class="panel"><table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last login</th><th>Status</th><th></th></tr></thead><tbody>${users.map((u) => `<tr><td><b>${esc(u.email)}</b></td><td>${esc(u.name)}</td><td><select data-role="${u.id}" ${u.id === state.user.id ? "disabled" : ""}><option ${u.role === "member" ? "selected" : ""}>member</option><option ${u.role === "admin" ? "selected" : ""}>admin</option></select></td><td>${fmtDate(u.last_login)}</td><td><span class="pill ${u.disabled ? "bad" : "good"}">${u.disabled ? "disabled" : "active"}</span></td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-pw="${u.id}">Set password</button> ${u.id !== state.user.id ? `<button class="btn sm" data-toggle-user="${u.id}" data-disabled="${u.disabled}">${u.disabled ? "Enable" : "Disable"}</button> <button class="btn sm danger" data-del-user="${u.id}">Delete</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`, [{ label: "Users" }]);
+    <div class="panel"><table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last login</th><th>Status</th><th></th></tr></thead><tbody>${users.map((u) => `<tr ${dataContext("User account", u)}><td><b>${esc(u.email)}</b></td><td>${esc(u.name)}</td><td><select data-role="${u.id}" ${u.id === state.user.id ? "disabled" : ""}><option ${u.role === "member" ? "selected" : ""}>member</option><option ${u.role === "admin" ? "selected" : ""}>admin</option></select></td><td>${fmtDate(u.last_login)}</td><td><span class="pill ${u.disabled ? "bad" : "good"}">${u.disabled ? "disabled" : "active"}</span></td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-pw="${u.id}">Set password</button> ${u.id !== state.user.id ? `<button class="btn sm" data-toggle-user="${u.id}" data-disabled="${u.disabled}">${u.disabled ? "Enable" : "Disable"}</button> <button class="btn sm danger" data-del-user="${u.id}">Delete</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`, [{ label: "Users" }]);
   $("#newUser", content).onclick = () => {
     const m = modal({ title: "Add user", body: `<div class="field"><label>Email</label><input id="uEmail" type="email"></div><div class="field"><label>Name</label><input id="uName"></div><div class="field"><label>Password (8+ characters)</label><input id="uPass" type="password" autocomplete="new-password"></div><label class="chk"><input type="checkbox" id="uAdmin"> admin</label>`, footer: `<button class="btn" data-cancel>Cancel</button><button class="btn primary" data-ok>Create</button>` });
     $("[data-cancel]", m.el).onclick = m.close;
@@ -943,10 +988,12 @@ async function pageUsers() {
 }
 
 async function pageProjects() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const projects = await api("/api/projects");
+  assertRender(view);
   const content = layout("projects", `<div class="page-head"><h1>Projects</h1><div class="actions"><button class="btn primary" id="newProject">+ New project</button></div></div>
-    <div class="cards">${projects.map((pr) => `<div class="card ${pr.slug === state.project ? "" : "clickable"}" data-proj="${esc(pr.slug)}"><h3>${esc(pr.name)} ${pr.slug === state.project ? '<span class="pill info">current</span>' : ""}</h3><div class="sub">${esc(pr.goal || "")}</div><div class="foot"><span>${pr.datasets} datasets · ${pr.jobs} jobs · ${fmtDate(pr.created)}</span>${state.user.role === "admin" && projects.length > 1 ? `<button class="btn sm danger" data-del-proj="${esc(pr.slug)}">Delete</button>` : ""}</div></div>`).join("")}</div>`, [{ label: "Projects" }]);
+    <div class="cards">${projects.map((pr) => `<div ${dataContext("Project", pr)} class="card ${pr.slug === state.project ? "" : "clickable"}" data-proj="${esc(pr.slug)}"><h3>${esc(pr.name)} ${pr.slug === state.project ? '<span class="pill info">current</span>' : ""}</h3><div class="sub">${esc(pr.goal || "")}</div><div class="foot"><span>${pr.datasets} datasets · ${pr.jobs} jobs · ${fmtDate(pr.created)}</span>${state.user.role === "admin" && projects.length > 1 ? `<button class="btn sm danger" data-del-proj="${esc(pr.slug)}">Delete</button>` : ""}</div></div>`).join("")}</div>`, [{ label: "Projects" }]);
   $("#newProject", content).onclick = newProjectModal;
   $$("[data-proj]", content).forEach((c) => c.onclick = guard(async (e) => { if (e.target.closest("button")) return; await selectProject(c.dataset.proj); state.overview = null; go("#/datasets"); render(); }));
   $$("[data-del-proj]", content).forEach((b) => b.onclick = (e) => { e.stopPropagation(); confirmModal("Delete project", `Delete project ${b.dataset.delProj} with all its datasets, jobs, weights, evaluations, traces, and repositories?`, async () => { await del(`/api/p/${encodeURIComponent(b.dataset.delProj)}`); if (state.project === b.dataset.delProj) state.project = null; await ensureProject(); pageProjects(); }); });
@@ -964,6 +1011,7 @@ async function selectProject(slug) {
   state.projects = await api("/api/projects");
   if (!state.projects.some((pr) => pr.slug === slug)) slug = state.projects[0]?.slug || null;
   state.project = slug;
+  syncAssistantScope();
   try { if (slug) localStorage.setItem(PROJECT_KEY, slug); } catch (_) {}
   return slug;
 }
@@ -1002,20 +1050,208 @@ function showSetup() {
 }
 
 // ------------------------------------------------------------------ assistant (available on every page)
-const ASSIST = { open: false, provider: "anthropic", model: null, models: null, attach: true, destructive: false, history: [], busy: false, usage: "" };
-const assistKey = () => `tinystudio.assistant.${state.overview?.project?.name || "default"}`;
-function assistLoad() { try { const raw = localStorage.getItem(assistKey()); if (raw) { const saved = JSON.parse(raw); for (const k of ["provider", "model", "attach", "destructive", "history", "open"]) if (k in saved) ASSIST[k] = saved[k]; } } catch (_) { /* storage unavailable */ } }
-function assistSave() { try { localStorage.setItem(assistKey(), JSON.stringify({ provider: ASSIST.provider, model: ASSIST.model, attach: ASSIST.attach, destructive: ASSIST.destructive, open: ASSIST.open, history: ASSIST.history.slice(-40).map((m) => ({ role: m.role, content: m.content, calls: (m.calls || []).slice(-12) })) })); } catch (_) { /* storage unavailable */ } }
-
-// --- what the page shows: text, recent data, and an element tree with ref ids (the shape Claude in Chrome's read_page uses)
-function recordApi(path, data) {
-  if (!path.startsWith("/api/") || path.startsWith("/api/tasks") || path.startsWith("/api/assistant") || path.startsWith("/api/overview")) return;
-  let text; try { text = JSON.stringify(data); } catch (_) { return; }
-  if (text.length > 6000) text = text.slice(0, 6000) + `… [${text.length} chars total]`;
-  state.recentApi = (state.recentApi || []).filter((r) => r.path !== path).concat([{ path, data: text, at: Date.now() }]).slice(-8);
+const ASSIST = { open: false, models: null, attach: true, destructive: false, scope: null, selection: null, picking: false, session: null };
+const assistantSessions = new Map();
+const assistKey = () => `tinystudio.assistant.v2.${encodeURIComponent(state.user?.id || state.user?.email || "anonymous")}.${encodeURIComponent(state.project || "none")}`;
+// Each scope owns its asynchronous work. Late responses can never change the active project.
+for (const name of ["history", "provider", "model", "busy", "usage", "turn"]) Object.defineProperty(ASSIST, name, {
+  get: () => ASSIST.session?.[name], set: (value) => { if (ASSIST.session) ASSIST.session[name] = value; },
+});
+function assistPreferences() {
+  if (!ASSIST.scope) return;
+  try { localStorage.setItem(`${ASSIST.scope}.preferences`, JSON.stringify({ attach: ASSIST.attach, open: ASSIST.open })); } catch (_) { /* preferences are optional */ }
 }
+function assistRefreshUI() {
+  for (const el of $$("#asPersistence")) el.textContent = assistStatus();
+  const blocked = !ASSIST.session?.loaded || ASSIST.busy || ASSIST.session?.dirty || ASSIST.session?.error;
+  for (const el of $$("#asSend, #asReset, #asProvider, #asModel")) el.disabled = Boolean(blocked);
+  for (const el of $$("#asRetry")) el.hidden = !ASSIST.session?.error || ASSIST.session?.conflict;
+  for (const el of $$("#asReload")) el.disabled = Boolean(ASSIST.busy || ASSIST.session?.saving);
+}
+function assistStatus() {
+  const session = ASSIST.session;
+  if (!session || !session.loaded && !session.error) return "Loading conversation…";
+  if (session.error) return `${session.conflict ? "Conflict" : "Not saved"}: ${session.error}`;
+  if (session.saving) return "Saving…";
+  if (session.dirty) return "Unsaved conversation";
+  return "Saved to database";
+}
+async function assistRequest(session, options) {
+  if (session.user !== (state.user?.id || state.user?.email)) throw new Error("Sign in as the conversation owner before retrying");
+  const response = await rawFetch(`/api/p/${encodeURIComponent(session.project)}/assistant/conversation`, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail || detail; } catch (_) {}
+    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    error.status = response.status; throw error;
+  }
+  return response.json();
+}
+function assistEnqueue(session, work) {
+  const pending = session.queue.catch(() => {}).then(work);
+  session.queue = pending;
+  return pending;
+}
+function assistSnapshot(session) {
+  // Preserve the full conversation; request-size compaction is separate from storage.
+  return JSON.parse(JSON.stringify({ revision: session.revision, history: session.history, provider: session.provider || "", model: session.model || "" }));
+}
+function assistSameSnapshot(session, snapshot) {
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+  const content = (value) => ({ history: value.history, provider: value.provider || "", model: value.model || "" });
+  return JSON.stringify(canonical(content(assistSnapshot(session)))) === JSON.stringify(canonical(content(snapshot)));
+}
+function assistAdopt(session, snapshot) {
+  session.revision = snapshot.revision; session.history = snapshot.history;
+  session.provider = snapshot.provider || session.provider; session.model = snapshot.model || session.model;
+  session.loaded = true; session.dirty = false; session.error = ""; session.conflict = false; session.pending = false; session.streaming = false;
+}
+function assistForgetLegacy(session) {
+  try { localStorage.removeItem(session.key); } catch (_) { /* revision still prevents reimport */ }
+}
+function assistLoad(session = ASSIST.session, { refresh = false, discard = false } = {}) {
+  if (!session) return Promise.resolve();
+  return assistEnqueue(session, async () => {
+    if (session.busy || session.dirty && !discard && !session.pending || session.loaded && !refresh) return;
+    try {
+      const snapshot = await assistRequest(session);
+      if (session.pending && snapshot.revision <= session.revision && !discard) return;
+      if (snapshot.revision === 0 && !session.loaded && session.legacy?.history?.length) {
+        session.revision = 0; session.history = session.legacy.history;
+        session.provider = session.legacy.provider || session.provider; session.model = session.legacy.model || session.model;
+        session.loaded = true; session.dirty = true;
+        try {
+          const imported = await assistRequest(session, { method: "PUT", body: JSON.stringify(assistSnapshot(session)) });
+          assistAdopt(session, imported);
+        } catch (error) {
+          if (error.status !== 409) throw error;
+          assistAdopt(session, await assistRequest(session));
+        }
+      } else assistAdopt(session, snapshot);
+      session.legacy = null; assistForgetLegacy(session);
+    } catch (error) { session.error = error.message; session.conflict = error.status === 409; throw error; }
+    finally { if (ASSIST.session === session) { assistRefreshUI(); assistRedraw(); } }
+  });
+}
+function assistSave(session = ASSIST.session) {
+  if (!session) return Promise.resolve();
+  session.dirty = true; session.edits = (session.edits || 0) + 1;
+  assistPreferences();
+  return assistEnqueue(session, async () => {
+    if (!session.loaded) throw new Error("Conversation must load before saving");
+    if (session.conflict) throw new Error("Reload the newer database conversation before continuing");
+    session.saving = true; session.error = ""; assistRefreshUI();
+    try {
+      const edits = session.edits;
+      const saved = await assistRequest(session, { method: "PUT", body: JSON.stringify(assistSnapshot(session)) });
+      session.revision = saved.revision; session.dirty = session.edits !== edits; session.conflict = false;
+    } catch (error) { session.error = error.message; session.conflict = error.status === 409; throw error; }
+    finally { session.saving = false; assistRefreshUI(); }
+  });
+}
+function assistRedraw() {
+  const drawer = $("#assist .drawer"); if (drawer && ASSIST.open) renderAssistant(drawer);
+  const page = $("#asPage"); if (page) renderAssistant(page, { full: true });
+}
+function syncAssistantScope() {
+  const key = assistKey(); if (key === ASSIST.scope) return;
+  const previous = ASSIST.session;
+  if (previous) {
+    previous.turn?.controller.abort(); previous.turn = null; previous.busy = false;
+    if (previous.loaded && previous.dirty && !previous.streaming) assistSave(previous).catch(() => {});
+    if (previous.streaming) { previous.pending = true; previous.error ||= "Waiting for the server to save the interrupted reply. Refresh to check."; }
+  }
+  ASSIST.scope = key; ASSIST.destructive = false; ASSIST.selection = null;
+  let session = assistantSessions.get(key);
+  if (!session) {
+    let legacy = null; try { legacy = JSON.parse(localStorage.getItem(key) || "null"); } catch (_) {}
+    session = { key, user: state.user?.id || state.user?.email, project: state.project, provider: "anthropic", model: null, history: [], revision: 0, loaded: false, dirty: false, saving: false, error: "", conflict: false, busy: false, turn: null, usage: "", queue: Promise.resolve(), legacy };
+    assistantSessions.set(key, session);
+  }
+  ASSIST.session = session;
+  try { const prefs = JSON.parse(localStorage.getItem(`${key}.preferences`) || "{}"); ASSIST.attach = prefs.attach ?? session.legacy?.attach ?? true; ASSIST.open = prefs.open ?? session.legacy?.open ?? false; } catch (_) { ASSIST.attach = true; ASSIST.open = false; }
+  state.pageContext = null;
+  const drawer = $("#assist .drawer"); if (drawer) { drawer.hidden = !ASSIST.open; $("#assist .fab")?.classList.toggle("on", ASSIST.open); renderAssistant(drawer); }
+  if (session.project && state.user) assistLoad(session, { refresh: session.loaded }).catch(() => {});
+}
+function safeContextData(data) {
+  if (Array.isArray(data)) return data.map(safeContextData);
+  if (data && typeof data === "object") return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, /(?:password|secret|token|authorization|credential|api.?key)/i.test(key) ? "[redacted]" : safeContextData(value)]));
+  return data;
+}
+// Capture only GET responses requested by this route and project render. Never retain credentials.
+function recordApi(path, data, capture = state.pageContext) {
+  if (!capture || capture !== state.pageContext || capture.project !== state.project || capture.route !== (location.hash || "#/")) return;
+  if (!path.startsWith("/api/") || /^\/api\/(?:tasks|assistant|settings|auth|keys|users)(?:[/?]|$)/.test(path)) return;
+  const record = { path, data: safeContextData(data) };
+  capture.api = capture.api.filter((r) => r.path !== path).concat([record]);
+}
+function isCurrentRender(view) { return !!view && view === state.pageContext && view.project === state.project && view.route === (location.hash || "#/"); }
+function pageContextReady() { return isCurrentRender(state.domContext); }
+function assertRender(view) {
+  if (!view || isCurrentRender(view)) return;
+  const error = new Error("Page changed while loading; stale response discarded"); error.name = "StaleRenderError"; throw error;
+}
+const contextBindings = new WeakMap();
+let contextSequence = 0;
+function contextRecord(label, data) { return { label, source: "rendered-data", data: safeContextData(data), route: location.hash || "#/", project: state.project, user: state.user?.id, origin: state.pageContext }; }
+function bindContext(el, label, data) { if (el) contextBindings.set(el, contextRecord(label, data)); }
+// HTML renderers retain the exact object used to draw this row/chart, without serializing it into DOM attributes.
+function dataContext(label, data) {
+  const view = state.pageContext; if (!view) return "";
+  const id = `ctx_${++contextSequence}`;
+  (view.bindings ||= new Map()).set(id, contextRecord(label, data));
+  return `data-context-id="${id}"`;
+}
+function bindingFor(el) { return contextBindings.get(el) || state.pageContext?.bindings?.get(el.dataset?.contextId); }
+function validBinding(binding) { return binding && binding.origin === state.pageContext && binding.project === state.project && binding.user === state.user?.id; }
+function publicBinding(binding) { const { origin, user, ...data } = binding; return { ...data, source_route: data.route, route: location.hash || "#/" }; }
+function sensitiveElement(el) {
+  if (el?.closest?.('[data-assistant-sensitive], input[type="password"]')) return true;
+  const field = el?.closest?.("input, textarea");
+  return !!field && /password|token|secret|credential|api.?key/i.test(`${field.id} ${field.name} ${labelFor(field)}`);
+}
+function safeSelection() {
+  if (!pageContextReady()) return "";
+  const selected = window.getSelection?.();
+  if (!selected || location.hash === "#/api-keys" || sensitiveElement(selected.anchorNode?.parentElement) || sensitiveElement(selected.focusNode?.parentElement)) return "";
+  for (let i = 0; i < (selected.rangeCount || 0); i++) {
+    const range = selected.getRangeAt(i);
+    if ($$('[data-assistant-sensitive]').some((el) => range.intersectsNode(el))) return "";
+  }
+  return String(selected).trim().slice(0, 2000);
+}
+function pickContext(target) {
+  if (!pageContextReady()) return null;
+  if (sensitiveElement(target) || location.hash === "#/api-keys") return null;
+  const selected = target.closest?.("tr, table, svg, .panel, .card, .tile, [data-context-id]") || target;
+  // Rows and charts never inherit an enclosing panel's broader records.
+  const exactOnly = selected.matches?.("tr, svg");
+  for (let el = target; el && el !== document.body; el = el.parentElement) {
+    const binding = bindingFor(el);
+    if (binding) return validBinding(binding) ? publicBinding(binding) : null;
+    if (exactOnly && el === selected) break;
+  }
+  if (!exactOnly) {
+    const children = [...(selected.querySelectorAll?.('[data-context-id], tr, svg') || [])].map(bindingFor).filter(validBinding);
+    if (children.length) return { label: labelFor(selected), source: "rendered-data", route: location.hash, project: state.project, data: children.map(publicBinding) };
+  }
+  return { label: labelFor(selected).slice(0, 120), source: "unavailable", note: "No structured source is bound to this element. No page-wide records were attached.", route: location.hash, project: state.project, data: null };
+}
+function setAssistantPicking(on) {
+  ASSIST.picking = on; document.body.classList.toggle("assistant-picking", on);
+  const button = $("#asPick"); if (button) button.textContent = on ? "Cancel pick" : "Pick data";
+}
+document.addEventListener("click", (event) => {
+  if (!ASSIST.picking || event.target.closest("#assist, #asPage")) return;
+  const selected = pickContext(event.target); if (!selected) return;
+  event.preventDefault(); event.stopImmediatePropagation(); ASSIST.selection = selected; setAssistantPicking(false);
+  const drawer = $("#assist .drawer"); if (drawer && ASSIST.open) renderAssistant(drawer);
+  const page = $("#asPage"); if (page) renderAssistant(page, { full: true });
+}, true);
+
 const uiRefs = new Map();
-function visible(el) { if (!(el instanceof Element)) return false; if (el.closest("#assist, script, style, template")) return false; const cs = getComputedStyle(el); if (cs.display === "none" || cs.visibility === "hidden") return false; return el.getClientRects().length > 0; }
+function visible(el) { if (!(el instanceof Element)) return false; if (el.closest("#assist, [data-assistant-sensitive], script, style, template")) return false; const cs = getComputedStyle(el); if (cs.display === "none" || cs.visibility === "hidden") return false; return el.getClientRects().length > 0; }
 function labelFor(el) {
   const own = (el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("placeholder") || "").trim();
   if (own) return own;
@@ -1026,6 +1262,8 @@ function labelFor(el) {
 }
 function snapshotPage({ interactive_only = false, max_chars = 12000 } = {}) {
   uiRefs.clear();
+  if (location.hash === "#/api-keys" || !state.user) return "Credential/account page omitted from assistant context.";
+  if (!pageContextReady()) return "Page is loading; previous page content omitted.";
   const lines = [`route: ${location.hash || "#/"}`, `page: ${(document.querySelector("#app h1") || {}).innerText?.trim() || document.title}`];
   const roots = [...document.querySelectorAll(".modal-back .modal")];
   if (roots.length) lines.push("(a dialog is open; its elements come first)");
@@ -1033,7 +1271,7 @@ function snapshotPage({ interactive_only = false, max_chars = 12000 } = {}) {
   const seenText = new Set();
   const isInteractive = (el) => el.matches("button, a[href], input, select, textarea, [role=button], tr.clickable, .card.clickable, summary, [data-k]");
   const walk = (el, depth) => {
-    if (!visible(el)) return;
+    if (!visible(el) || (el.matches("input, textarea") && (el.type === "password" || /password|token|secret|credential|api.?key/i.test(`${el.id} ${el.name} ${labelFor(el)}`))) || el.closest("#asPage")) return;
     if (isInteractive(el)) {
       const ref = `ref_${uiRefs.size + 1}`; uiRefs.set(ref, el); el.dataset.aref = ref;
       const tag = el.tagName.toLowerCase();
@@ -1070,32 +1308,86 @@ function snapshotPage({ interactive_only = false, max_chars = 12000 } = {}) {
   return out;
 }
 function pageText(max = 20000) {
-  const parts = [...document.querySelectorAll(".modal-back .modal")].map((m) => "DIALOG:\n" + m.innerText);
-  const content = document.querySelector("#app .content"); if (content) parts.push(content.innerText);
+  if (location.hash === "#/api-keys" || !state.user) return "Credential/account page omitted from assistant context.";
+  if (!pageContextReady()) return "Page is loading; previous page content omitted.";
+  const parts = [...document.querySelectorAll(".modal-back:not([data-assistant-sensitive]) .modal")].map((m) => "DIALOG:\n" + m.innerText);
+  const content = document.querySelector("#app .content"); if (content) { const copy = content.cloneNode(true); copy.querySelectorAll("#asPage, input[type=password], [data-assistant-sensitive]").forEach((el) => el.remove()); parts.push(copy.innerText || copy.textContent); }
   const text = parts.join("\n\n").replace(/\n{3,}/g, "\n\n");
   return text.length > max ? text.slice(0, max) + `\n[truncated at ${max} of ${text.length} chars]` : text;
 }
 function captureContext() {
-  const sel = String(window.getSelection?.() || "").trim();
-  return { route: location.hash || "#/", title: `${document.title} · ${(document.querySelector("#app h1") || {}).innerText?.trim() || ""}`.trim(), text: pageText(8000), api: (state.recentApi || []).slice(-6), selection: sel.slice(0, 2000) };
+  const ready = pageContextReady();
+  return { route: location.hash || "#/", title: ready ? `${document.title} · ${(document.querySelector("#app h1") || {}).innerText?.trim() || ""}`.trim() : "Page loading", text: pageText(8000), project: state.project, api: ready ? state.pageContext.api : [], selection: ready ? safeSelection() : "", selected_data: ready && ASSIST.selection?.project === state.project && ASSIST.selection?.route === (location.hash || "#/") ? ASSIST.selection : null };
 }
+
 const settle = (ms = 700) => new Promise((r) => setTimeout(r, ms));
-async function uiPerform(action, args = {}) {
-  const need = (ref) => { const el = uiRefs.get(ref); if (!el || !el.isConnected) throw new Error(`element ${ref} not found; call ui_read_page again, the page may have re-rendered`); return el; };
+async function uiPerform(action, args = {}, { allowActions = false } = {}) {
+  if (["click", "fill", "select"].includes(action) && !allowActions) throw new Error("Interface changes require the actions / deletions toggle for this turn.");
+  const need = (ref) => { if (!pageContextReady()) throw new Error("Page is loading; read the page after it finishes"); if (location.hash === "#/settings") throw new Error("Settings must be changed directly by the user"); const el = uiRefs.get(ref); if (sensitiveElement(el)) throw new Error("Credential elements cannot be operated by the assistant"); if (!el || !el.isConnected) throw new Error(`element ${ref} not found; call ui_read_page again, the page may have re-rendered`); return el; };
   switch (action) {
     case "read_page": return snapshotPage(args);
     case "get_text": return pageText(args.max_chars || 20000);
     case "navigate": { let h = String(args.hash || ""); if (!h.startsWith("#")) h = "#" + (h.startsWith("/") ? h : "/" + h); if (location.hash === h) render(); else location.hash = h; await settle(1000); return snapshotPage({ interactive_only: false, max_chars: 8000 }); }
     case "click": { const el = need(args.ref); el.click(); await settle(800); return { clicked: args.ref, page: snapshotPage({ interactive_only: false, max_chars: 6000 }) }; }
-    case "fill": { const el = need(args.ref); if (!el.matches("input, textarea")) throw new Error(`${args.ref} is not an input`); el.focus(); el.value = String(args.value ?? ""); el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { filled: args.ref, value: el.value }; }
+    case "fill": { const el = need(args.ref); if (el.type === "password" || location.hash === "#/settings") throw new Error("Credential fields cannot be operated by the assistant"); if (!el.matches("input, textarea")) throw new Error(`${args.ref} is not an input`); el.focus(); el.value = String(args.value ?? ""); el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { filled: args.ref, value: el.value }; }
     case "select": { const el = need(args.ref); if (!el.matches("select")) throw new Error(`${args.ref} is not a select`); const want = String(args.value ?? ""); const opt = [...el.options].find((o) => o.value === want) || [...el.options].find((o) => o.text.trim().toLowerCase() === want.toLowerCase()) || [...el.options].find((o) => o.text.toLowerCase().includes(want.toLowerCase())); if (!opt) throw new Error(`no option matching ${JSON.stringify(want)}; options: ${[...el.options].map((o) => o.text).join(" / ")}`); el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); await settle(500); return { selected: args.ref, value: opt.value, label: opt.text }; }
     default: throw new Error(`unknown interface action ${action}`);
   }
 }
 
+// Keep the complete JSON request comfortably below the server's 256,000-byte limit.
+const requestBytes = (data) => new TextEncoder().encode(JSON.stringify(data)).length;
+function boundedData(data, limit) {
+  if (requestBytes(data) <= limit) return data;
+  let strings = 4000, items = 40;
+  const compact = (value, depth = 0) => {
+    if (typeof value === "string") return value.length > strings ? value.slice(0, strings) + ` [omitted ${value.length - strings} characters]` : value;
+    if (depth > 10) return { omission: "Nested data omitted beyond depth 10" };
+    if (Array.isArray(value)) return value.slice(0, items).map((v) => compact(v, depth + 1)).concat(value.length > items ? [{ omission: `${value.length - items} additional items omitted` }] : []);
+    if (value && typeof value === "object") {
+      const pairs = Object.entries(value); const retained = Object.fromEntries(pairs.slice(0, items).map(([key, v]) => [key, compact(v, depth + 1)]));
+      if (pairs.length > items) retained._omission = `${pairs.length - items} additional fields omitted`;
+      return retained;
+    }
+    return value;
+  };
+  for (;;) {
+    const result = compact(data);
+    if (requestBytes(result) <= limit) return result;
+    strings = Math.max(16, Math.floor(strings / 2)); items = Math.max(1, Math.floor(items / 2));
+    if (strings === 16 && items === 1) return { omission: "Source exceeds this turn's context budget; inspect a narrower row or chart." };
+  }
+}
+function prepareChatBody(body, project) {
+  const context = body.context ? { ...body.context, api: [], omissions: [] } : null;
+  if (context) {
+    if (body.context.selected_data) {
+      context.selected_data = boundedData(body.context.selected_data, 110000);
+      if (requestBytes(context.selected_data) < requestBytes(body.context.selected_data)) context.omissions.push("Selected source was compacted; omission markers identify removed content.");
+    }
+    for (const record of body.context.api || []) {
+      const retained = { path: record.path, data: boundedData(record.data, 12000) };
+      if (requestBytes(context.api) + requestBytes(retained) > 60000) { context.omissions.push(`API source omitted for size: ${record.path}`); continue; }
+      context.api.push(retained);
+      if (requestBytes(retained.data) < requestBytes(record.data)) context.omissions.push(`API source compacted for size: ${record.path}`);
+    }
+  }
+  const outgoing = { ...body, project, context, messages: body.messages.map((message) => ({ ...message })) };
+  if (requestBytes(outgoing.messages.at(-1) || {}) > 60000) throw new Error("Message exceeds 60 KB; send a shorter request or pick a narrower data element.");
+  let omitted = 0;
+  while (requestBytes(outgoing) > 235000 && outgoing.messages.length > 1) { outgoing.messages.shift(); omitted++; }
+  if (omitted) {
+    outgoing.context ||= { route: location.hash, project, omissions: [] };
+    outgoing.context.omissions ||= [];
+    outgoing.context.omissions.push(`${omitted} older conversation messages omitted from this request for size. Stored history is unchanged.`);
+  }
+  if (requestBytes(outgoing) > 240000) throw new Error("This request exceeds the context budget; clear the conversation or select a narrower row.");
+  return outgoing;
+}
+
 // --- streaming turn shared by the widget and the Assistant page
-async function streamChat(body, onEvent) {
-  const response = await rawFetch("/api/assistant/chat", { method: "POST", body: JSON.stringify({ ...body, project: state.project }) });
+async function streamChat(body, onEvent, turn) {
+  const response = await rawFetch("/api/assistant/chat", { method: "POST", body: JSON.stringify(prepareChatBody(body, turn.project)), signal: turn.controller.signal });
   if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
   for (;;) {
@@ -1107,7 +1399,8 @@ async function streamChat(body, onEvent) {
       const ev = JSON.parse(line.slice(5));
       if (ev.type === "keepalive") continue;
       if (ev.type === "ui_request") {
-        let result; try { result = await uiPerform(ev.action, ev.args || {}); } catch (e) { result = { error: e.message }; }
+        let result; try { result = turn.scope === assistKey() && ASSIST.turn === turn ? await uiPerform(ev.action, ev.args || {}, { allowActions: body.allow_destructive }) : { error: "Conversation changed; interface action cancelled" }; } catch (e) { result = { error: e.message }; }
+        if (turn.scope !== assistKey() || ASSIST.turn !== turn) result = { error: "Conversation changed; interface result discarded" };
         onEvent({ type: "ui_action", action: ev.action, args: ev.args, result });
         post("/api/assistant/ui-result", { id: ev.id, result }).catch((e) => toast(`assistant: ${e.message}`, true));
         continue;
@@ -1129,9 +1422,10 @@ function bubbleHtml(m) {
 }
 
 async function loadAssistantModels(force = false) {
-  if (ASSIST.models && !force) return ASSIST.models;
-  ASSIST.models = await api("/api/assistant/models");
+  const session = ASSIST.session;
+  if (!ASSIST.models || force) ASSIST.models = await api("/api/assistant/models");
   const prov = ASSIST.models;
+  if (ASSIST.session !== session) return prov;
   if (!prov[ASSIST.provider]?.available) ASSIST.provider = prov.anthropic.available ? "anthropic" : prov.openai.available ? "openai" : ASSIST.provider;
   const ids = (prov[ASSIST.provider]?.models || []).map((m) => m.id);
   if (!ASSIST.model || (ids.length && !ids.includes(ASSIST.model))) ASSIST.model = prov[ASSIST.provider]?.default || ids[0] || null;
@@ -1148,47 +1442,101 @@ function renderAssistant(container, { full = false } = {}) {
       <select id="asProvider" title="Provider"><option value="anthropic" ${ASSIST.provider === "anthropic" ? "selected" : ""} ${prov.anthropic.available ? "" : "disabled"}>Claude${prov.anthropic.available ? "" : " (no key)"}</option><option value="openai" ${ASSIST.provider === "openai" ? "selected" : ""} ${prov.openai.available ? "" : "disabled"}>OpenAI${prov.openai.available ? "" : " (no key)"}</option></select>
       <select id="asModel" title="Model (from the provider's live model list)">${modelOptions || "<option value=''>no models listed</option>"}</select>
       <label class="chk" title="Send what this page shows (route, visible text, the data it fetched, your selection) with each message"><input type="checkbox" id="asAttach" ${ASSIST.attach ? "checked" : ""}> page</label>
-      <label class="chk" title="Offer the delete tool (the assistant still asks before using it)"><input type="checkbox" id="asDestructive" ${ASSIST.destructive ? "checked" : ""}> deletions</label>
+      <label class="chk" title="Allow interface changes and destructive tools for this session; destructive actions still require confirmation"><input type="checkbox" id="asDestructive" ${ASSIST.destructive ? "checked" : ""}> actions / deletions</label>
       <span class="spacer" style="flex:1"></span>
-      <button class="btn small" id="asReset" title="Clear the conversation">clear</button>
+      <button class="btn small" id="asPick" title="Click a row, chart, or panel to attach its structured data">Pick data</button>
+      <button class="btn small" id="asReset" title="Clear the conversation" ${ASSIST.busy || !ASSIST.session.loaded || ASSIST.session.dirty || ASSIST.session.error ? "disabled" : ""}>clear</button>
       ${full ? "" : `<a class="btn small" href="#/assistant" title="Open the full page">⤢</a><button class="btn small" id="asClose" title="Close">✕</button>`}
     </div>
     ${p.error ? `<div class="note">${esc(p.error)}</div>` : ""}
-    ${none ? `<div class="note">No API credentials found. Set <span class="mono">ANTHROPIC_API_KEY</span> (or run <span class="mono">ant auth login</span>) and/or <span class="mono">OPENAI_API_KEY</span> before starting <span class="mono">tinystudio serve</span>.</div>` : ""}
+    ${none ? `<div class="note">No API credentials found. Set <span class="mono">ANTHROPIC_API_KEY</span> and/or <span class="mono">OPENAI_API_KEY</span> before starting <span class="mono">tinystudio serve</span>.</div>` : ""}
+    ${ASSIST.selection ? `<div class="note">Attached: ${esc(ASSIST.selection.label)} · ${esc(ASSIST.selection.source)} <button class="btn small" id="asUnpick">Remove</button></div>` : ""}
+    <div class="note"><span id="asPersistence">${esc(assistStatus())}</span> <button class="btn small" id="asRetry" ${ASSIST.session.error && !ASSIST.session.conflict ? "" : "hidden"}>Retry save / load</button> <button class="btn small" id="asReload" ${ASSIST.busy || ASSIST.session.saving ? "disabled" : ""}>Refresh conversation</button></div>
     <div class="chatlog ${full ? "" : "compact"}" id="asLog"></div>
-    <div class="composer"><textarea id="asInput" placeholder="Ask about what you see, or ask for something to be done… (Enter to send, Shift+Enter for a new line)"></textarea><button class="btn primary" id="asSend" ${ASSIST.busy ? "disabled" : ""}>Send</button></div>
+    <div class="composer"><textarea id="asInput" placeholder="Ask about what you see, or ask for something to be done… (Enter to send, Shift+Enter for a new line)"></textarea><button class="btn primary" id="asSend" ${ASSIST.busy || !ASSIST.session.loaded || ASSIST.session.dirty || ASSIST.session.error ? "disabled" : ""}>Send</button></div>
     <div class="muted mono" id="asUsage" style="padding:4px 12px;font-size:11px">${esc(ASSIST.usage || "")}</div>`;
   const log = $("#asLog", container);
   const draw = () => { log.innerHTML = ASSIST.history.map((m) => m.role === "user" ? `<div class="bubble user">${esc(m.content)}</div>` : `<div class="bubble assistant">${bubbleHtml(m)}</div>`).join("") || `<div class="muted" style="font-size:12.5px">I can see this page when "page" is ticked, read or operate the interface with the ui_* tools, and run every tinystudio tool: datasets, cleaning, synthetic data, training, evaluation, serving, interpretability. Try: "what is on this page?", "explain the top three neurons of layer 12", "start a LoRA job on the latest snapshot".</div>`; log.scrollTop = log.scrollHeight; };
-  draw();
-  $("#asProvider", container).onchange = guard(async (e) => { ASSIST.provider = e.target.value; ASSIST.model = null; await loadAssistantModels(); assistSave(); renderAssistant(container, { full }); });
-  $("#asModel", container).onchange = (e) => { ASSIST.model = e.target.value; assistSave(); };
-  $("#asAttach", container).onchange = (e) => { ASSIST.attach = e.target.checked; assistSave(); };
-  $("#asDestructive", container).onchange = (e) => { ASSIST.destructive = e.target.checked; assistSave(); };
-  $("#asReset", container).onclick = () => { ASSIST.history = []; ASSIST.usage = ""; assistSave(); renderAssistant(container, { full }); };
+  draw(); assistRefreshUI();
+  $("#asProvider", container).onchange = guard(async (e) => { const session = ASSIST.session; session.provider = e.target.value; session.model = null; await loadAssistantModels(); if (session !== ASSIST.session) return; await assistSave(session); if (session === ASSIST.session) renderAssistant(container, { full }); });
+  $("#asModel", container).onchange = guard(async (e) => { ASSIST.model = e.target.value; await assistSave(); });
+  $("#asAttach", container).onchange = (e) => { ASSIST.attach = e.target.checked; assistPreferences(); };
+  $("#asDestructive", container).onchange = (e) => { ASSIST.destructive = e.target.checked; };
+  $("#asPick", container).onclick = () => setAssistantPicking(!ASSIST.picking);
+  if ($("#asUnpick", container)) $("#asUnpick", container).onclick = () => { ASSIST.selection = null; renderAssistant(container, { full }); };
+  $("#asRetry", container).onclick = guard(async () => {
+    const session = ASSIST.session; if (session.busy || session.conflict) return;
+    if (session.dirty) {
+      // A failed response may have followed a successful commit. Reconcile before another CAS write.
+      const saved = await assistEnqueue(session, () => assistRequest(session));
+      if (assistSameSnapshot(session, saved)) assistAdopt(session, saved);
+      else if (saved.revision !== session.revision) {
+        session.error = "A newer conversation is available. Refresh to load it; your unsaved reply remains here until you choose.";
+        session.conflict = true;
+      } else if (session.streaming) {
+        // A disconnected stream can still be running; a partial PUT would invalidate its final save.
+        session.error = "The server has not confirmed a saved reply yet. Try again or refresh the conversation.";
+      } else await assistSave(session);
+    } else await assistLoad(session, { refresh: true });
+    assistRefreshUI(); assistRedraw();
+  });
+  $("#asReload", container).onclick = guard(async () => {
+    const session = ASSIST.session; if (session.busy || session.saving) return;
+    if (session.dirty && !await confirmModal("Reload conversation?", "Discard the unsaved messages shown here and load the database conversation?", async () => {}, "Discard and reload")) return;
+    await assistLoad(session, { refresh: true, discard: true });
+  });
+  $("#asReset", container).onclick = guard(async () => {
+    const session = ASSIST.session;
+    if (session.busy || !session.loaded || session.dirty || session.error) return;
+    session.history = []; session.usage = ""; await assistSave(session); assistRedraw();
+  });
   if ($("#asClose", container)) $("#asClose", container).onclick = () => toggleAssistant(false);
   const send = guard(async () => {
-    const text = $("#asInput", container).value.trim(); if (!text || ASSIST.busy) return;
+    const session = ASSIST.session;
+    const text = $("#asInput", container).value.trim();
+    if (!text || session.busy || session.dirty || session.error) return;
+    await assistLoad(session);
+    if (session !== ASSIST.session || !session.loaded || session.busy || session.dirty || session.error) return;
     $("#asInput", container).value = "";
-    ASSIST.history.push({ role: "user", content: text });
-    const reply = { role: "assistant", content: "", calls: [] }; ASSIST.history.push(reply);
-    ASSIST.busy = true; $("#asSend", container).disabled = true; draw();
-    const redraw = () => { const last = log.lastElementChild; if (last) last.innerHTML = bubbleHtml(reply); log.scrollTop = log.scrollHeight; };
+    const turn = { scope: session.key, project: session.project, controller: new AbortController(), session };
+    session.turn = turn; session.busy = true;
+    session.history.push({ role: "user", content: text });
+    draw(); assistRefreshUI();
+    let reply, streamError;
+    const active = () => session.turn === turn && ASSIST.session === session;
+    const redraw = () => { if (!active()) return; for (const currentLog of $$("#asLog")) { const last = currentLog.lastElementChild; if (last && reply) last.innerHTML = bubbleHtml(reply); currentLog.scrollTop = currentLog.scrollHeight; } };
     try {
-      const body = { provider: ASSIST.provider, model: ASSIST.model, allow_destructive: ASSIST.destructive, with_ui: true, messages: ASSIST.history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })), context: ASSIST.attach ? captureContext() : null };
+      // A durable user turn is the prerequisite to starting a model request.
+      await assistSave(session);
+      if (!active()) return;
+      const body = { conversation_revision: session.revision, provider: session.provider, model: session.model, allow_destructive: ASSIST.destructive, with_ui: true, messages: session.history.map((m) => ({ role: m.role, content: m.content })), context: ASSIST.attach ? captureContext() : pageContextReady() && ASSIST.selection ? { route: location.hash, project: session.project, selected_data: ASSIST.selection } : null };
+      reply = { role: "assistant", content: "", calls: [] }; session.history.push(reply); session.dirty = true; session.streaming = true; draw();
       await streamChat(body, (ev) => {
+        if (!active()) return;
         if (ev.type === "text") reply.content += ev.delta;
         else if (ev.type === "tool_call") reply.calls.push({ id: ev.id, name: ev.name, input: ev.input, kind: ev.name.startsWith("ui_") ? "ui" : "tool" });
         else if (ev.type === "tool_result") { const c = reply.calls.find((x) => x.id === ev.id && x.output === undefined) || reply.calls[reply.calls.length - 1]; if (c) c.output = ev.output; pollTasks(); }
-        else if (ev.type === "ui_action") { /* already reflected by the tool_result that follows */ }
-        else if (ev.type === "error") throw new Error(ev.message);
-        else if (ev.type === "done") { ASSIST.usage = `${ev.model} · ${ev.usage.input_tokens} in / ${ev.usage.output_tokens} out`; $("#asUsage", container).textContent = ASSIST.usage; }
+        else if (ev.type === "conversation_saved") { session.revision = ev.revision; session.dirty = false; session.streaming = false; session.pending = false; session.error = ""; session.conflict = false; assistRefreshUI(); }
+        else if (ev.type === "conversation_error") { session.error = ev.message || "The database conversation changed"; session.streaming = false; session.pending = false; session.conflict = ev.conflict === true; session.dirty = true; assistRefreshUI(); }
+        else if (ev.type === "error") streamError = new Error(ev.message);
+        else if (ev.type === "done") { session.usage = `${ev.model} · ${ev.usage.input_tokens} in / ${ev.usage.output_tokens} out`; $$("#asUsage").forEach((el) => { el.textContent = session.usage; }); }
         redraw();
-      });
+      }, turn);
+      if (!active()) return;
+      if (streamError) throw streamError;
       if (!reply.content && !reply.calls.length) reply.content = "(no reply)";
       redraw();
-    } catch (e) { if (!reply.content && !reply.calls.length) ASSIST.history.pop(); draw(); throw e; }
-    finally { ASSIST.busy = false; if ($("#asSend", container)) $("#asSend", container).disabled = false; assistSave(); }
+    } catch (error) {
+      if (!active()) return;
+      if (reply && !reply.content && !reply.calls.length) session.history.pop();
+      draw(); if (error.name !== "AbortError") throw error;
+    } finally {
+      if (active()) {
+        // Keep replies in memory on failure and disable send until saved or explicitly discarded.
+        try { if (reply && session.dirty && !session.conflict) { session.error ||= "Reply has not been confirmed saved. Refresh to check the database, or retry saving."; } }
+        finally { session.busy = false; session.turn = null; assistRefreshUI(); }
+      }
+    }
   });
   $("#asSend", container).onclick = send;
   $("#asInput", container).onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
@@ -1199,29 +1547,32 @@ function toggleAssistant(open) {
   const drawer = $("#assist .drawer"); if (!drawer) return;
   drawer.hidden = !ASSIST.open;
   $("#assist .fab").classList.toggle("on", ASSIST.open);
-  assistSave();
-  if (ASSIST.open) guard(async () => { await loadAssistantModels(); renderAssistant(drawer); $("#asInput", drawer)?.focus(); })();
+  assistPreferences();
+  if (ASSIST.open) guard(async () => { const session = ASSIST.session; await assistLoad(session, { refresh: true }).catch(() => {}); if (session !== ASSIST.session) return; await loadAssistantModels(); if (session !== ASSIST.session) return; renderAssistant(drawer); $("#asInput", drawer)?.focus(); })();
 }
 function mountAssistant() {
   const host = document.getElementById("assist"); if (!host || host.dataset.mounted) return;
   host.dataset.mounted = "1";
-  assistLoad();
+  syncAssistantScope();
   host.innerHTML = `<button class="fab" title="Assistant (Claude / OpenAI) — ask about this page or have it operate the interface">${ICONS.assistant}</button><div class="drawer" hidden></div>`;
   $("#assist .fab").onclick = () => toggleAssistant();
-  window.tinystudio = { snapshotPage, uiPerform, captureContext, pageText, ASSIST, toggleAssistant };  // for scripts, tests, and the browser console
+  window.tinystudio = { snapshotPage, uiPerform, captureContext, pageText, ASSIST, toggleAssistant, pickContext };  // for scripts, tests, and the browser console
   document.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); toggleAssistant(); } });
   if (ASSIST.open && location.hash !== "#/assistant") toggleAssistant(true);
 }
 
 async function pageAssistant() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const st = await api("/api/assistant/status");
+  await assistLoad(ASSIST.session, { refresh: true }).catch(() => {});
   await loadAssistantModels();
+  assertRender(view);
   const content = layout("assistant", `<div class="page-head"><h1>Assistant</h1><span class="meta">A frontier model that sees the interface, operates it, and drives the same ${st.mcp.tools} tools as the MCP server. It is also available on every page from the ✦ button (⌘K).</span></div>
     <div class="play"><div>
       <div class="panel"><div class="head"><h2>How it sees the interface</h2></div><div class="body" style="font-size:12.5px">
         <p>With <b>page</b> ticked, every message carries the route, the visible text, the data the page fetched, and your text selection. The <span class="mono">ui_read_page</span> tool returns the live element tree with ref ids; <span class="mono">ui_navigate</span>, <span class="mono">ui_click</span>, <span class="mono">ui_fill</span>, and <span class="mono">ui_select</span> operate it in your tab. Catalog tools run on the server, so long actions show up in the task drawer.</p>
-        <p class="muted">Models come from each provider's live model list; pick any Claude or OpenAI model your account can use. Credentials are set once by an admin under Settings.</p>
+        <p class="muted">Models come from each provider's live model list; pick any Claude or OpenAI model your account can use. Assistant credentials are supplied through the server environment.</p>
       </div></div>
       <div class="panel" style="margin-top:16px"><div class="head"><h2>Use from Claude Code, Codex, Claude Desktop</h2></div><div class="body" style="font-size:12.5px">
         <p>tinystudio is an MCP server. Register it once and your coding assistant can run the whole pipeline in natural language:</p>
@@ -1236,11 +1587,13 @@ async function pageAssistant() {
 
 // ------------------------------------------------------------------ traces
 async function pageTraces() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const traces = await api("/api/traces?limit=200");
   const datasets = state.overview.tree.datasets.filter((d) => !d.missing);
+  assertRender(view);
   const content = layout("traces", `<div class="page-head"><h1>Traces</h1><span class="meta">${traces.length} recent inferences</span><div class="actions"><select id="trDs">${datasets.map((d) => `<option>${esc(d.name)}</option>`).join("")}</select><button class="btn" id="trPromote">Add scored ≥ 0.9 to dataset</button></div></div>
-    <div class="panel"><table><thead><tr><th>When · model</th><th>User message</th><th>Response</th><th>Score</th><th></th></tr></thead><tbody>${traces.map((t) => { const u = [...t.messages].reverse().find((m) => m.role === "user"); return `<tr><td class="mono muted" style="font-size:11.5px">${esc(t.time?.slice(0, 16).replace("T", " "))}<br>${esc(t.model)}${t.origin === "playground" ? "<br><span class='pill'>playground</span>" : ""}</td><td class="truncate">${esc(u?.content)}</td><td class="truncate mono">${esc(t.response)}${t.corrected ? `<div class="muted">corrected: ${esc(t.corrected)}</div>` : ""}</td><td>${t.score === null || t.score === undefined ? "–" : `<span class="pct ${pctClass(t.score)}">${fmtPct(t.score)}</span>`}</td><td style="white-space:nowrap;text-align:right"><button class="btn sm" data-s="${t.id}|1">👍</button> <button class="btn sm" data-s="${t.id}|0">👎</button> <button class="btn sm" data-fix="${t.id}">Fix</button> <button class="btn sm danger" data-del="${t.id}">✕</button></td></tr>`; }).join("") || `<tr><td colspan="5" class="empty">No traces yet. Chat in the Playground or call the API.</td></tr>`}</tbody></table></div>`, [{ label: "Traces" }]);
+    <div class="panel"><table><thead><tr><th>When · model</th><th>User message</th><th>Response</th><th>Score</th><th></th></tr></thead><tbody>${traces.map((t) => { const u = [...t.messages].reverse().find((m) => m.role === "user"); return `<tr ${dataContext("Inference trace", t)}><td class="mono muted" style="font-size:11.5px">${esc(t.time?.slice(0, 16).replace("T", " "))}<br>${esc(t.model)}${t.origin === "playground" ? "<br><span class='pill'>playground</span>" : ""}</td><td class="truncate">${esc(u?.content)}</td><td class="truncate mono">${esc(t.response)}${t.corrected ? `<div class="muted">corrected: ${esc(t.corrected)}</div>` : ""}</td><td>${t.score === null || t.score === undefined ? "–" : `<span class="pct ${pctClass(t.score)}">${fmtPct(t.score)}</span>`}</td><td style="white-space:nowrap;text-align:right"><button class="btn sm" data-s="${t.id}|1">👍</button> <button class="btn sm" data-s="${t.id}|0">👎</button> <button class="btn sm" data-fix="${t.id}">Fix</button> <button class="btn sm danger" data-del="${t.id}">✕</button></td></tr>`; }).join("") || `<tr><td colspan="5" class="empty">No traces yet. Chat in the Playground or call the API.</td></tr>`}</tbody></table></div>`, [{ label: "Traces" }]);
   $$("[data-s]", content).forEach((b) => b.onclick = guard(async () => { const [id, s] = b.dataset.s.split("|"); await post(`/api/traces/${id}/score`, { score: Number(s) }); pageTraces(); }));
   $$("[data-del]", content).forEach((b) => b.onclick = guard(async () => { await del(`/api/traces/${b.dataset.del}`); pageTraces(); }));
   $$("[data-fix]", content).forEach((b) => b.onclick = () => {
@@ -1332,11 +1685,13 @@ async function checkpointCaptureDialog(job, number) {
 }
 
 async function pageInterp() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const data = await api("/api/interp");
+  assertRender(view);
   const content = layout("interp", `<div class="page-head"><h1>Interpretability</h1><span class="meta">neurons · poles · sign regimes · explanations · before/after · drift</span><div class="actions"><button class="btn" id="newDiff">Compare base vs experiment</button><button class="btn primary" id="newCapture">+ New capture</button></div></div>
-    <div class="panel" style="margin-bottom:14px"><div class="head"><h2>Captures</h2><span class="muted">per-neuron MLP activations of one model over one dataset</span></div><div class="body">${data.captures.length ? `<table><thead><tr><th>Name</th><th>Model</th><th>Source</th><th>Layers</th><th>Rows</th><th>Explained</th><th>Tested</th><th>Created</th><th></th></tr></thead><tbody>${data.captures.map((c) => `<tr class="clickable" data-cap="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.model_id)}</td><td>${esc(c.source)}</td><td class="mono">${c.layers.length === c.num_layers ? "all " + c.num_layers : c.layers.join(", ")}</td><td class="num">${c.rows}</td><td class="num">${c.explained}</td><td class="num">${c.tested}</td><td class="muted">${fmtDate(c.created)}</td><td><button class="btn small danger" data-delcap="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No captures yet</b>Capture a model over a dataset to browse its neurons.</div>`}</div></div>
-    <div class="panel"><div class="head"><h2>Before / after comparisons</h2><span class="muted">which neurons changed most between a base model and an experiment</span></div><div class="body">${data.comparisons.length ? `<table><thead><tr><th>Name</th><th>Experiment</th><th>Base</th><th>Source</th><th>Median r per layer</th><th></th></tr></thead><tbody>${data.comparisons.map((c) => `<tr class="clickable" data-diff="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.experiment)}</td><td class="mono">${esc(c.base)}</td><td>${esc(c.source)}</td><td class="mono">${Object.entries(c.layer_summary || {}).map(([l, s]) => `L${l} ${s.median_r.toFixed(2)}`).join(" · ")}</td><td><button class="btn small danger" data-deldiff="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No comparisons yet</b>Compare an experiment against its base to rank changed neurons.</div>`}</div></div>`, [{ label: "Interpretability" }]);
+    <div class="panel" style="margin-bottom:14px"><div class="head"><h2>Captures</h2><span class="muted">per-neuron MLP activations of one model over one dataset</span></div><div class="body">${data.captures.length ? `<table><thead><tr><th>Name</th><th>Model</th><th>Source</th><th>Layers</th><th>Rows</th><th>Explained</th><th>Tested</th><th>Created</th><th></th></tr></thead><tbody>${data.captures.map((c) => `<tr ${dataContext("Activation capture", c)} class="clickable" data-cap="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.model_id)}</td><td>${esc(c.source)}</td><td class="mono">${c.layers.length === c.num_layers ? "all " + c.num_layers : c.layers.join(", ")}</td><td class="num">${c.rows}</td><td class="num">${c.explained}</td><td class="num">${c.tested}</td><td class="muted">${fmtDate(c.created)}</td><td><button class="btn small danger" data-delcap="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No captures yet</b>Capture a model over a dataset to browse its neurons.</div>`}</div></div>
+    <div class="panel"><div class="head"><h2>Before / after comparisons</h2><span class="muted">which neurons changed most between a base model and an experiment</span></div><div class="body">${data.comparisons.length ? `<table><thead><tr><th>Name</th><th>Experiment</th><th>Base</th><th>Source</th><th>Median r per layer</th><th></th></tr></thead><tbody>${data.comparisons.map((c) => `<tr ${dataContext("Model comparison", c)} class="clickable" data-diff="${esc(c.name)}"><td><b>${esc(c.name)}</b></td><td class="mono">${esc(c.experiment)}</td><td class="mono">${esc(c.base)}</td><td>${esc(c.source)}</td><td class="mono">${Object.entries(c.layer_summary || {}).map(([l, s]) => `L${l} ${s.median_r.toFixed(2)}`).join(" · ")}</td><td><button class="btn small danger" data-deldiff="${esc(c.name)}">Delete</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty"><b>No comparisons yet</b>Compare an experiment against its base to rank changed neurons.</div>`}</div></div>`, [{ label: "Interpretability" }]);
   $("#newCapture", content).onclick = guard(() => captureDialog());
   $("#newDiff", content).onclick = guard(() => diffDialog());
   $$("[data-cap]", content).forEach((r) => r.onclick = (ev) => { if (ev.target.closest("button")) return; go(`#/interp/c/${encodeURIComponent(r.dataset.cap)}`); });
@@ -1346,12 +1701,12 @@ async function pageInterp() {
 }
 
 function labelBars(pairs) {
-  return pairs.length ? `<table>${pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${Math.round(v * 100)}%</td><td style="width:45%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, v * 100)}%"></div></td></tr>`).join("")}</table>` : `<div class="muted">no labels</div>`;
+  return pairs.length ? `<table>${pairs.map(([k, v]) => `<tr ${dataContext("Distribution entry", {label:k,value:v})}><td>${esc(k)}</td><td class="num">${Math.round(v * 100)}%</td><td style="width:45%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, v * 100)}%"></div></td></tr>`).join("")}</table>` : `<div class="muted">no labels</div>`;
 }
 
 function entryRows(entries, limit = 12) {
   if (!entries.length) return `<div class="muted">none</div>`;
-  return `<div class="entries">${entries.slice(0, limit).map((e) => `<div class="entry"><span class="mono val">${e.value.toFixed(2)}</span><span class="pill regime" title="${REGIME_NOTE[e.regime]} · g ${e.g.toFixed(2)}, v ${e.v.toFixed(2)}">${e.regime}</span>${e.first_token ? '<span class="pill warn" title="first token after the shared prefix">first</span>' : ""}${ctxHtml(e)}<span class="muted dp">dp ${e.datapoint}${e.labels?.length ? " · " + esc(e.labels.join(", ")) : ""}</span></div>`).join("")}</div>`;
+  return `<div class="entries">${entries.slice(0, limit).map((e) => `<div ${dataContext("Neuron activation", e)} class="entry"><span class="mono val">${e.value.toFixed(2)}</span><span class="pill regime" title="${REGIME_NOTE[e.regime]} · g ${e.g.toFixed(2)}, v ${e.v.toFixed(2)}">${e.regime}</span>${e.first_token ? '<span class="pill warn" title="first token after the shared prefix">first</span>' : ""}${ctxHtml(e)}<span class="muted dp">dp ${e.datapoint}${e.labels?.length ? " · " + esc(e.labels.join(", ")) : ""}</span></div>`).join("")}</div>`;
 }
 
 let hideClosedPref = true;
@@ -1368,7 +1723,7 @@ async function neuronPanel(right, capture, meta, layer, neuron) {
   const exp = v.explanation, t = v.test;
   const openMax = s.open_max == null ? "never open" : s.open_max.toFixed(3);
   right.innerHTML = `
-    <div class="panel ipanel"><div class="head"><h2>L${layer} · N${neuron}</h2><span class="muted mono">max ${s.max.toFixed(3)} · gate-open ${openMax} · min ${s.min.toFixed(3)} · token density ${(s.density * 100).toFixed(1)}%</span></div><div class="body">
+    <div ${dataContext("Neuron activation detail", v)} class="panel ipanel"><div class="head"><h2>L${layer} · N${neuron}</h2><span class="muted mono">max ${s.max.toFixed(3)} · gate-open ${openMax} · min ${s.min.toFixed(3)} · token density ${(s.density * 100).toFixed(1)}%</span></div><div class="body">
       <div class="chips" style="margin-bottom:8px">${Object.entries(v.regimes).map(([r, n]) => `<button class="${r === "-/-" && s.echo_top ? "on" : ""}" title="${REGIME_NOTE[r]} · share of the top-${v.topk} positives" disabled>${r} <b>${n}</b></button>`).join("")}<button id="toggleClosed" class="${hideClosed ? "on" : ""}" title="The double-negative echo: closed gate (g < 0) times a negative value gives a positive activation that looks like the negative pole" ${v.gate_open.length ? "" : "disabled"}>${v.gate_open.length ? (hideClosed ? "hiding gate-closed" : "showing gate-closed") : "gate never opens"}</button></div>
       ${s.echo_top ? `<div class="note">The echo dominates this neuron's positive list: its gate-open maximum is ${s.open_max == null ? "absent" : "below half of its overall maximum"}. Read the negative pole as its job.</div>` : ""}
       ${s.first_token_peak ? `<div class="note">This neuron peaks on the first token after the shared prefix; first-token activations can be attention-sink artefacts.</div>` : ""}
@@ -1376,10 +1731,10 @@ async function neuronPanel(right, capture, meta, layer, neuron) {
       <h3>Negative pole</h3>${entryRows(v.negatives, 8)}
       <h3>Share of the top-${v.topk} datapoints carrying each label${hideClosed ? " (gate open)" : ""}</h3>${labelBars(hideClosed ? v.label_share : v.label_share_all)}
     </div></div>
-    <div class="panel ipanel"><div class="head"><h2>Explanation</h2><div class="right"><button class="btn small" id="btnExplain">${exp ? "Re-explain" : "Explain with helper LLM"}</button><button class="btn small primary" id="btnTest" ${exp ? "" : "title='Explains first, then tests'"}>Run blind-maximum + near-miss test</button></div></div><div class="body">
+    <div ${dataContext("Neuron explanation and test", {explanation:exp,test:t})} class="panel ipanel"><div class="head"><h2>Explanation</h2><div class="right"><button class="btn small" id="btnExplain">${exp ? "Re-explain" : "Explain with helper LLM"}</button><button class="btn small primary" id="btnTest" ${exp ? "" : "title='Explains first, then tests'"}>Run blind-maximum + near-miss test</button></div></div><div class="body">
       ${exp ? `<p><b>${esc(exp.explanation)}</b></p><p class="muted">negative pole: ${esc(exp.negative_pole || "—")} · confidence ${exp.confidence} · ${esc(exp.helper)}${exp.gate_never_open ? " · gate never open, explained from the echo" : ""}</p>` : `<p class="muted">No explanation yet. The helper LLM reads the strongest contexts (token in bold) and writes a one-line, verb-like rule.</p>`}
       ${t ? `<div class="tiles" style="margin-top:8px"><div class="tile"><div class="k">Blind maximum</div><div class="v">${t.blind_best == null ? "—" : t.blind_best.toFixed(2) + "×"}</div><div class="muted">of the ${esc(t.reference || "corpus max")} ${(t.open_max ?? t.corpus_max).toFixed(2)}${t.beats_corpus ? " · beats it" : ""}</div></div><div class="tile"><div class="k">Positives strong</div><div class="v">${t.counts.positives_strong}/${t.positives.length}</div></div><div class="tile"><div class="k">Near misses strong</div><div class="v">${t.counts.near_misses_strong}/${t.near_misses.length}</div></div><div class="tile"><div class="k">Distant strong</div><div class="v">${t.counts.distant_strong}/${t.distant.length}</div></div><div class="tile"><div class="k">Verdict</div><div class="v"><span class="pill ${t.verdict === "win" ? "good" : t.verdict === "loss" ? "bad" : "warn"}">${t.verdict}</span></div></div></div>
-        <details style="margin-top:8px"><summary class="muted">exchanges (strong = ≥ ${Math.round(t.strong_ratio * 100)}% of the ${esc(t.reference || "corpus max")}; ratio uses gate-open activations when the gate ever opened)</summary>${[["Blind maximum", t.blind], ["Should fire", t.positives], ["Near misses", t.near_misses], ["Distant", t.distant]].map(([h, arr]) => `<h3>${h}</h3><table>${arr.map((x) => `<tr><td>${esc(x.text)}</td><td class="num mono">${x.ratio.toFixed(2)}×</td><td>${x.strong ? '<span class="pill good">strong</span>' : ""}${x.gate_open === false ? '<span class="pill warn" title="the overall max token had its gate closed">echo</span>' : ""}</td><td class="muted mono">${flat(x.token)}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>`).join("")}</details>` : ""}
+        <details style="margin-top:8px"><summary class="muted">exchanges (strong = ≥ ${Math.round(t.strong_ratio * 100)}% of the ${esc(t.reference || "corpus max")}; ratio uses gate-open activations when the gate ever opened)</summary>${[["Blind maximum", t.blind], ["Should fire", t.positives], ["Near misses", t.near_misses], ["Distant", t.distant]].map(([h, arr]) => `<h3>${h}</h3><table>${arr.map((x) => `<tr ${dataContext("Neuron test exchange", x)}><td>${esc(x.text)}</td><td class="num mono">${x.ratio.toFixed(2)}×</td><td>${x.strong ? '<span class="pill good">strong</span>' : ""}${x.gate_open === false ? '<span class="pill warn" title="the overall max token had its gate closed">echo</span>' : ""}</td><td class="muted mono">${flat(x.token)}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>`).join("")}</details>` : ""}
     </div></div>
     <div class="panel ipanel" id="driftPanel" hidden><div class="head"><h2>Drift across checkpoints</h2><span class="muted">share of the strongest datapoints per label, per checkpoint</span></div><div class="body" id="driftBody"></div></div>`;
   $("#toggleClosed", right).onclick = guard(() => { hideClosedPref = !hideClosed; return neuronPanel(right, capture, meta, layer, neuron); });
@@ -1392,12 +1747,13 @@ async function neuronPanel(right, capture, meta, layer, neuron) {
     catch (e) { if (!/no captures/.test(e.message)) toast(`drift: ${e.message}`, true); }
     if (right._tok !== tok || !d || d.steps.length < 2) return;
     $("#driftPanel", right).hidden = false;
-    $("#driftBody", right).innerHTML = `<div class="muted" style="margin-bottom:6px">${esc(d.list === "gate_open" ? "gate-open" : "positive")} top-${d.topk} datapoint sets · labels present at the first checkpoint: ${esc(d.core_labels.join(", ") || "—")} · the first saved checkpoint is the baseline, not the base model</div><div class="drift">${d.steps.map((st) => `<div class="step"><div class="k">${st.final ? "final" : "step " + st.step}</div><div class="mono muted">max ${st.max.toFixed(2)} · ${st.datapoints} datapoints · overlap vs final ${st.jaccard_final}${st.jaccard_prev != null ? " · vs prev " + st.jaccard_prev : ""}</div>${labelBars(st.label_share.slice(0, 5))}${st.new_labels.length ? `<div class="note">new label${st.new_labels.length === 1 ? "" : "s"} ${esc(st.new_labels.join(", "))}: ${st.offshoot_candidates.slice(0, 3).map((o) => esc(o.labels.join("/")) + " (" + flat(o.token) + ")").join(", ")}</div>` : ""}</div>`).join("")}</div>`;
+    $("#driftBody", right).innerHTML = `<div class="muted" style="margin-bottom:6px">${esc(d.list === "gate_open" ? "gate-open" : "positive")} top-${d.topk} datapoint sets · labels present at the first checkpoint: ${esc(d.core_labels.join(", ") || "—")} · the first saved checkpoint is the baseline, not the base model</div><div class="drift">${d.steps.map((st) => `<div ${dataContext("Checkpoint drift", st)} class="step"><div class="k">${st.final ? "final" : "step " + st.step}</div><div class="mono muted">max ${st.max.toFixed(2)} · ${st.datapoints} datapoints · overlap vs final ${st.jaccard_final}${st.jaccard_prev != null ? " · vs prev " + st.jaccard_prev : ""}</div>${labelBars(st.label_share.slice(0, 5))}${st.new_labels.length ? `<div class="note">new label${st.new_labels.length === 1 ? "" : "s"} ${esc(st.new_labels.join(", "))}: ${st.offshoot_candidates.slice(0, 3).map((o) => esc(o.labels.join("/")) + " (" + flat(o.token) + ")").join(", ")}</div>` : ""}</div>`).join("")}</div>`;
   }
 }
 
 async function pageCapture(name, params) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const meta = await api(`/api/interp/captures/${encodeURIComponent(name)}`);
   const layer = Number(params.get("layer") ?? meta.layers[Math.floor(meta.layers.length / 2)]);
   const sort = params.get("sort") || "max";
@@ -1405,11 +1761,12 @@ async function pageCapture(name, params) {
   let neuron = params.has("neuron") ? Number(params.get("neuron")) : null;
   const table = await api(`/api/interp/captures/${encodeURIComponent(name)}/layers/${layer}?sort=${encodeURIComponent(sort)}&limit=300&q=${encodeURIComponent(q)}`);
   const ls = meta.layer_stats?.[String(layer)] || {};
+  assertRender(view);
   const content = layout("interp", `
     <div class="page-head"><div><h1>${esc(name)}</h1><div class="meta"><span class="mono">${esc(meta.model_id)}</span><span>· ${esc(meta.source)} · ${meta.rows} datapoints · ${meta.tokens.toLocaleString()} tokens</span><span>· shared prefix of ${meta.prefix_len ?? 0} tokens excluded</span></div></div>
       <div class="actions"><select id="layerSel">${meta.layers.map((l) => `<option value="${l}" ${l === layer ? "selected" : ""}>layer ${l}</option>`).join("")}</select><select id="sortSel">${["max", "min", "open_max", "echo_share", "density"].map((k) => `<option value="${k}" ${k === sort ? "selected" : ""}>sort by ${k.replace("_", " ")}</option>`).join("")}</select><input id="qBox" placeholder="filter by explanation" value="${esc(q)}" style="width:180px"><button class="btn" id="explainTop">Explain top 20</button></div></div>
     <div class="tiles" style="margin-bottom:12px"><div class="tile"><div class="k">Neurons</div><div class="v">${meta.neurons_per_layer}</div><div class="muted">${table.total > 300 ? "showing 300 of " + table.total : table.total + " listed"}</div></div><div class="tile"><div class="k">Median max</div><div class="v">${(ls.max_median ?? 0).toFixed(2)}</div></div><div class="tile"><div class="k">Echo dominates top</div><div class="v">${Math.round((ls.echo_top_share ?? 0) * 100)}%</div><div class="muted">gate-open max under half of max</div></div><div class="tile"><div class="k">Mean echo share</div><div class="v">${Math.round((ls.echo_share_mean ?? 0) * 100)}%</div><div class="muted">of top-${meta.topk} positives in −/−</div></div><div class="tile"><div class="k">First-token peaks</div><div class="v">${ls.first_token_peaks ?? 0}</div><div class="muted">neurons peaking right after the prefix</div></div><div class="tile"><div class="k">Never open / dead</div><div class="v">${ls.never_open ?? 0} / ${ls.near_dead ?? 0}</div></div></div>
-    <div class="wide-narrow"><div id="left"><div class="panel"><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>max</th><th>open</th><th>min</th><th>echo</th><th title="share of content tokens above 10% of the neuron's maximum">density</th><th>explanation</th><th>test</th></tr></thead><tbody>${table.rows.map((r) => `<tr class="clickable ${r.neuron === neuron ? "sel" : ""}" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.max.toFixed(2)}</td><td class="num">${r.open_max == null ? "—" : r.open_max.toFixed(2)}</td><td class="num">${r.min.toFixed(2)}</td><td class="num">${Math.round(r.echo_share * 100)}%${r.echo_top ? "*" : ""}</td><td class="num">${(r.density * 100).toFixed(1)}%</td><td class="truncate" style="max-width:260px">${esc(r.explanation || "")}</td><td>${r.verdict ? `<span class="pill ${r.verdict === "win" ? "good" : r.verdict === "loss" ? "bad" : "warn"}">${r.verdict}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>Click a row to see its poles, sign regimes, label shares, explanation, and tests.</div></div></div>`,
+    <div class="wide-narrow"><div id="left"><div class="panel"><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>max</th><th>open</th><th>min</th><th>echo</th><th title="share of content tokens above 10% of the neuron's maximum">density</th><th>explanation</th><th>test</th></tr></thead><tbody>${table.rows.map((r) => `<tr ${dataContext("Neuron", r)} class="clickable ${r.neuron === neuron ? "sel" : ""}" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.max.toFixed(2)}</td><td class="num">${r.open_max == null ? "—" : r.open_max.toFixed(2)}</td><td class="num">${r.min.toFixed(2)}</td><td class="num">${Math.round(r.echo_share * 100)}%${r.echo_top ? "*" : ""}</td><td class="num">${(r.density * 100).toFixed(1)}%</td><td class="truncate" style="max-width:260px">${esc(r.explanation || "")}</td><td>${r.verdict ? `<span class="pill ${r.verdict === "win" ? "good" : r.verdict === "loss" ? "bad" : "warn"}">${r.verdict}</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>Click a row to see its poles, sign regimes, label shares, explanation, and tests.</div></div></div>`,
     [{ label: "Interpretability", href: "#/interp" }, { label: name }]);
   const nav = (changes) => { const p = new URLSearchParams(params); Object.entries(changes).forEach(([k, v]) => v == null || v === "" ? p.delete(k) : p.set(k, v)); go(`#/interp/c/${encodeURIComponent(name)}?${p}`); };
   $("#layerSel", content).onchange = (e) => nav({ layer: e.target.value, neuron: null });
@@ -1417,25 +1774,27 @@ async function pageCapture(name, params) {
   $("#qBox", content).onchange = (e) => nav({ q: e.target.value });
   $("#explainTop", content).onclick = guard(async () => { await post(`/api/interp/captures/${encodeURIComponent(name)}/layers/${layer}/explain`, { top: 20, sort }); toast("explaining the top 20 neurons"); showTasks(); pollTasks(); });
   const right = $("#right", content);
-  const select = (n) => { neuron = n; $$("tr[data-n]", content).forEach((tr) => tr.classList.toggle("sel", Number(tr.dataset.n) === n)); params.set("layer", layer); params.set("neuron", n); history.replaceState(null, "", `#/interp/c/${encodeURIComponent(name)}?${params}`); return neuronPanel(right, name, meta, layer, n); };
+  const select = (n) => { neuron = n; $$("tr[data-n]", content).forEach((tr) => tr.classList.toggle("sel", Number(tr.dataset.n) === n)); params.set("layer", layer); params.set("neuron", n); history.replaceState(null, "", `#/interp/c/${encodeURIComponent(name)}?${params}`); if (state.pageContext === view) view.route = location.hash; return neuronPanel(right, name, meta, layer, n); };
   $$("tr[data-n]", content).forEach((tr) => tr.onclick = guard(() => select(Number(tr.dataset.n))));
   if (neuron != null && Number.isInteger(neuron)) select(neuron);
 }
 
 async function pageDiff(name, params) {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const meta = await api(`/api/interp/diffs/${encodeURIComponent(name)}`);
   const layer = Number(params.get("layer") ?? meta.layers[meta.layers.length - 1]);
   const sort = params.get("sort") || "change";
   const data = await api(`/api/interp/diffs/${encodeURIComponent(name)}/layers/${layer}?limit=200&sort=${encodeURIComponent(sort)}`);
   const s = data.summary || {};
   const fr = (x) => (x == null ? "—" : x.toFixed(3));
+  assertRender(view);
   const content = layout("interp", `
     <div class="page-head"><div><h1>${esc(meta.experiment)} <span class="muted">vs</span> ${esc(meta.base)}</h1><div class="meta"><span>${esc(meta.source)} · ${meta.rows} datapoints · ${meta.mode === "adapter_toggle" ? "adapter toggled in place" : "two models"} · shared prefix of ${meta.prefix_len ?? 0} tokens excluded</span></div></div>
       <div class="actions"><select id="layerSel">${meta.layers.map((l) => `<option value="${l}" ${l === layer ? "selected" : ""}>layer ${l} · median r ${fr(meta.layer_summary?.[String(l)]?.median_r)}</option>`).join("")}</select><select id="sortSel">${[["change", "sort by change (1 − r + relative change)"], ["r", "sort by lowest r"], ["rel_change", "sort by relative change"]].map(([k, l]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
     <div class="tiles" style="margin-bottom:12px"><div class="tile"><div class="k">Median correlation r</div><div class="v">${fr(s.median_r)}</div></div><div class="tile"><div class="k">Neurons with r &lt; 0.9</div><div class="v">${s.below_0_9 ?? 0}</div></div><div class="tile"><div class="k">r &lt; 0.5</div><div class="v">${s.below_0_5 ?? 0}</div></div><div class="tile"><div class="k">Constant on one side</div><div class="v">${s.constant ?? 0}</div><div class="muted">r undefined (dead or revived)</div></div><div class="tile"><div class="k">Median relative change</div><div class="v">${(s.rel_change_median ?? 0).toFixed(2)}</div></div></div>
     <div class="two" style="margin-bottom:12px"><div class="panel"><div class="head"><h2>Distribution of r across ${meta.neurons_per_layer} neurons</h2></div><div class="body">${s.hist ? histogram(s.hist, "var(--s2)", 420, 100) : ""}</div></div><div class="panel"><div class="head"><h2>Reading this</h2></div><div class="body muted">r is the Pearson correlation of a neuron's activations before and after fine-tuning over the same tokens (undefined when one side is constant); relative change is ‖after − before‖ / ‖before‖, so a neuron that only scaled still shows up; change = (1 − r) + min(relative change, 1). Click a neuron for the datapoints and tokens that moved it most. Shared-prefix tokens are excluded because causal attention makes them identical across datapoints.</div></div></div>
-    <div class="wide-narrow"><div id="left"><div class="panel"><div class="head"><h2>Most changed neurons</h2></div><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>change</th><th>r</th><th>rel. change</th><th>largest token change</th><th>context</th></tr></thead><tbody>${data.rows.map((r) => `<tr class="clickable" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.change.toFixed(2)}</td><td class="num">${fr(r.r)}</td><td class="num">${r.rel_change.toFixed(2)}</td><td class="num mono">${r.before.toFixed(2)} → ${r.after.toFixed(2)}</td><td class="ctxcell">${flat(r.context)}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>See which datapoints drove its change.</div></div></div>`,
+    <div class="wide-narrow"><div id="left"><div class="panel"><div class="head"><h2>Most changed neurons</h2></div><div class="body" style="padding:0"><table class="neurons"><thead><tr><th>#</th><th>change</th><th>r</th><th>rel. change</th><th>largest token change</th><th>context</th></tr></thead><tbody>${data.rows.map((r) => `<tr ${dataContext("Neuron comparison", r)} class="clickable" data-n="${r.neuron}"><td class="mono">${r.neuron}</td><td class="num">${r.change.toFixed(2)}</td><td class="num">${fr(r.r)}</td><td class="num">${r.rel_change.toFixed(2)}</td><td class="num mono">${r.before.toFixed(2)} → ${r.after.toFixed(2)}</td><td class="ctxcell">${flat(r.context)}</td></tr>`).join("")}</tbody></table></div></div></div><div id="right"><div class="empty"><b>Pick a neuron</b>See which datapoints drove its change.</div></div></div>`,
     [{ label: "Interpretability", href: "#/interp" }, { label: name }]);
   $("#layerSel", content).onchange = (e) => go(`#/interp/d/${encodeURIComponent(name)}?layer=${e.target.value}&sort=${encodeURIComponent(sort)}`);
   $("#sortSel", content).onchange = (e) => go(`#/interp/d/${encodeURIComponent(name)}?layer=${layer}&sort=${encodeURIComponent(e.target.value)}`);
@@ -1445,8 +1804,8 @@ async function pageDiff(name, params) {
     $$("tr[data-n]", content).forEach((x) => x.classList.toggle("sel", x === tr));
     const d = await api(`/api/interp/diffs/${encodeURIComponent(name)}/layers/${layer}/neurons/${n}`);
     const captures = (await api("/api/interp")).captures.filter((c) => c.model_id === meta.experiment && c.source === meta.source && c.layers.includes(layer));
-    right.innerHTML = `<div class="panel ipanel"><div class="head"><h2>L${layer} · N${n}</h2><span class="muted mono">change ${d.change.toFixed(2)} · r ${fr(d.r)} · rel. change ${d.rel_change.toFixed(2)}</span></div><div class="body">
-      <h3>Datapoints that drove the change</h3><table>${d.datapoints.map((x) => `<tr><td class="num mono">${x.delta_sum.toFixed(2)}</td><td>${esc(x.user)}</td><td class="muted">${esc((x.labels || []).join(", "))}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>
+    right.innerHTML = `<div ${dataContext("Neuron change detail", d)} class="panel ipanel"><div class="head"><h2>L${layer} · N${n}</h2><span class="muted mono">change ${d.change.toFixed(2)} · r ${fr(d.r)} · rel. change ${d.rel_change.toFixed(2)}</span></div><div class="body">
+      <h3>Datapoints that drove the change</h3><table>${d.datapoints.map((x) => `<tr ${dataContext("Changed datapoint", x)}><td class="num mono">${x.delta_sum.toFixed(2)}</td><td>${esc(x.user)}</td><td class="muted">${esc((x.labels || []).join(", "))}</td></tr>`).join("") || "<tr><td class='muted'>none</td></tr>"}</table>
       <h3>Tokens with the largest change</h3><div class="entries">${d.tokens.map((x) => `<div class="entry"><span class="mono val">${x.before.toFixed(2)} → ${x.after.toFixed(2)}</span><span class="ctx">${flat(x.context)}</span><span class="muted dp">dp ${x.datapoint}</span></div>`).join("")}</div>
       ${captures.length ? `<p style="margin-top:10px"><a href="#/interp/c/${encodeURIComponent(captures[0].name)}?layer=${layer}&neuron=${n}">Open this neuron in capture ${esc(captures[0].name)} →</a></p>` : `<p class="muted" style="margin-top:10px">Capture ${esc(meta.experiment)} on ${esc(meta.source)} to browse this neuron's poles.</p>`}
     </div></div>`;
@@ -1455,20 +1814,24 @@ async function pageDiff(name, params) {
 
 // ------------------------------------------------------------------ stats
 async function pageStats() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const s = await api("/api/stats");
-  const tile = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const tile = (k, v) => `<div ${dataContext(k, {label:k,value:v})} class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   const max = Math.max(1, ...s.requests_per_day.map(([, n]) => n));
+  assertRender(view);
   layout("stats", `<div class="page-head"><h1>Stats</h1></div>
     <div class="tiles">${tile("Datasets", s.datasets)}${tile("Datapoints", s.datapoints)}${tile("Snapshots", s.snapshots)}${tile("Jobs", s.jobs)}${tile("Experiments succeeded", s.experiments.succeeded || 0)}${tile("Training time", `${Math.round(s.training_seconds / 60)} min`)}${tile("Evaluations", s.evaluations)}${tile("Requests served", s.requests)}${tile("Tokens served", s.prompt_tokens + s.completion_tokens)}${tile("Scored traces", s.scored_traces)}</div>
-    <div class="two"><div class="panel"><div class="head"><h2>Requests per day</h2></div><div class="body">${s.requests_per_day.length ? `<div class="bars">${s.requests_per_day.map(([d, n]) => `<div title="${d}: ${n}" style="height:${Math.max(4, (n / max) * 100)}%"></div>`).join("")}</div><div class="muted" style="display:flex;justify-content:space-between;font-size:11px;margin-top:4px"><span>${s.requests_per_day[0][0]}</span><span>${s.requests_per_day[s.requests_per_day.length - 1][0]}</span></div>` : `<div class="empty">No requests yet.</div>`}</div></div>
-    <div class="panel"><div class="head"><h2>Requests per model</h2></div><div class="body"><table>${s.requests_per_model.map(([m, n]) => `<tr><td class="mono">${esc(m)}</td><td class="num">${n}</td></tr>`).join("") || `<tr><td class="muted">none</td></tr>`}</table><p class="muted" style="margin-top:10px">Loaded now: ${s.models_loaded.map(esc).join(", ") || "none"}</p></div></div></div>`, [{ label: "Stats" }]);
+    <div class="two"><div class="panel"><div class="head"><h2>Requests per day</h2></div><div class="body">${s.requests_per_day.length ? `<div ${dataContext("Requests per day", s.requests_per_day)} class="bars">${s.requests_per_day.map(([d, n]) => `<div title="${d}: ${n}" style="height:${Math.max(4, (n / max) * 100)}%"></div>`).join("")}</div><div class="muted" style="display:flex;justify-content:space-between;font-size:11px;margin-top:4px"><span>${s.requests_per_day[0][0]}</span><span>${s.requests_per_day[s.requests_per_day.length - 1][0]}</span></div>` : `<div class="empty">No requests yet.</div>`}</div></div>
+    <div class="panel"><div class="head"><h2>Requests per model</h2></div><div class="body"><table>${s.requests_per_model.map(([m, n]) => `<tr ${dataContext("Requests per model", {model:m,requests:n})}><td class="mono">${esc(m)}</td><td class="num">${n}</td></tr>`).join("") || `<tr><td class="muted">none</td></tr>`}</table><p class="muted" style="margin-top:10px">Loaded now: ${s.models_loaded.map(esc).join(", ") || "none"}</p></div></div></div>`, [{ label: "Stats" }]);
 }
 
 // ------------------------------------------------------------------ api keys
 async function pageKeys() {
-  await ensureOverview(true);
+  const view = state.pageContext;
+  await ensureOverview(true); assertRender(view);
   const keys = await api("/api/keys");
+  assertRender(view);
   const content = layout("keys", `<div class="page-head"><h1>API Keys</h1><div class="actions"><button class="btn primary" id="newKey">+ Create API key</button></div></div>
     <div class="panel"><table><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td><b>${esc(k.name)}</b></td><td class="mono">${esc(k.prefix)}…</td><td>${fmtDate(k.created)}</td><td>${fmtDate(k.last_used)}</td><td style="text-align:right"><button class="btn sm danger" data-rev="${k.id}">Revoke</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No keys yet. Keys belong to your account and work on /v1 and /api (MCP clients use them).</td></tr>`}</tbody></table></div>
     <div class="panel" style="margin-top:16px"><div class="head"><h2>Using your key</h2></div><div class="body"><pre class="mono" style="white-space:pre-wrap">curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ts-..." -H "content-type: application/json" \\\n  -d '{"model": "${esc(state.project)}/&lt;job&gt;/&lt;n&gt;", "messages": [{"role": "user", "content": "hello"}]}'</pre><p class="muted">Works with the OpenAI SDKs: set <span class="mono">base_url</span> to <span class="mono">${location.origin}/v1</span>. Model ids are <span class="mono">&lt;project&gt;/&lt;job&gt;/&lt;n&gt;</span>, or send the header <span class="mono">X-Project: ${esc(state.project)}</span> and use <span class="mono">&lt;job&gt;/&lt;n&gt;</span>.</p></div></div>`, [{ label: "API Keys" }]);
@@ -1478,7 +1841,7 @@ async function pageKeys() {
     $("[data-ok]", m.el).onclick = guard(async () => {
       const r = await post("/api/keys", { name: $("#kName", m.el).value });
       m.close();
-      modal({ title: "Your new API key", body: `<p>Copy it now; it is shown only once.</p><pre class="mono" style="background:var(--panel-2);padding:12px;border-radius:8px;word-break:break-all">${esc(r.key)}</pre>`, footer: `<button class="btn primary" data-done>Done</button>`, onMount: (el, close) => { $("[data-done]", el).onclick = () => { close(); pageKeys(); }; } });
+      modal({ title: "Your new API key", sensitive: true, body: `<p>Copy it now; it is shown only once.</p><pre class="mono" style="background:var(--panel-2);padding:12px;border-radius:8px;word-break:break-all">${esc(r.key)}</pre>`, footer: `<button class="btn primary" data-done>Done</button>`, onMount: (el, close) => { $("[data-done]", el).onclick = () => { close(); pageKeys(); }; } });
     });
   };
   $$("[data-rev]", content).forEach((b) => b.onclick = () => confirmModal("Revoke key", "Revoke this key? Clients using it will get 401.", async () => { await del(`/api/keys/${b.dataset.rev}`); pageKeys(); }, "Revoke"));

@@ -28,7 +28,7 @@ def upload_api(monkeypatch):
     app = FastAPI()
     app.include_router(artifacts.router)
     app.dependency_overrides[project_dep] = lambda: SimpleNamespace(id="project-one")
-    app.dependency_overrides[get_db] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: SimpleNamespace(commit=lambda: None)
     return TestClient(app), store
 
 
@@ -73,6 +73,63 @@ def test_failed_validation_preserves_retryable_staging(upload_api, monkeypatch):
     monkeypatch.setattr(artifacts.datasets,'create_from_jsonl',reject)
     assert client.post('/api/p/demo/datasets/from-object',json={"name":"d","key":key}).status_code==400
     assert key in store.objects
+
+
+def test_commit_failure_preserves_retryable_staging(upload_api, monkeypatch):
+    client, store = upload_api
+    key = 'uploads/project-one/' + 'a' * 32 + '/data.jsonl'
+    store.objects[key] = b'fixture'
+    monkeypatch.setattr(artifacts.datasets, 'create_from_jsonl', lambda *a: {"name": "d"})
+    def fail_commit():
+        raise RuntimeError('commit failed')
+    client.app.dependency_overrides[get_db] = lambda: SimpleNamespace(commit=fail_commit)
+    with pytest.raises(RuntimeError, match='commit failed'):
+        client.post('/api/p/demo/datasets/from-object', json={"name": "d", "key": key})
+    assert key in store.objects
+
+
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_import_is_visible_before_success_response(upload_api, monkeypatch, project, cleanup_fails):
+    """Inspect another DB connection when headers are sent, before yield cleanup."""
+    import json
+    from sqlalchemy import select
+    from tinystudio.db import engine
+    from tinystudio.db.models import Dataset
+
+    client, store = upload_api
+    client.app.dependency_overrides[project_dep] = lambda: project
+    # Use the real dependency, including its post-response commit/rollback.
+    client.app.dependency_overrides.pop(get_db)
+    key = f'uploads/{project.id}/' + 'a' * 32 + '/data.jsonl'
+    store.objects[key] = json.dumps({"messages": [
+        {"role": "user", "content": "visible immediately?"},
+        {"role": "assistant", "content": "yes"},
+    ]}).encode() + b'\n'
+    if cleanup_fails:
+        def fail_delete(key):
+            raise OSError('staging unavailable')
+        monkeypatch.setattr(store, 'delete', fail_delete)
+
+    observed = []
+    class ObserveResponse:
+        def __init__(self, app):
+            self.app = app
+        async def __call__(self, scope, receive, send):
+            async def observe(message):
+                if message['type'] == 'http.response.start' and message['status'] == 200:
+                    with engine().connect() as connection:
+                        observed.append(connection.execute(select(Dataset.name).where(
+                            Dataset.project_id == project.id, Dataset.name == 'persisted'
+                        )).scalar_one_or_none())
+                await send(message)
+            await self.app(scope, receive, observe)
+
+    with TestClient(ObserveResponse(client.app)) as observed_client:
+        response = observed_client.post('/api/p/demo/datasets/from-object', json={"name": "persisted", "key": key})
+    assert response.status_code == 200
+    assert response.json()['datapoints'] == 1
+    assert observed == ['persisted']
+    assert (key in store.objects) is cleanup_fails
 
 
 @pytest.mark.parametrize('failure', ['archive', 'configuration', 'upload', 'sign'])

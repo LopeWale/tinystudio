@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from tinystudio.api.deps import current_user, forget_secret
-from tinystudio.api.routes import accounts, artifacts, auth, data, interp, projects, serving, system, training
+from tinystudio.api.routes import accounts, artifacts, assistant_conversations, auth, data, interp, projects, serving, system, training
 from tinystudio.auth import bootstrap_admin, ensure_instance
 from tinystudio.auth.cloudflare import CloudflareAccessMiddleware
 from tinystudio.config import config
@@ -59,7 +59,7 @@ def create_app(run_migrations: bool = True, base_models: list[str] | None = None
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     def liveness() -> dict[str, bool]:
         return {"ok": True}
-    for module in (system, auth, accounts, projects, data, training, serving, interp, artifacts):
+    for module in (system, auth, accounts, assistant_conversations, projects, data, training, serving, interp, artifacts):
         app.include_router(module.router)
     app.include_router(build_v1_router(engine, current_user, base_models, auto_up))
 

@@ -98,7 +98,7 @@ def stats(project: Project = Depends(project_dep), db: Session = Depends(get_db)
     from sqlalchemy import func
 
     experiments = list(db.scalars(select(Experiment).join(Job).where(Job.project_id == project.id)))
-    datapoints = int(db.scalar(select(func.count()).select_from(__import__("tinystudio.db.models", fromlist=["Datapoint"]).Datapoint).join(Dataset).where(Dataset.project_id == project.id)) or 0)
+    datapoints = sum(int(v) for counts in db.scalars(select(Dataset.counts).where(Dataset.project_id == project.id)) for v in (counts or {}).values())  # maintained counters, no row scan
     try:
         loaded = sorted(engine().loaded_ids(project.slug))
     except Exception:  # noqa: BLE001

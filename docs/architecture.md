@@ -14,6 +14,30 @@ transaction.
 | Qdrant | `qdrant/qdrant:v1.20` | one collection per repository: chunk text and embedding, document id, position; cosine distance; payload index on `document_id` |
 | data volume | `TINYSTUDIO_DATA_DIR` | weights, adapters, checkpoints, merged models, activation captures (`.npz`), uploads, full task logs, the Hugging Face cache |
 
+## Rows and bytes
+
+PostgreSQL keeps rows; everything large lives in the artifact store (`TINYSTUDIO_STORAGE_BACKEND`: a local
+directory, or private R2 through `docs/cloudflare.md`).
+
+- **Datapoints** are hash-partitioned by `dataset_id` into 16 partitions (`datapoints_p00` to `_p15`). The
+  primary key is `(dataset_id, id)` and `(dataset_id, position)` is unique, so every dataset query prunes to one
+  partition and the partition count stays fixed however many datasets the team creates; no DDL runs when a
+  dataset is created or deleted. Writes use `COPY`. Each `datasets` row keeps per-bucket `counts`, updated in
+  the same transaction as the write, so list pages and stats never count rows. Every write locks its dataset
+  row, which serializes appends and keeps the counters exact.
+- **Reads** page with a keyset cursor: `GET /api/p/<slug>/datasets/<name>?after=<next_after>&limit=N`; `offset`
+  still serves numbered pages. Whole-dataset reads (exports, cleaning, profiling, snapshots) stream in batches
+  of 5,000 rows, and downloads stream on their own database session.
+- **Snapshots** are frozen as zstd Parquet shards of 10,000 rows with a checksum manifest in the artifact store,
+  under `snapshots/<project id>/<snapshot id>/`; the `snapshots` row keeps the counts and the prefix. Freezing
+  holds a shared lock on the dataset so no writer changes the buckets mid-copy. Snapshots made before this
+  layout keep their rows in `snapshot_rows` and still load.
+- **Long operations:** cleaning, autosplit and snapshot creation run inside the request up to
+  `TINYSTUDIO_SYNC_ROW_LIMIT` rows (default 100,000) and above it return 202 with a worker task, because
+  Cloudflare closes a proxied request that has not answered within 125 seconds.
+- **Not partitioned yet:** `eval_results`, `traces`, `experiment_logs`. They are append-only and indexed by
+  their parent; partition them by time or parent when they reach tens of millions of rows.
+
 ## Request paths
 
 - **Browser.** Sign in sets a signed, HttpOnly session cookie. Every

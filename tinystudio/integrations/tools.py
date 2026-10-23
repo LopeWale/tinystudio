@@ -144,9 +144,12 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
         """List datasets with datapoint counts, buckets, labels, and snapshots."""
         return studio.call("GET", "/api/datasets")
 
-    def get_datapoints(dataset: str, offset: int = 0, limit: int = 20) -> dict[str, Any]:
-        """Read datapoints of a dataset (paged). Each row has messages, bucket, labels, source, optional rating."""
-        return studio.call("GET", f"/api/datasets/{dataset}", params={"offset": offset, "limit": limit})
+    def get_datapoints(dataset: str, offset: int = 0, limit: int = 20, after: int | None = None) -> dict[str, Any]:
+        """Read datapoints of a dataset (paged). Each row has messages, bucket, labels, source, optional rating. For long datasets pass after = the previous response's next_after instead of growing offset."""
+        params: dict[str, Any] = {"offset": offset, "limit": limit}
+        if after is not None:
+            params["after"] = after
+        return studio.call("GET", f"/api/datasets/{dataset}", params=params)
 
     def profile_dataset(dataset: str) -> dict[str, Any]:
         """Data-quality profile of a dataset: length stats and histograms, duplicates, near-duplicates, outliers, label/bucket/source distributions, JSON-answer share, ratings, PII-like patterns."""
@@ -228,11 +231,11 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
         return studio.call("POST", "/api/augment", json={"dataset": dataset, "count": count, "instructions": instructions, "avoid": avoid, "temperature": temperature})
 
     def clean_dataset(dataset: str, dedupe_user: bool = False, dedupe_conversation: bool = False, drop_near_duplicates: bool = False, drop_empty: bool = False, trim_whitespace: bool = False, min_total_chars: int | None = None, max_total_chars: int | None = None, min_rating: float | None = None, require_json_answer: bool = False, drop_labels: list[str] | None = None, keep_labels: list[str] | None = None, redact_pii: bool = False) -> dict[str, Any]:
-        """Clean a dataset in place: drop exact or near duplicates, empty rows, length outliers, low-rated rows, non-JSON answers, or rows with given labels; trim whitespace; redact_pii replaces emails, card numbers, national ids, and phone numbers with placeholders. Returns removed counts per reason; the run is logged."""
+        """Clean a dataset in place: drop exact or near duplicates, empty rows, length outliers, low-rated rows, non-JSON answers, or rows with given labels; trim whitespace; redact_pii replaces emails, card numbers, national ids, and phone numbers with placeholders. Returns removed counts per reason; the run is logged. On datasets above the server's synchronous row limit the answer is {queued: true, task} instead: poll get_task."""
         return studio.call("POST", f"/api/datasets/{dataset}/clean", json={"dedupe_user": dedupe_user, "dedupe_conversation": dedupe_conversation, "drop_near_duplicates": drop_near_duplicates, "drop_empty": drop_empty, "trim_whitespace": trim_whitespace, "min_total_chars": min_total_chars, "max_total_chars": max_total_chars, "min_rating": min_rating, "require_json_answer": require_json_answer, "drop_labels": drop_labels or [], "keep_labels": keep_labels or [], "redact_pii": redact_pii})
 
     def split_dataset(dataset: str, train_pct: int = 80, synthetic_in_validation: bool = False) -> dict[str, Any]:
-        """Autosplit uncategorized datapoints into training/validation. Existing assignments are kept."""
+        """Autosplit uncategorized datapoints into training/validation. Existing assignments are kept. On datasets above the server's synchronous row limit the answer is {queued: true, task} instead: poll get_task."""
         return studio.call("POST", f"/api/datasets/{dataset}/split", json={"train_pct": train_pct, "synthetic_in_validation": synthetic_in_validation})
 
     def set_labels(dataset: str, labels: list[dict[str, str]]) -> dict[str, Any]:
@@ -244,7 +247,7 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
         return studio.call("POST", f"/api/datasets/{dataset}/auto-label")
 
     def create_snapshot(dataset: str, name: str) -> dict[str, Any]:
-        """Freeze the dataset's training and validation buckets into an immutable snapshot (needs at least 10 training rows)."""
+        """Freeze the dataset's training and validation buckets into an immutable snapshot (needs at least 10 training rows). On datasets above the server's synchronous row limit the answer is {queued: true, task} instead: poll get_task."""
         return studio.call("POST", "/api/snapshots", json={"dataset": dataset, "name": name})
 
     def create_job(name: str, snapshot: str, goal: str = "", reasoning: bool = False) -> dict[str, Any]:
@@ -401,7 +404,7 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
     long_running = [create_synthetic_dataset, augment_dataset, auto_label_dataset, start_job, analyze_job, generate_metric, run_eval, download_hub_model, run_autopilot_cycle, capture_activations, explain_neurons, test_neurons, compare_models, add_repository_documents]
     mutating = [create_dataset_from_jsonl, add_datapoint, clean_dataset, split_dataset, set_labels, create_snapshot, create_job, add_experiment, create_metric, set_model_state, chat, score_trace, promote_traces, stop_task, create_repository]
     specs = [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, read_only=True) for f in read_only]
-    specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, long_running=True) for f in long_running]
-    specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f) for f in mutating]
+    specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, long_running=True, destructive=f is run_autopilot_cycle) for f in long_running]
+    specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, destructive=f is clean_dataset) for f in mutating]
     specs.append(ToolSpec("delete", (delete.__doc__ or "").strip(), delete, destructive=True))
     return specs

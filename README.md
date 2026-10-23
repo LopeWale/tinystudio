@@ -311,16 +311,31 @@ and returned as `tinystudio.document_chunks`.
 
 The ✦ button (or ⌘K) opens a chat drawer on every page. Pick Claude or OpenAI
 and any model your account lists (the pickers read each provider's live model
-list). With *page* ticked, every message carries what you are looking at: the
+list). Claude Opus, Sonnet, and Haiku 5.5 presets remain visible; Fable appears
+only when returned by the provider. A listed model may not support chat/tools;
+provider errors are shown rather than substituting another model.
+With *page* ticked, every message carries what you are looking at: the
 route, the visible text, the data the page fetched, and your text selection.
 The assistant can also read the live page as an element tree with ref ids
 (`ui_read_page`), open pages (`ui_navigate`), click, fill, and select
 (`ui_click`, `ui_fill`, `ui_select`), and run every tinystudio tool, so "explain
 the three most changed neurons on this page" or "start a LoRA job on the latest
-snapshot and open it" both work. This is the same shape as Claude in Chrome's
-page tools (an accessibility tree with ref ids plus actions), scoped to the
-tinystudio interface. Credentials: `ANTHROPIC_API_KEY` (or `ant auth login`)
-and `OPENAI_API_KEY` in the environment or `.env`.
+snapshot and open it" both work. Use **Pick data** to attach the underlying
+record or chart series from a row, chart, or panel. Context is supplied as
+untrusted data, not privileged instructions. Credential screens are excluded.
+Actions/deletions are off by default; deleting, cleaning rows, and the
+autopilot cycle require opt-in. Conversation history is stored in PostgreSQL, separately for each signed-in
+user and project. Sign in as the same user on another device to resume it; use
+**Refresh** in an already-open chat to load newer turns. Existing browser history
+is imported only when no database conversation exists. Revision checks prevent
+concurrent devices from silently overwriting each other; failed saves stay visible
+and block new turns until resolved. Clearing a conversation also updates its
+revision, so stale browsers cannot restore it. Each conversation supports up to
+1,000 messages and 1 MiB; oversized saves are rejected without truncation.
+Credentials come only from `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` and
+`OPENAI_API_KEY` in the server environment or `.env`, not the conversation or
+a local CLI login profile. See the [live review transcript](docs/assistant-evaluation-transcript.md)
+and [Claude Desktop context investigation](docs/claude-context-investigation.md).
 
 ## Running on bigger machines and other models
 
@@ -494,7 +509,7 @@ tinystudio/
 
 ## Storage layout
 
-PostgreSQL holds the rows (see `tinystudio/db/models.py`): `users`,
+PostgreSQL holds the rows (see `tinystudio/db/models.py`; datapoints are hash-partitioned by dataset, written with COPY, paged by keyset, with per-dataset counters; see `docs/architecture.md`): `users`,
 `api_keys`, `projects`, `settings`, `datasets`, `datapoints`,
 `cleaning_runs`, `snapshots`, `snapshot_rows`, `jobs`, `experiments`,
 `experiment_logs`, `analyses`, `metrics`, `evaluations`, `eval_results`,

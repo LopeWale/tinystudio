@@ -65,6 +65,7 @@ class AssistantBody(BaseModel):
     context: dict[str, Any] | None = None
     with_ui: bool = True
     project: str | None = None
+    conversation_revision: int | None = None
 
 
 @router.get("/health")
@@ -277,10 +278,10 @@ def assistant_models(_: Principal = Depends(current_user)) -> dict[str, Any]:
 
 
 @router.post("/assistant/ui-result")
-def assistant_ui_result(body: UiResultBody, _: Principal = Depends(current_user)) -> dict[str, Any]:
+def assistant_ui_result(body: UiResultBody, principal: Principal = Depends(current_user)) -> dict[str, Any]:
     from tinystudio.integrations.assistant import UiBridge
 
-    if not UiBridge.deliver(body.id, body.result):
+    if not UiBridge.deliver(body.id, body.result, owner_id=principal.user.id):
         raise HTTPException(status_code=404, detail="no pending interface request with that id (it may have timed out)")
     return {"delivered": body.id}
 
@@ -290,12 +291,26 @@ def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(
     from tinystudio.integrations.assistant import stream_events
     from tinystudio.integrations.tools import Studio
 
+    if any(m.get("role") not in ("user", "assistant") for m in body.messages):
+        raise HTTPException(status_code=400, detail="conversation roles must be user or assistant")
+    if len(json.dumps({"messages": body.messages, "context": body.context}, ensure_ascii=False).encode("utf-8")) > 256000:
+        raise HTTPException(status_code=413, detail="conversation and page context exceed 256000 bytes")
     if not body.messages or body.messages[-1].get("role") != "user":
         raise HTTPException(status_code=400, detail="the last message must come from the user")
     if body.provider not in ("anthropic", "openai"):
         raise HTTPException(status_code=400, detail="provider must be anthropic or openai")
-    if body.project:
-        wrap(lambda: projects_svc.get_project(db, body.project))
+    project = wrap(lambda: projects_svc.get_project(db, body.project)) if body.project else None
+    persistence = None
+    if body.conversation_revision is not None:
+        from tinystudio.integrations.conversation_turn import ConversationTurn
+        from tinystudio.services import assistant_conversations as conversations
+
+        if project is None:
+            raise HTTPException(status_code=400, detail="a saved conversation requires a project")
+        snapshot = conversations.load(db, project.id, principal.user.id)
+        if snapshot["revision"] != body.conversation_revision or not snapshot["history"] or snapshot["history"][-1]["role"] != "user" or snapshot["history"][-1]["content"] != body.messages[-1].get("content"):
+            raise HTTPException(status_code=409, detail="conversation changed; reload before sending")
+        persistence = ConversationTurn(project.id, principal.user.id, snapshot, body.provider, body.model)
     settings_svc.apply(db)
     # the assistant calls this API back as the signed-in user, over the loopback address, for one hour at most
     self_url = os.environ.get("TINYSTUDIO_SELF_URL") or f"http://127.0.0.1:{config().port}"
@@ -304,7 +319,7 @@ def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(
                     access_assertion=getattr(request.state, "cloudflare_assertion", None))
 
     def events() -> Iterator[str]:
-        for event in stream_events(body.provider, studio, body.messages, body.allow_destructive, body.model, body.context, body.with_ui):
+        for event in stream_events(body.provider, studio, body.messages, body.allow_destructive, body.model, body.context, body.with_ui, owner_id=principal.user.id, on_complete=persistence):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})

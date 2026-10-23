@@ -220,6 +220,28 @@ def redact_pii(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     return out, changed
 
 
+
+NEAR_POSTING_CAP = 256  # shingles shared by more kept rows than this are too common to narrow the search
+
+
+def _has_near_duplicate(sh: set[str], kept: list[set[str]], index: dict[str, list[int]], threshold: float) -> bool:
+    """Whether a kept row reaches the Jaccard threshold, checking only rows that share a shingle (an inverted index)
+    instead of every kept row. Exact while postings stay under NEAR_POSTING_CAP; above it the three rarest shingles
+    still nominate their most recent rows, so very common phrasing is matched approximately, not quadratically."""
+    postings = sorted((index[s] for s in sh if s in index), key=len)
+    if not postings:
+        return False
+    candidates: set[int] = set()
+    for posting in postings:
+        if len(posting) > NEAR_POSTING_CAP:
+            break
+        candidates.update(posting)
+    if not candidates:
+        for posting in postings[:3]:
+            candidates.update(posting[-NEAR_POSTING_CAP:])
+    return any(len(sh & kept[c]) / len(sh | kept[c]) >= threshold for c in candidates)
+
+
 def clean(rows: list[dict[str, Any]], spec: CleanSpec) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Return (kept rows, counts of rows removed per reason). Order is preserved; first occurrence wins."""
     removed: Counter[str] = Counter()
@@ -227,6 +249,7 @@ def clean(rows: list[dict[str, Any]], spec: CleanSpec) -> tuple[list[dict[str, A
     seen_user: set[str] = set()
     seen_conv: set[str] = set()
     kept_shingles: list[set[str]] = []
+    shingle_index: dict[str, list[int]] = {}
     drop_set = set(spec.drop_indices)
     for i, row in enumerate(rows):
         if i in drop_set:
@@ -272,9 +295,11 @@ def clean(rows: list[dict[str, Any]], spec: CleanSpec) -> tuple[list[dict[str, A
             seen_conv.add(fp)
         if spec.drop_near_duplicates:
             sh = _shingles(user)
-            if sh and any(len(sh & other) / len(sh | other) >= spec.near_duplicate_threshold for other in kept_shingles if other):
+            if sh and _has_near_duplicate(sh, kept_shingles, shingle_index, spec.near_duplicate_threshold):
                 removed["near_duplicate"] += 1
                 continue
             kept_shingles.append(sh)
+            for s in sh:
+                shingle_index.setdefault(s, []).append(len(kept_shingles) - 1)
         kept.append(row)
     return kept, dict(removed)

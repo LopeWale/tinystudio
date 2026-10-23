@@ -1,6 +1,7 @@
 """Authorize direct private R2 uploads; validate staged JSONL before importing rows."""
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 import uuid
@@ -18,6 +19,7 @@ from tinystudio.storage import project_key, storage
 
 router = APIRouter(prefix="/api/p/{slug}", tags=["artifacts"])
 MAX_UPLOAD = 512 * 1024 * 1024
+log = logging.getLogger("tinystudio")
 
 
 class UploadBody(BaseModel):
@@ -72,5 +74,12 @@ def import_upload(body: ImportBody, project: Project = Depends(project_dep), db:
         # Rows are validated and copied into the DB; a reusable staging URL cannot
         # subsequently mutate an imported dataset or an immutable snapshot.
         result = wrap(lambda: datasets.create_from_jsonl(db, project, body.name, target, Path(key).name))
-    store.delete(key)
+    # Yield dependencies commit after sending the response. Publish the import
+    # first so a browser's immediate follow-up read can see the successful write.
+    db.commit()
+    try:
+        store.delete(key)
+    except Exception:
+        # Cleanup cannot undo a committed import or make its response a failure.
+        log.warning("import committed, but staging object cleanup failed")
     return result

@@ -47,6 +47,13 @@ def get(db: Session, key: str) -> str | None:
     return os.environ.get(key) or None
 
 
+def environment_value(key: str) -> str | None:
+    """Original process/.env value, excluding credentials copied from saved settings."""
+    if key in _APPLIED:
+        return _ENV_SEED.get(key) or None
+    return os.environ.get(key) or None
+
+
 def apply(db: Session) -> dict[str, str]:
     """Copy stored values into os.environ (stored wins). Keys cleared since the last apply fall back to their seed."""
     values = stored(db)

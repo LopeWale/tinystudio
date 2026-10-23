@@ -18,7 +18,8 @@ def test_tool_catalog_shape():
     names = [s.name for s in specs]
     assert len(names) == len(set(names)) == 55
     assert {"get_overview", "create_synthetic_dataset", "start_job", "run_eval", "chat", "delete", "search_hub_models", "download_hub_model", "clean_dataset", "run_autopilot_cycle", "get_autopilot_history", "capture_activations", "get_neuron", "test_neurons", "compare_models"} <= set(names)
-    assert [s.name for s in specs if s.destructive] == ["delete"]
+    # Cleaning drops dataset rows; autopilot invokes that cleaning phase.
+    assert {s.name for s in specs if s.destructive} == {"delete", "clean_dataset", "run_autopilot_cycle"}
     assert all(s.description for s in specs)
     assert sum(s.long_running for s in specs) == 14 and sum(s.read_only for s in specs) == 25
 

@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -182,21 +183,30 @@ def augment(body: AugmentBody, project: Project = Depends(project_dep), db: Sess
 
 
 @router.get("/datasets/{name}")
-def dataset(name: str, offset: int = 0, limit: int = 25, bucket: str | None = None, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
+def dataset(name: str, offset: int = 0, limit: int = 25, after: int | None = None, bucket: str | None = None, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Rows of a dataset. Pass ``after`` (the previous page's ``next_after``) for keyset paging; ``offset`` serves numbered pages."""
     ds = wrap(lambda: datasets_svc.get_dataset(db, project, name))
-    return {"meta": datasets_svc.meta(db, ds), "total": datasets_svc.count(db, ds), "rows": datasets_svc.rows(db, ds, offset, limit, bucket)}
+    rows, next_after = datasets_svc.page(db, ds, max(1, min(limit, 1000)), after, max(0, offset), bucket)
+    return {"meta": datasets_svc.meta(db, ds), "total": datasets_svc.count(db, ds), "rows": rows, "next_after": next_after}
 
 
 @router.get("/datasets/{name}/download")
 def download_dataset(name: str, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> StreamingResponse:
+    """Stream the dataset as JSONL in keyset batches; the stream holds its own session, not the request's."""
     import json
 
-    ds = wrap(lambda: datasets_svc.get_dataset(db, project, name))
-    rows = datasets_svc.rows(db, ds)
+    from tinystudio.db import session as open_session
+    from tinystudio.db.models import Dataset
+
+    dataset_id = wrap(lambda: datasets_svc.get_dataset(db, project, name)).id
 
     def lines() -> Any:
-        for row in rows:
-            yield json.dumps({k: v for k, v in row.items() if k != "id"}, ensure_ascii=False) + "\n"
+        with open_session() as stream_db:
+            ds = stream_db.get(Dataset, dataset_id)
+            if ds is None:
+                return
+            for row in datasets_svc.iter_rows(stream_db, ds):
+                yield json.dumps({k: v for k, v in row.items() if k != "id"}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(lines(), media_type="application/jsonl", headers={"content-disposition": f'attachment; filename="{name}.jsonl"'})
 
@@ -206,9 +216,21 @@ def dataset_quality(name: str, project: Project = Depends(project_dep), db: Sess
     return datasets_svc.profile(db, wrap(lambda: datasets_svc.get_dataset(db, project, name)))
 
 
+def _queued_if_large(db: Session, project: Project, dataset_name: str, kind: str, args: dict[str, Any], principal: Principal) -> JSONResponse | None:
+    """Datasets above TINYSTUDIO_SYNC_ROW_LIMIT rows are processed by a worker so the request returns at once
+    (Cloudflare closes a proxied request that has not answered within its read timeout)."""
+    ds = wrap(lambda: datasets_svc.get_dataset(db, project, dataset_name))
+    if datasets_svc.count(db, ds) <= config().sync_row_limit:
+        return None
+    task = wrap(lambda: worker.enqueue(db, kind, args, project, principal.user))
+    return JSONResponse(status_code=202, content={"queued": True, "task": jsonable_encoder(task)})
+
+
 @router.post("/datasets/{name}/clean")
-def dataset_clean(name: str, body: CleanBody, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return wrap(lambda: datasets_svc.apply_cleaning(db, project, name, CleanSpec(**body.model_dump())))
+def dataset_clean(name: str, body: CleanBody, project: Project = Depends(project_dep), db: Session = Depends(get_db), principal: Principal = Depends(current_user)) -> Any:
+    """Clean in place. Returns the result, or 202 with a task for datasets above the synchronous row limit."""
+    queued = _queued_if_large(db, project, name, "dataset.clean", {"dataset": name, "spec": body.model_dump()}, principal)
+    return queued or wrap(lambda: datasets_svc.apply_cleaning(db, project, name, CleanSpec(**body.model_dump())))
 
 
 @router.get("/datasets/{name}/cleaning-history")
@@ -230,8 +252,10 @@ def auto_label(name: str, project: Project = Depends(project_dep), db: Session =
 
 
 @router.post("/datasets/{name}/split")
-def split(name: str, body: SplitBody, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return wrap(lambda: datasets_svc.autosplit(db, project, name, body.train_pct, body.seed, body.synthetic_in_validation))
+def split(name: str, body: SplitBody, project: Project = Depends(project_dep), db: Session = Depends(get_db), principal: Principal = Depends(current_user)) -> Any:
+    """Autosplit. Returns the dataset meta, or 202 with a task for datasets above the synchronous row limit."""
+    queued = _queued_if_large(db, project, name, "dataset.split", {"dataset": name, **body.model_dump()}, principal)
+    return queued or wrap(lambda: datasets_svc.autosplit(db, project, name, body.train_pct, body.seed, body.synthetic_in_validation))
 
 
 @router.post("/datasets/{name}/rows")
@@ -267,8 +291,10 @@ def snapshots(project: Project = Depends(project_dep), db: Session = Depends(get
 
 
 @router.post("/snapshots")
-def create_snapshot(body: SnapshotBody, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return wrap(lambda: snapshots_svc.create_snapshot(db, project, body.dataset, body.name))
+def create_snapshot(body: SnapshotBody, project: Project = Depends(project_dep), db: Session = Depends(get_db), principal: Principal = Depends(current_user)) -> Any:
+    """Freeze a snapshot. Returns it, or 202 with a task for datasets above the synchronous row limit."""
+    queued = _queued_if_large(db, project, body.dataset, "snapshot.create", body.model_dump(), principal)
+    return queued or wrap(lambda: snapshots_svc.create_snapshot(db, project, body.dataset, body.name))
 
 
 @router.get("/snapshots/{name}")
