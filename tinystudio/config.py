@@ -41,6 +41,16 @@ class Config:
     dtype: str
     secure_cookies: bool
     session_days: int
+    storage_backend: str = "local"
+    r2_endpoint_url: str = ""
+    r2_bucket: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_region: str = "auto"
+    cloudflare_access_team_domain: str | None = None
+    cloudflare_access_audience: str | None = None
+    cloudflare_access_required: bool = False
+    public_url: str | None = None
 
     @property
     def inference_in_process(self) -> bool:
@@ -77,6 +87,16 @@ def _load() -> Config:
         dtype=_env("TINYSTUDIO_DTYPE", "auto") or "auto",
         secure_cookies=_env("TINYSTUDIO_SECURE_COOKIES", "0").lower() in ("1", "true", "yes"),
         session_days=int(_env("TINYSTUDIO_SESSION_DAYS", "14")),
+        storage_backend=_env("TINYSTUDIO_STORAGE_BACKEND", "local"),
+        r2_endpoint_url=_env("R2_ENDPOINT_URL"),
+        r2_bucket=_env("R2_BUCKET_NAME"),
+        r2_access_key_id=_env("R2_ACCESS_KEY_ID"),
+        r2_secret_access_key=_env("R2_SECRET_ACCESS_KEY"),
+        r2_region=_env("R2_REGION", "auto"),
+        cloudflare_access_team_domain=_env("CF_ACCESS_TEAM_DOMAIN") or None,
+        cloudflare_access_audience=_env("CF_ACCESS_AUD") or None,
+        cloudflare_access_required=_env("TINYSTUDIO_CF_ACCESS_REQUIRED", "0").lower() in ("1", "true", "yes"),
+        public_url=_env("TINYSTUDIO_PUBLIC_URL").rstrip("/") or None,
     )
 
 

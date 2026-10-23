@@ -441,6 +441,8 @@ the recommendation and the default LoRA targets.
 
 ## Configuration
 
+For private R2 artifacts, Cloudflare Access, external MCP/SDK clients, and persistent tunnel/API/worker services, see [Cloudflare deployment](docs/cloudflare.md).
+
 Two layers:
 
 - **Deployment values** come from the environment or `.env`: the store URLs

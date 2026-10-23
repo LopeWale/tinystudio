@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from tinystudio.auth import AuthError, Principal, authenticate_password, issue_session, SESSION_COOKIE
 from tinystudio.api.deps import cookie_kwargs, current_user, get_db, instance_secret, optional_principal, wrap
 from tinystudio.db.models import User
+from tinystudio.config import config
 from tinystudio.services import users as users_svc
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -42,6 +43,8 @@ def status(db: Session = Depends(get_db), principal: Principal | None = Depends(
 @router.post("/setup")
 def setup(body: SetupBody, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Create the first admin account (only while the users table is empty)."""
+    if config().cloudflare_access_team_domain or config().cloudflare_access_required:
+        raise HTTPException(status_code=403, detail="create Cloudflare accounts through an existing administrator")
     if db.scalar(select(User.id).limit(1)) is not None:
         raise HTTPException(status_code=409, detail="an account already exists; sign in instead")
     user = wrap(lambda: users_svc.create_user(db, body.email, body.password, body.name, "admin"))
@@ -60,9 +63,9 @@ def login(body: LoginBody, response: Response, db: Session = Depends(get_db)) ->
 
 
 @router.post("/logout")
-def logout(response: Response, request: Request) -> dict[str, Any]:
+def logout(response: Response, request: Request, principal: Principal | None = Depends(optional_principal)) -> dict[str, Any]:
     response.delete_cookie(SESSION_COOKIE, path="/")
-    return {"ok": True}
+    return {"ok": True, "logout_url": "/cdn-cgi/access/logout" if principal and principal.via == "cloudflare" else None}
 
 
 @router.get("/me")

@@ -29,6 +29,10 @@ dependencies = [
   "rq>=2.0",
   "itsdangerous>=2.2",
   "argon2-cffi>=23.1",
+  "boto3>=1.35",
+  "pyarrow>=18",
+  "PyJWT[crypto]>=2.10",
+  "filelock>=3.18",
 ]
 
 [project.optional-dependencies]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -186,16 +186,29 @@ def experiment_checkpoints(job: str, number: int, project: Project = Depends(pro
 
 
 @router.get("/jobs/{job}/experiments/{number}/download")
-def download_experiment(job: str, number: int, background: BackgroundTasks, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> FileResponse:
+def download_experiment(job: str, number: int, background: BackgroundTasks, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> Response:
     exp = wrap(lambda: jobs_svc.get_experiment(db, project, job, number))
-    path = jobs_svc.exp_path(exp)
+    path = jobs_svc.ensure_experiment_artifacts(exp)
     source = path / "adapter" if (path / "adapter").exists() else path / "model"
     if not source.exists():
         raise HTTPException(status_code=404, detail="experiment has no weights yet")
     tmp = Path(tempfile.mkdtemp(prefix="tinystudio-zip-"))
-    archive = Path(shutil.make_archive(str(tmp / f"ft-{job}-{number}-{uuid.uuid4().hex[:6]}"), "zip", root_dir=source))
-    background.add_task(shutil.rmtree, tmp, True)
-    return FileResponse(archive, filename=f"ft-{job}-{number}.zip", media_type="application/zip")
+    try:
+        archive = Path(shutil.make_archive(str(tmp / f"ft-{job}-{number}-{uuid.uuid4().hex[:6]}"), "zip", root_dir=source))
+        from tinystudio.storage import project_key, storage
+
+        store = storage()
+        if store.remote:
+            key = project_key(project.id, "models", exp.id, "downloads", "weights.zip")
+            store.upload_file(archive, key, content_type="application/zip")
+            response = RedirectResponse(store.presign(key), status_code=303)
+            shutil.rmtree(tmp, ignore_errors=True)
+            return response
+        background.add_task(shutil.rmtree, tmp, True)
+        return FileResponse(archive, filename=f"ft-{job}-{number}.zip", media_type="application/zip")
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
 
 
 @router.get("/recommend/{snapshot}")

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
+from tinystudio.config import config
+from tinystudio.storage import project_key, storage
 from tinystudio.core.project import ProjectError, check_name, iso
 from tinystudio.db.models import Project, Snapshot, SnapshotRow
 from tinystudio.services import datasets as datasets_svc
@@ -44,6 +49,21 @@ def create_snapshot(db: Session, project: Project, dataset_name: str, name: str,
     payload += [{"snapshot_id": snapshot.id, "split": "val", "position": i, "row": _strip(r)} for i, r in enumerate(val)]
     for offset in range(0, len(payload), 2000):
         db.execute(insert(SnapshotRow), payload[offset : offset + 2000])
+    backend = storage()
+    if backend.remote:
+        prefix = project_key(project.id, "snapshots", snapshot.id)
+        with tempfile.TemporaryDirectory(prefix="tinystudio-snapshot-") as tmp:
+            directory = Path(tmp)
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            for split, rows in (("train", train), ("val", val)):
+                for offset in range(0, len(rows), 10000):
+                    values = [json.dumps(_strip(row), ensure_ascii=False) for row in rows[offset:offset + 10000]]
+                    pq.write_table(pa.table({"row_json": pa.array(values, type=pa.string())}), directory / f"{split}-{offset // 10000:05d}.parquet", compression="zstd")
+            backend.publish_directory(directory, prefix)
+        snapshot.storage_prefix = prefix
+        db.flush()
     return snapshot_dict(snapshot)
 
 
@@ -52,6 +72,18 @@ def _strip(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def snapshot_rows(db: Session, snapshot: Snapshot) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    prefix = getattr(snapshot, "storage_prefix", None)
+    if prefix:
+        import pyarrow.parquet as pq
+
+        directory = config().project_dir(snapshot.project_id) / "snapshots" / snapshot.id
+        storage().hydrate_directory(prefix, directory)
+        def read(split: str) -> list[dict[str, Any]]:
+            return [json.loads(value) for path in sorted(directory.glob(f"{split}-*.parquet")) for value in pq.read_table(path)["row_json"].to_pylist()]
+        train, val = read("train"), read("val")
+        if len(train) != snapshot.training_count or len(val) != snapshot.validation_count:
+            raise ProjectError("snapshot artifact row counts do not match the frozen snapshot")
+        return train, val
     train = [r.row for r in db.scalars(select(SnapshotRow).where(SnapshotRow.snapshot_id == snapshot.id, SnapshotRow.split == "train").order_by(SnapshotRow.position))]
     val = [r.row for r in db.scalars(select(SnapshotRow).where(SnapshotRow.snapshot_id == snapshot.id, SnapshotRow.split == "val").order_by(SnapshotRow.position))]
     return train, val
@@ -62,5 +94,8 @@ def load_snapshot(db: Session, project: Project, name: str) -> tuple[list[dict[s
 
 
 def delete_snapshot(db: Session, project: Project, name: str) -> None:
-    db.delete(get_snapshot(db, project, name))
+    snapshot = get_snapshot(db, project, name)
+    if getattr(snapshot, "storage_prefix", None):
+        storage().delete_directory(snapshot.storage_prefix)
+    db.delete(snapshot)
     db.flush()

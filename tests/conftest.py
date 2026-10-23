@@ -14,6 +14,12 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import tinystudio  # noqa: E402,F401  (loads .env so the development store URLs apply)
+# Unit/integration suites must never inherit production cloud credentials or mode.
+os.environ["TINYSTUDIO_STORAGE_BACKEND"] = "local"
+os.environ["TINYSTUDIO_CF_ACCESS_REQUIRED"] = "0"
+os.environ["TINYSTUDIO_SECURE_COOKIES"] = "0"
+for _key in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD", "TINYSTUDIO_PUBLIC_URL"):
+    os.environ[_key] = ""
 from tinystudio.config import DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, reload_config  # noqa: E402
 
 TEST_DB = "tinystudio_test"

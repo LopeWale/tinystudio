@@ -12,7 +12,7 @@ from tinystudio.core.project import SAFE_NAME, ProjectError
 from tinystudio.db import session
 from tinystudio.db.models import Experiment, Job, Project
 from tinystudio.serving.runner import ModelRunner, ResolvedModel
-from tinystudio.services.jobs import exp_path
+from tinystudio.services.jobs import ensure_experiment_artifacts, parent_weights
 from tinystudio.training.train import parse_alias
 from tinystudio.training.recommend import catalog_as_dicts
 
@@ -30,18 +30,20 @@ def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedMode
         if number.isdigit() and SAFE_NAME.match(job_name):
             exp = db.scalar(select(Experiment).join(Job).where(Job.project_id == project.id, Job.name == job_name, Experiment.number == int(number)))
             if exp is not None:
-                return _resolve_experiment(exp, model_id, step)
+                parent = exp.config.get("refinetune_from")
+                source = str(parent_weights(db, project, parent)) if parent else None
+                return _resolve_experiment(exp, model_id, step, source)
             if alias is not None:
                 raise ProjectError(f"experiment {model_id} does not exist")
     return ResolvedModel(model_id, model_id, None, None, "base")
 
 
-def _resolve_experiment(exp: Experiment, model_id: str, step: str) -> ResolvedModel:
-    path = exp_path(exp)
-    base = (exp.status or {}).get("weights_source") or exp.config["base_model"]
+def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_source: str | None = None) -> ResolvedModel:
+    if step and not step.isdigit():
+        raise ProjectError(f"{model_id}: a checkpoint reference is job/number@step")
+    path = ensure_experiment_artifacts(exp, step)
+    base = weights_source or (exp.status or {}).get("weights_source") or exp.config["base_model"]
     if step:
-        if not step.isdigit():
-            raise ProjectError(f"{model_id}: a checkpoint reference is job/number@step")
         ck = path / "checkpoints" / f"checkpoint-{step}"
         if not ck.is_dir():
             raise ProjectError(f"experiment {exp.alias} has no checkpoint at step {step}; train with checkpoint_every_steps")

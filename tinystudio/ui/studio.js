@@ -16,7 +16,7 @@ const state = { overview: null, tasks: [], taskTimer: null, user: null, project:
 
 // ------------------------------------------------------------------ http
 // Project-scoped paths live under /api/p/<slug>; everything else (tasks, hub, settings, users, assistant) is global.
-const PROJECT_PREFIXES = ["/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog"];
+const PROJECT_PREFIXES = ["/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog", "/api/artifacts"];
 function scoped(path) {
   if (state.project && PROJECT_PREFIXES.some((pre) => path === pre || path.startsWith(pre + "/") || path.startsWith(pre + "?"))) return `/api/p/${encodeURIComponent(state.project)}` + path.slice(4);
   if (path === "/api/tasks" && state.project) return `/api/tasks?project=${encodeURIComponent(state.project)}`;
@@ -161,7 +161,7 @@ function layout(active, contentHtml, crumbs = []) {
     await selectProject(sw.value); state.overview = null; ASSIST.models = null; go("#/datasets"); render();
   });
   const out = $("#signOut", app);
-  if (out) out.onclick = guard(async (e) => { e.preventDefault(); await post("/api/auth/logout", {}); location.reload(); });
+  if (out) out.onclick = guard(async (e) => { e.preventDefault(); const result = await post("/api/auth/logout", {}); if (result.logout_url) location.assign(result.logout_url); else location.reload(); });
   return $(".content", app);
 }
 async function ensureOverview(force = false) {
@@ -216,8 +216,18 @@ function createDatasetWizard() {
         if (!body.dataset.name) throw new Error("give the dataset a name");
         if (mode === "upload") {
           if (!files.length) throw new Error("choose a JSONL file");
-          const form = new FormData(); form.append("name", body.dataset.name); form.append("file", files[0]);
-          const meta = await post("/api/datasets/upload", form);
+          const file = files[0];
+          const storage = await api("/api/artifacts/config");
+          let meta;
+          if (storage.direct_upload) {
+            const grant = await post("/api/artifacts/uploads", { filename: file.name, content_type: file.type || "application/octet-stream", size: file.size });
+            const uploaded = await fetch(grant.url, { method: "PUT", body: file, headers: grant.headers, credentials: "omit" });
+            if (!uploaded.ok) throw new Error(`Upload failed (${uploaded.status}); try again`);
+            meta = await post("/api/datasets/from-object", { name: body.dataset.name, key: grant.key });
+          } else {
+            const form = new FormData(); form.append("name", body.dataset.name); form.append("file", file);
+            meta = await post("/api/datasets/upload", form);
+          }
           toast(`dataset ${meta.name}: ${meta.datapoints} datapoints`); m.close(); go(`#/datasets/${encodeURIComponent(meta.name)}`);
           return;
         }

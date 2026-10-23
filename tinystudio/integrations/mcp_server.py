@@ -70,12 +70,14 @@ def build_server(studio: Studio) -> MCPServer:
     return server
 
 
-def main(base_url: str | None = None, project: str | None = None, api_key: str | None = None) -> None:
+def main(base_url: str | None = None, project: str | None = None, api_key: str | None = None, *,
+         cf_access_client_id: str | None = None, cf_access_client_secret: str | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)  # keep stdio clean; MCP clients treat stderr as noise
     url = base_url or os.environ.get("TINYSTUDIO_URL", "http://127.0.0.1:8000")
     slug = project or os.environ.get("TINYSTUDIO_PROJECT") or None
     token = api_key or os.environ.get("TINYSTUDIO_API_KEY") or None
-    build_server(Studio(url, slug, token)).run(transport="stdio")
+    build_server(Studio(url, slug, token, cf_access_client_id=cf_access_client_id,
+                        cf_access_client_secret=cf_access_client_secret)).run(transport="stdio")
 
 
 if __name__ == "__main__":

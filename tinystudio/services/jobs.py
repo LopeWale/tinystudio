@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tinystudio.config import config
+from tinystudio.storage import project_key, storage
 from tinystudio.core.project import ProjectError, check_name, iso
 from tinystudio.db import session
 from tinystudio.db.models import Analysis, Experiment, ExperimentLog, Job, Project
@@ -28,9 +29,33 @@ def exp_path(exp: Experiment) -> Path:
     return config().data_dir / exp.artifact_dir
 
 
+def ensure_experiment_artifacts(exp: Experiment, step: str = "") -> Path:
+    """Restore published weights into this worker's local cache when absent."""
+    path = exp_path(exp)
+    status = exp.status or {}
+    if step:
+        target = path / "checkpoints" / f"checkpoint-{step}"
+        record = next((c for c in status.get("artifact_checkpoints", []) if str(c["step"]) == step), None)
+        if record:
+            storage().hydrate_directory(record["prefix"], target)
+        elif status.get("artifact_prefix"):
+            storage().hydrate_directory(status["artifact_prefix"], path)
+    elif status.get("artifact_prefix"):
+        # The manifest verifies every required file even after a partial cache loss.
+        storage().hydrate_directory(status["artifact_prefix"], path)
+    return path
+
+
+def experiment_checkpoint_rows(exp: Experiment) -> list[dict[str, Any]]:
+    local = {c["step"]: c for c in checkpoints_on_disk(exp_path(exp))}
+    for item in (exp.status or {}).get("artifact_checkpoints", []):
+        local.setdefault(item["step"], {k: v for k, v in item.items() if k != "prefix"})
+    return sorted(local.values(), key=lambda c: c["step"])
+
+
 def experiment_dict(exp: Experiment, job_name: str | None = None) -> dict[str, Any]:
     name = job_name or exp.job.name
-    return {"id": exp.id, "number": exp.number, "alias": exp.alias, "job": name, "state": exp.state, "created": iso(exp.created), "updated": iso(exp.updated), "task_id": exp.task_id, **{k: v for k, v in (exp.status or {}).items() if k not in ("state", "number", "job")}, "config": exp.config, "checkpoints": [c["step"] for c in checkpoints_on_disk(exp_path(exp))], "model_id": f"{name}/{exp.number}"}
+    return {"id": exp.id, "number": exp.number, "alias": exp.alias, "job": name, "state": exp.state, "created": iso(exp.created), "updated": iso(exp.updated), "task_id": exp.task_id, **{k: v for k, v in (exp.status or {}).items() if k not in ("state", "number", "job")}, "config": exp.config, "checkpoints": [c["step"] for c in experiment_checkpoint_rows(exp)], "model_id": f"{name}/{exp.number}"}
 
 
 def get_job(db: Session, project: Project, name: str) -> Job:
@@ -60,9 +85,14 @@ def delete_job(db: Session, project: Project, name: str) -> None:
     if any(e.state == "running" for e in job.experiments):
         raise ProjectError(f"job {name!r} has a running experiment; stop its task first")
     dirs = [exp_path(e) for e in job.experiments]
+    merged_dirs = [directory for exp in job.experiments for directory in _merged_cache_paths(exp)]
+    backend = storage()
+    for exp in job.experiments:
+        if backend.remote or (exp.status or {}).get("artifact_prefix") or (exp.status or {}).get("artifact_checkpoints"):
+            backend.delete_prefix(project_key(project.id, "models", exp.id))
     db.delete(job)
     db.flush()
-    for d in dirs:
+    for d in [*dirs, *merged_dirs]:
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -100,9 +130,15 @@ def delete_experiment(db: Session, project: Project, job_name: str, number: int)
     if exp.state == "running":
         raise ProjectError(f"experiment {job_name}/{number} is running; stop its task first")
     path = exp_path(exp)
+    merged_dirs = _merged_cache_paths(exp)
+    backend = storage()
+    if backend.remote or (exp.status or {}).get("artifact_prefix") or (exp.status or {}).get("artifact_checkpoints"):
+        backend.delete_prefix(project_key(project.id, "models", exp.id))
     db.delete(exp)
     db.flush()
     shutil.rmtree(path, ignore_errors=True)
+    for directory in merged_dirs:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def loss_curve(db: Session, exp: Experiment) -> list[dict[str, Any]]:
@@ -111,7 +147,7 @@ def loss_curve(db: Session, exp: Experiment) -> list[dict[str, Any]]:
 
 def checkpoints(db: Session, project: Project, job_name: str, number: int) -> list[dict[str, Any]]:
     exp = get_experiment(db, project, job_name, number)
-    return [{**c, "model_id": f"{job_name}/{number}@{c['step']}"} for c in checkpoints_on_disk(exp_path(exp))]
+    return [{**c, "model_id": f"{job_name}/{number}@{c['step']}"} for c in experiment_checkpoint_rows(exp)]
 
 
 def pending_numbers(db: Session, project: Project, job_name: str) -> list[int]:
@@ -119,17 +155,26 @@ def pending_numbers(db: Session, project: Project, job_name: str) -> list[int]:
     return [e.number for e in job.experiments if e.state == "pending"]
 
 
+def _merged_cache_paths(exp: Experiment) -> tuple[Path, ...]:
+    path = exp_path(exp)
+    # Include the previous number-keyed layout so deleting experiments made by
+    # an earlier deployment cannot leave a cache that a reused number could trust.
+    return path / "merged", path.parent / f"{exp.id}-merged", path.parent / f"{path.name}-merged"
+
+
 def parent_weights(db: Session, project: Project, reference: str) -> Path:
     """Weights of a finished experiment to continue from: its full model, or its adapter merged once into the base (cached)."""
     parent = find_experiment(db, project, reference)
     if parent.state != "succeeded":
         raise ProjectError(f"refinetune_from: experiment {reference!r} has not succeeded")
-    path = exp_path(parent)
+    path = ensure_experiment_artifacts(parent)
     if (path / "model").exists():
         return path / "model"
-    merged = path / "merged"
+    merged = path.parent / f"{parent.id}-merged" if (parent.status or {}).get("artifact_prefix") else path / "merged"
     if not (merged / "config.json").exists():
-        export_merged(path, merged, parent.config["base_model"], (parent.status or {}).get("weights_source"))
+        ancestor = parent.config.get("refinetune_from")
+        source = str(parent_weights(db, project, ancestor)) if ancestor else (parent.status or {}).get("weights_source")
+        export_merged(path, merged, parent.config["base_model"], source)
     return merged
 
 
@@ -158,15 +203,36 @@ def run_experiment(experiment_id: str, progress: Any = print, task_id: str | Non
         if task_id:
             exp.task_id = task_id
         out_dir = exp_path(exp)
+        artifact_prefix = project_key(project.id, "models", exp.id)
     started = time.perf_counter()
     _set_state(experiment_id, "running", started_at=iso(datetime.now(timezone.utc)), weights_source=str(weights) if weights else cfg.base_model)
 
     def on_log(kind: str, row: dict[str, Any]) -> None:
+        checkpoint = None
+        if kind == "checkpoint" and backend.remote:
+            step = int(row["step"])
+            directory = out_dir / "checkpoints" / f"checkpoint-{step}"
+            prefix = artifact_prefix + f"/checkpoints/{step}"
+            manifest = backend.publish_directory(directory, prefix)
+            checkpoint = {**row, "step": step, "prefix": prefix, "bytes": sum(f["size"] for f in manifest["files"])}
         with session() as db:
             db.add(ExperimentLog(experiment_id=experiment_id, kind=kind, step=int(row.get("step", 0)), payload=row))
+            if checkpoint:
+                current = db.get(Experiment, experiment_id)
+                assert current is not None
+                entries = [*((current.status or {}).get("artifact_checkpoints", [])), checkpoint]
+                if cfg.keep_checkpoints > 0:
+                    for old in entries[:-cfg.keep_checkpoints]:
+                        backend.delete_directory(old["prefix"])
+                    entries = entries[-cfg.keep_checkpoints:]
+                current.status = {**(current.status or {}), "artifact_checkpoints": entries}
 
     try:
+        backend = storage()
         result = train_experiment(out_dir, cfg, train_rows, val_rows, progress, weights, on_log)
+        if backend.remote:
+            backend.publish_directory(out_dir, artifact_prefix + "/final")
+            result = {**result, "artifact_prefix": artifact_prefix + "/final"}
         return _set_state(experiment_id, "succeeded", seconds=round(time.perf_counter() - started, 1), **result)
     except KeyboardInterrupt:
         return _set_state(experiment_id, "failed", error="interrupted", seconds=round(time.perf_counter() - started, 1))

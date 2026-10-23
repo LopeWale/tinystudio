@@ -7,13 +7,14 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from tinystudio.auth import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE, Principal, ensure_instance, principal_from_bearer, principal_from_cookie
 from tinystudio.config import config
 from tinystudio.core.data import DatapointError
 from tinystudio.core.project import ProjectError
 from tinystudio.db import session_factory
-from tinystudio.db.models import Project
+from tinystudio.db.models import Project, User
 from tinystudio.services import projects as projects_svc
 
 _secret: dict[str, str] = {}
@@ -42,9 +43,24 @@ def forget_secret() -> None:
 
 
 def optional_principal(request: Request, db: Session = Depends(get_db)) -> Principal | None:
+    claims = getattr(request.state, "cloudflare_claims", None)
+    access_user = None
+    if claims is not None and isinstance(claims.get("email"), str) and claims["email"].strip():
+        access_user = db.scalar(select(User).where(User.email == claims["email"].strip().lower()))
+        if access_user is None or access_user.disabled:
+            raise HTTPException(status_code=403, detail="Cloudflare identity needs an active tinystudio account")
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
-        return principal_from_bearer(db, instance_secret(db), header[7:].strip())
+        principal = principal_from_bearer(db, instance_secret(db), header[7:].strip())
+        if access_user is not None and principal is not None and principal.user.id != access_user.id:
+            raise HTTPException(status_code=403, detail="application credential does not match the Cloudflare identity")
+        return principal
+    if claims is not None:
+        if access_user is None:
+            return None  # Access service tokens still need a tinystudio bearer credential.
+        if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get(CSRF_HEADER, "").lower() != CSRF_VALUE:
+            raise HTTPException(status_code=403, detail=f"state-changing requests need {CSRF_HEADER}: {CSRF_VALUE}")
+        return Principal(access_user, "cloudflare")
     principal = principal_from_cookie(db, instance_secret(db), request.cookies.get(SESSION_COOKIE), config().session_days * 86400)
     if principal is not None and request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get(CSRF_HEADER, "").lower() != CSRF_VALUE:
         raise HTTPException(status_code=403, detail=f"state-changing requests from the browser need the header {CSRF_HEADER}: {CSRF_VALUE}")

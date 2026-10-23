@@ -26,6 +26,11 @@ x-app: &app
     TINYSTUDIO_INFERENCE_PORT: ${TINYSTUDIO_INFERENCE_PORT:-8001}
     TINYSTUDIO_INFERENCE_URL: http://inference:${TINYSTUDIO_INFERENCE_PORT:-8001}
     HF_HOME: /data/hub
+    # These belong only to the connector and external machine clients.
+    TUNNEL_TOKEN: ""
+    CF_ACCESS_CLIENT_ID: ""
+    CF_ACCESS_CLIENT_SECRET: ""
+    TINYSTUDIO_API_KEY: ""
   volumes:
     - data:/data
   restart: unless-stopped
@@ -90,7 +95,7 @@ services:
       qdrant:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ['TINYSTUDIO_PORT'] + '/api/health', timeout=3).status == 200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ['TINYSTUDIO_PORT'] + '/healthz', timeout=3).status == 200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 30

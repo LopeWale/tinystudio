@@ -124,6 +124,7 @@ class Snapshot(Base):
     name: Mapped[str] = mapped_column(String(80))
     dataset_id: Mapped[str | None] = mapped_column(ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True)
     dataset_name: Mapped[str] = mapped_column(String(80))
+    storage_prefix: Mapped[str | None] = mapped_column(Text, nullable=True)
     training_count: Mapped[int] = mapped_column(Integer)
     validation_count: Mapped[int] = mapped_column(Integer)
     created: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

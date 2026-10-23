@@ -62,6 +62,11 @@ def delete_project(db: Session, project: Project) -> None:
             vectors.drop_collection(repository.collection)
         except Exception:  # noqa: BLE001 - the vector store may be down; rows still go
             pass
+    from tinystudio.storage import project_key, storage
+    backend = storage()
+    if backend.remote:
+        for category in ("snapshots", "models", "captures", "uploads"):
+            backend.delete_prefix(project_key(project.id, category))
     artifact_dir = config().project_dir(project.id)
     db.delete(project)
     db.flush()

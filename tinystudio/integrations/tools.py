@@ -9,6 +9,9 @@ the MCP SDK and the Anthropic SDK derive the tool schema from them.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+from urllib.parse import urlsplit
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -20,7 +23,7 @@ class StudioError(RuntimeError):
     """An expected failure reported back to the assistant as a tool error."""
 
 
-PROJECT_PREFIXES = ("/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog")
+PROJECT_PREFIXES = ("/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog", "/api/artifacts")
 
 
 def scoped(path: str, project: str | None) -> str:
@@ -33,15 +36,40 @@ def scoped(path: str, project: str | None) -> str:
 class Studio:
     """HTTP client for a tinystudio server: one project, one credential (API key or service token)."""
 
-    def __init__(self, base_url: str, project: str | None = None, token: str | None = None) -> None:
+    def __init__(self, base_url: str, project: str | None = None, token: str | None = None, *,
+                 cf_access_client_id: str | None = None, cf_access_client_secret: str | None = None,
+                 public_url: str | None = None, access_assertion: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.project = project
         headers = {"X-Requested-With": "tinystudio"}
+        explicit_credentials = cf_access_client_id is not None or cf_access_client_secret is not None
+        client_id = cf_access_client_id if cf_access_client_id is not None else os.environ.get("CF_ACCESS_CLIENT_ID", "")
+        client_secret = cf_access_client_secret if cf_access_client_secret is not None else os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
+        if bool(client_id) != bool(client_secret):
+            raise ValueError("Cloudflare Access client ID and secret must both be supplied")
+        approved = public_url or os.environ.get("TINYSTUDIO_PUBLIC_URL", "")
+        target = urlsplit(self.base_url)
+        expected = urlsplit(approved)
+        approved_origin = (target.scheme == expected.scheme == "https" and bool(expected.hostname)
+                           and (target.hostname, target.port or 443) == (expected.hostname, expected.port or 443)
+                           and not target.username and not target.password and not expected.username and not expected.password
+                           and not target.query and not target.fragment and not expected.query and not expected.fragment
+                           and target.path in ("", "/") and expected.path in ("", "/"))
+        if client_id and approved_origin:
+            headers["CF-Access-Client-Id"] = client_id
+            headers["CF-Access-Client-Secret"] = client_secret
+        elif client_id and explicit_credentials:
+            raise ValueError("Cloudflare credentials require the configured HTTPS public origin")
+        if access_assertion:
+            if (target.hostname not in ("127.0.0.1", "::1", "localhost") or target.scheme not in ("http", "https")
+                    or target.username or target.password or target.path not in ("", "/") or target.query or target.fragment):
+                raise ValueError("forwarded Access assertions require a loopback origin")
+            headers["Cf-Access-Jwt-Assertion"] = access_assertion
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if project:
             headers["X-Project"] = project
-        self.http = httpx.Client(base_url=self.base_url, timeout=120.0, headers=headers)
+        self.http = httpx.Client(base_url=self.base_url, timeout=120.0, headers=headers, follow_redirects=False)
 
     def ensure_running(self) -> None:
         try:
@@ -50,7 +78,13 @@ class Studio:
             raise StudioError(f"tinystudio server is not reachable at {self.base_url}: {cause}. Start it with `tinystudio serve` (or docker compose up)") from cause
 
     def call(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self.http.request(method, scoped(path, self.project), **kwargs)
+        if not path.startswith("/") or path.startswith("//") or urlsplit(path).scheme or "\\" in path:
+            raise ValueError("Studio API calls require a relative API path")
+        if kwargs.pop("follow_redirects", False):
+            raise ValueError("Studio does not forward credentials through redirects")
+        response = self.http.request(method, scoped(path, self.project), follow_redirects=False, **kwargs)
+        if 300 <= response.status_code < 400:
+            raise StudioError("tinystudio redirected the API request; check Cloudflare Access credentials")
         if response.status_code == 401:
             raise StudioError("tinystudio rejected the credentials: pass an API key (TINYSTUDIO_API_KEY; create one under API Keys)")
         if response.status_code >= 400:
@@ -59,7 +93,34 @@ class Studio:
             except ValueError:
                 detail = response.text
             raise StudioError(f"{method} {path} -> {response.status_code}: {detail}")
-        return response.json() if "json" in response.headers.get("content-type", "") else response.text
+        if "json" not in response.headers.get("content-type", ""):
+            raise StudioError("tinystudio returned a non-JSON API response; check the URL and Cloudflare Access credentials")
+        return response.json()
+
+    def upload_dataset(self, name: str, path: str) -> Any:
+        """Transfer a local JSONL file, directly to R2 when the server supports it."""
+        source = Path(path).expanduser()
+        size = source.stat().st_size
+        capabilities = self.call("GET", "/api/artifacts/config")
+        if capabilities.get("direct_upload"):
+            upload = self.call("POST", "/api/artifacts/uploads", json={"filename": source.name, "content_type": "application/x-ndjson", "size": size})
+            destination = urlsplit(upload["url"])
+            if (destination.scheme != "https" or not destination.hostname or not destination.hostname.endswith(".r2.cloudflarestorage.com")
+                    or destination.username or destination.password or destination.port not in (None, 443) or destination.fragment):
+                raise StudioError("server returned an invalid R2 upload destination")
+            # A separate client deliberately carries neither application nor Access credentials.
+            with source.open("rb") as data, httpx.Client(timeout=120.0, follow_redirects=False) as uploader:
+                upload_headers = {key: value for key, value in upload.get("headers", {}).items() if key.lower() == "content-type"}
+                upload_headers["Content-Length"] = str(size)
+                try:
+                    response = uploader.put(upload["url"], content=data, headers=upload_headers)
+                except httpx.HTTPError:
+                    raise StudioError("R2 upload could not complete; request another upload URL and retry") from None
+                if not 200 <= response.status_code < 300:
+                    raise StudioError(f"R2 upload failed ({response.status_code})")
+            return self.call("POST", "/api/datasets/from-object", json={"name": name, "key": upload["key"]})
+        with source.open("rb") as data:
+            return self.call("POST", "/api/datasets/upload", data={"name": name}, files={"file": (source.name, data, "application/x-ndjson")})
 
 
 @dataclass(frozen=True)
@@ -151,7 +212,7 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
 
     def create_dataset_from_jsonl(name: str, path: str) -> dict[str, Any]:
         """Create a dataset from a JSONL file on disk (one {"messages": [...]} per line; system optional; last turn assistant)."""
-        return studio.call("POST", "/api/datasets/from-path", json={"name": name, "path": path})
+        return studio.upload_dataset(name, path)
 
     def create_synthetic_dataset(name: str, files: list[str] | None = None, urls: list[str] | None = None, pairs_per_source: int = 25, temperature: float = 0.3, rules: list[str] | None = None, question_format: str = "", answer_format: str = "", system_prompt: str = "", curate_threshold: float = 0.0, goal: str = "") -> dict[str, Any]:
         """Generate a synthetic dataset from local files (pdf, txt, md, html) and/or web page URLs with the helper LLM. Returns a task; poll get_task. pairs_per_source QA pairs per file or URL; temperature 0-1 is the creativity level; curate_threshold 1-10 keeps only pairs the helper rates at or above it (0 keeps all)."""

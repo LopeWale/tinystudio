@@ -131,6 +131,11 @@ def captures_dir(project: InterpStore) -> Path:
 
 
 def capture_dir(project: InterpStore, name: str) -> Path:
+    prepare = getattr(project, "artifact_directory", None)
+    if prepare:
+        return prepare("capture", name)
+    if not name or Path(name).name != name or name in {".", ".."} or "\\" in name:
+        raise InterpError("invalid capture name")
     return captures_dir(project) / name
 
 
@@ -139,6 +144,11 @@ def diffs_dir(project: InterpStore) -> Path:
 
 
 def diff_dir(project: InterpStore, name: str) -> Path:
+    prepare = getattr(project, "artifact_directory", None)
+    if prepare:
+        return prepare("diff", name)
+    if not name or Path(name).name != name or name in {".", ".."} or "\\" in name:
+        raise InterpError("invalid comparison name")
     return diffs_dir(project) / name
 
 
@@ -147,6 +157,9 @@ def default_capture_name(model_id: str, source: str) -> str:
 
 
 def list_captures(project: InterpStore) -> list[dict[str, Any]]:
+    listing = getattr(project, "list_artifacts", None)
+    if listing:
+        return listing("capture")
     base = captures_dir(project)
     if not base.exists():
         return []
@@ -170,6 +183,10 @@ def capture_meta(project: InterpStore, name: str) -> dict[str, Any]:
 def delete_capture(project: InterpStore, name: str) -> None:
     import shutil
 
+    delete = getattr(project, "delete_artifact", None)
+    if delete:
+        delete("capture", name)
+        return
     directory = capture_dir(project, name)
     if not (directory / "meta.json").exists():
         raise InterpError(f"capture {name!r} does not exist")
@@ -181,6 +198,15 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _append_capture_record(project: InterpStore, name: str, filename: str, record: dict[str, Any], meta: dict[str, Any]) -> None:
+    append = getattr(project, "append_record", None)
+    if append:
+        append(name, filename, record, meta)
+    else:
+        _append_jsonl(capture_dir(project, name) / filename, record)
+        project.register("capture", name, meta)
 
 
 def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -765,6 +791,7 @@ def explain_prompt(view: dict[str, Any], positives: int = 12, negatives: int = 6
 
 
 def explain(project: InterpStore, name: str, layer: int, neuron: int, client: LLMClient, progress: Any = print) -> dict[str, Any]:
+    meta = capture_meta(project, name)
     view = neuron_view(project, name, layer, neuron)
     prompt = explain_prompt(view)
     reply = client.chat_json([{"role": "user", "content": prompt}], temperature=0.1)
@@ -782,7 +809,7 @@ def explain(project: InterpStore, name: str, layer: int, neuron: int, client: LL
         "prompt": prompt,
         "raw_reply": reply,
     }
-    _append_jsonl(capture_dir(project, name) / "explanations.jsonl", record)
+    _append_capture_record(project, name, "explanations.jsonl", record, meta)
     progress(f"L{layer} N{neuron}: {record['explanation']}")
     return record
 
@@ -951,7 +978,7 @@ def test(project: InterpStore, name: str, layer: int, neuron: int, client: LLMCl
         "prompts": prompts,
         "raw_replies": {"blind": blind_reply, "near_miss": sets},
     }
-    _append_jsonl(capture_dir(project, name) / "tests.jsonl", record)
+    _append_capture_record(project, name, "tests.jsonl", record, meta)
     progress(f"L{layer} N{neuron}: blind best {blind_best} x corpus max; positives strong {pos_strong}/{len(pos_r)}, near misses {near_strong}/{len(near_r)}, distant {far_strong}/{len(far_r)} -> {verdict}")
     return record
 
@@ -967,6 +994,9 @@ def test_many(project: InterpStore, name: str, layer: int, neurons: list[int], c
 
 # ------------------------------------------------------------------ before / after
 def list_diffs(project: InterpStore) -> list[dict[str, Any]]:
+    listing = getattr(project, "list_artifacts", None)
+    if listing:
+        return listing("diff")
     base = diffs_dir(project)
     if not base.exists():
         return []
@@ -983,6 +1013,10 @@ def diff_meta(project: InterpStore, name: str) -> dict[str, Any]:
 def delete_diff(project: InterpStore, name: str) -> None:
     import shutil
 
+    delete = getattr(project, "delete_artifact", None)
+    if delete:
+        delete("diff", name)
+        return
     directory = diff_dir(project, name)
     if not (directory / "meta.json").exists():
         raise InterpError(f"comparison {name!r} does not exist")

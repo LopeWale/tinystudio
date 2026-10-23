@@ -299,7 +299,9 @@ def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(
     settings_svc.apply(db)
     # the assistant calls this API back as the signed-in user, over the loopback address, for one hour at most
     self_url = os.environ.get("TINYSTUDIO_SELF_URL") or f"http://127.0.0.1:{config().port}"
-    studio = Studio(self_url, body.project, issue_service_token(instance_secret(db), principal.user.id))
+    studio = Studio(self_url, body.project, issue_service_token(instance_secret(db), principal.user.id),
+                    cf_access_client_id="", cf_access_client_secret="",
+                    access_assertion=getattr(request.state, "cloudflare_assertion", None))
 
     def events() -> Iterator[str]:
         for event in stream_events(body.provider, studio, body.messages, body.allow_destructive, body.model, body.context, body.with_ui):
