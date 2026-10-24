@@ -1,8 +1,7 @@
 // Database conversation lifecycle contract. Run: node tests/assistant_persistence.cjs
-const {readFileSync} = require('node:fs');
+const {loadFrontend} = require('./helpers/frontend-loader.cjs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0].replace(/^import .*;\n/gm, '');
 // Persistence contracts isolate scheduling; automatic integration uses the real
 // controller in assistant_sync.cjs.
 class ConversationSync { start() {} stop() {} notifySaved() {} requestCheck() {} }
@@ -31,9 +30,12 @@ function browser(database = new Map(), storage = new Map()) {
   };
   context = vm.createContext({ConversationSync,document,window:{addEventListener(){}},location:{hash:'#/datasets'},fetch,FormData,AbortController,TextEncoder,console,setTimeout,clearTimeout,
     localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},container});
-  vm.runInContext(source,context);
-  const run = code => vm.runInContext(code,context);
-  run(`state.user={id:1}; state.project='alpha'; syncAssistantScope();`);
+  let initialized = false;
+  const ready = loadFrontend(context).then(() => {
+    vm.runInContext(`state.user={id:1}; state.project='alpha'; syncAssistantScope();`,context);
+    initialized = true;
+  });
+  const run = code => initialized ? vm.runInContext(code,context) : ready.then(() => vm.runInContext(code,context));
   return {run,requests,elements,storage,database, fault:value=>fault=value, before:value=>before=value};
 }
 (async () => {

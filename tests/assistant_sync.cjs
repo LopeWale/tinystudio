@@ -1,16 +1,10 @@
-// Browser-boundary integration: real scheduling, real studio reconciliation, fake HTTP/DOM.
+// Browser-boundary integration: native application modules, real scheduling/reconciliation, fake HTTP/DOM.
 // Run directly with: node --test tests/assistant_sync.cjs
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const { setImmediate: immediate } = require('node:timers/promises');
-const root = path.resolve(__dirname, '..');
-const controllerSource = fs.readFileSync(path.join(root, 'tinystudio/ui/assistant/conversation-sync.js'), 'utf8').replace('export class ConversationSync', 'class ConversationSync');
-const studioSource = fs.readFileSync(path.join(root, 'tinystudio/ui/studio.js'), 'utf8')
-  .replace(/^import \{ ConversationSync \} from .*;\s*$/m, '')
-  .split('// ------------------------------------------------------------------ boot')[0];
+const { loadFrontend } = require('./helpers/frontend-loader.cjs');
 const copy = value => JSON.parse(JSON.stringify(value));
 const flush = async () => { await immediate(); await immediate(); };
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
@@ -33,7 +27,7 @@ class Events {
   handlers = new Map();
   addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, new Set()); this.handlers.get(type).add(fn); }
   removeEventListener(type, fn) { this.handlers.get(type)?.delete(fn); }
-  emit(type) { for (const fn of [...this.handlers.get(type) || []]) fn(); }
+  emit(type, event) { for (const fn of [...this.handlers.get(type) || []]) fn(event); }
   count(type) { return this.handlers.get(type)?.size || 0; }
 }
 class Element extends Events {
@@ -45,7 +39,7 @@ class Element extends Events {
   }
   set innerHTML(value) {
     this.html = value; this.writes++;
-    if (this.id === 'asPage') {
+    if (this.id === 'asPage' || this.id === 'asSelection') {
       // A complete redraw replaces children, as the browser does; preservation cannot pass accidentally.
       this.children.clear();
       for (const [, id] of value.matchAll(/\bid="([^"]+)"/g)) this.children.set(id, new Element(id, this.document));
@@ -101,10 +95,18 @@ class Stream {
   }
   end() { this.closed = true; if (this.waiting) { this.waiting({ done: true }); this.waiting = null; } }
 }
-function browser(db, { user = 'alice', project = 'demo', studio = studioSource, initialFetch = null, modelCatalog = null } = {}) {
+function browser(db, { user = 'alice', project = 'demo', transforms = {}, initialFetch = null, modelCatalog = null,
+  legacySnapshot = null, importPutFault = null } = {}) {
   const clock = new Clock(), document = new Document(), window = new Events(), navigator = { onLine: true };
   const requests = [], storage = new Map(), faults = initialFetch ? [initialFetch] : [];
+  const legacyKey = `tinystudio.assistant.v2.${encodeURIComponent(user)}.${encodeURIComponent(project)}`;
+  if (legacySnapshot) storage.set(legacyKey, JSON.stringify(legacySnapshot));
   let pause = null, chat = null, cookiePrincipal = user;
+  const waitForAbort = signal => new Promise((_, reject) => {
+    const aborted = () => reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' }));
+    if (signal?.aborted) aborted();
+    else signal?.addEventListener('abort', aborted, { once: true });
+  });
   const response = (status, body, etag, headers = {}) => ({ status, ok: status >= 200 && status < 300, statusText: String(status),
     headers: { get: name => name.toLowerCase() === 'etag' ? etag : name.toLowerCase() === 'content-type' ? 'application/json' : headers[name.toLowerCase()] ?? null },
     json: async () => copy(body), text: async () => JSON.stringify(body) });
@@ -140,17 +142,16 @@ function browser(db, { user = 'alice', project = 'demo', studio = studioSource, 
       }
       if (request.method === 'PUT') {
         request.body = JSON.parse(options.body);
+        const fault = importPutFault; importPutFault = null;
+        if (fault === 'before-commit') await waitForAbort(options.signal);
         const result = db.put(owner, project, request.body);
+        if (fault === 'after-commit') await waitForAbort(options.signal);
         return result.status === 200 ? response(200, result.snapshot, `"${result.snapshot.revision}"`) : response(409, { detail: result.detail });
       }
       const snapshot = db.get(owner, project), etag = `"${snapshot.revision}"`;
       const fault = faults.shift();
       if (fault === 'hang') {
-        await new Promise((_, reject) => {
-          const aborted = () => reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' }));
-          if (options.signal?.aborted) aborted();
-          else options.signal?.addEventListener('abort', aborted, { once: true });
-        });
+        await waitForAbort(options.signal);
       }
       if (fault === 'fail') { request.status = 503; return response(503, { detail: 'Temporary initial load failure' }); }
       const status = options.headers?.['If-None-Match'] === etag ? 304 : 200;
@@ -163,17 +164,20 @@ function browser(db, { user = 'alice', project = 'demo', studio = studioSource, 
     },
   });
   function run(source) { return vm.runInContext(source, context); }
-  vm.runInContext(`${controllerSource}\n${studio}`, context, { filename: 'studio-sync-integration.js' });
+  let app;
+  const moduleReady = loadFrontend(context, { transforms }).then(application => { app = application; });
   const b = {
     db, clock, document, window, navigator, requests, run,
-    begin() {
+    async begin() {
+      await moduleReady;
+      app.assistant.conversation.mount();
       run(`state.user = { id: ${JSON.stringify(user)} }; state.project = ${JSON.stringify(project)}; syncAssistantScope();`);
       document.page = new Element('asPage', document);
       run('ASSIST.models = {anthropic:{available:true,models:[{id:"model-a"}]},openai:{available:false,models:[]}}; ASSIST.attach = false; renderAssistant(document.page, {full:true});');
       return b;
     },
     async ready() {
-      b.begin(); await flush(); await clock.tick(); return b;
+      await b.begin(); await flush(); await clock.tick(); return b;
     },
     async save(content) {
       run(`ASSIST.history.push({role:'user',content:${JSON.stringify(content)}});`);
@@ -186,8 +190,16 @@ function browser(db, { user = 'alice', project = 'demo', studio = studioSource, 
     pauseNextGet() { pause = deferred(); return pause; },
     get cookieUser() { return cookiePrincipal; },
     set cookieUser(value) { cookiePrincipal = value; },
+    legacyStored() { return storage.has(legacyKey); },
+    mountPicker() { app.assistant.context.mount(); },
     get stream() { return chat; },
-    stop() { run('assistantSync?.stop()'); },
+    stop() {
+      app.assistant.destroy();
+      assert.equal(clock.tasks.size, 0, 'teardown removes synchronization timers');
+      for (const target of [window, document]) {
+        for (const handlers of target.handlers.values()) assert.equal(handlers.size, 0, 'teardown removes owned lifecycle listeners');
+      }
+    },
   };
   return b;
 }
@@ -303,9 +315,12 @@ test('different users in the same project remain isolated and identity changes r
 });
 
 test('the automatic-update assertion detects a controlled missing-start wiring fault', async t => {
-  const faulty = studioSource.replace('assistantSync.start();', '/* controlled fault: scheduler never starts */');
-  assert.notEqual(faulty, studioSource, 'the controlled fault must modify the actual wiring');
-  const db = new SharedMapDB(), writer = await browser(db).ready(), reader = await browser(db, { studio: faulty }).ready();
+  const transforms = { 'assistant/conversations.js': source => {
+    const faulty = source.replace('assistantSync.start();', '/* controlled fault: scheduler never starts */');
+    assert.notEqual(faulty, source, 'the controlled fault must modify the actual wiring');
+    return faulty;
+  } };
+  const db = new SharedMapDB(), writer = await browser(db).ready(), reader = await browser(db, { transforms }).ready();
   t.after(() => { writer.stop(); reader.stop(); });
   await writer.save('must arrive automatically'); await reader.clock.tick(6000);
   assert.throws(() => assert.equal(reader.history()[0]?.content, 'must arrive automatically'), assert.AssertionError);
@@ -329,7 +344,7 @@ test('cookie account switches with stale frontend identity stop sync without ado
 
 test('initial hung load is bounded by AbortSignal timeout and automatically recovers', async t => {
   const db = new SharedMapDB(); db.put('alice', 'demo', { revision: 0, history: [{ role: 'user', content: 'initial recovered history' }], provider: 'anthropic', model: 'model-a' });
-  const b = browser(db, { initialFetch: 'hang' }).begin(); t.after(() => b.stop());
+  const b = await browser(db, { initialFetch: 'hang' }).begin(); t.after(() => b.stop());
   await b.clock.tick(); const first = b.requests[0];
   assert.ok(first.signal, 'the first conversation GET must already be controller-owned');
   assert.equal(first.signal.aborted, false); assert.equal(b.run('ASSIST.session.loaded'), false);
@@ -340,7 +355,7 @@ test('initial hung load is bounded by AbortSignal timeout and automatically reco
 
 test('scope switch and pagehide each abort the very first pending conversation GET', async t => {
   for (const action of ['scope', 'pagehide']) {
-    const b = browser(new SharedMapDB(), { initialFetch: 'hang' }).begin(); t.after(() => b.stop());
+    const b = await browser(new SharedMapDB(), { initialFetch: 'hang' }).begin(); t.after(() => b.stop());
     await b.clock.tick(); const first = b.requests[0]; assert.ok(first.signal, 'initial GET must be abortable');
     if (action === 'scope') b.run('state.project = "other"; syncAssistantScope();');
     else b.window.emit('pagehide');
@@ -358,7 +373,7 @@ test('scope switch and pagehide each abort the very first pending conversation G
 
 test('initial loading error and automatic recovery preserve an already rendered focused draft', async t => {
   const db = new SharedMapDB(); db.put('alice', 'demo', { revision: 0, history: [{ role: 'user', content: 'loaded after retry' }], provider: 'anthropic', model: 'model-a' });
-  const b = browser(db, { initialFetch: 'fail' }).begin(); t.after(() => b.stop());
+  const b = await browser(db, { initialFetch: 'fail' }).begin(); t.after(() => b.stop());
   const input = b.input, page = b.node, writes = page.writes;
   input.value = 'typing while history loads'; input.focus(); input.setSelectionRange(2, 9);
   await b.clock.tick();
@@ -400,4 +415,108 @@ test('loading the real model catalog updates provider availability and notices w
   assert.equal(b.input, input); assert.equal(page.writes, rootWrites);
   assert.equal(input.value, 'draft entered before model discovery'); assert.equal(b.document.activeElement, input);
   assert.deepEqual([input.selectionStart, input.selectionEnd], [6, 13]);
+});
+
+test('legacy import aborted before commit retains visible history and focused draft until actual Retry persists it', async t => {
+  const db = new SharedMapDB(), legacy = { history: [{ role: 'user', content: 'legacy history before lost import' }], provider: 'anthropic', model: 'model-a' };
+  const b = await browser(db, { legacySnapshot: legacy, importPutFault: 'before-commit' }).begin(); t.after(() => b.stop());
+  const input = b.input; input.value = 'draft while importing'; input.focus(); input.setSelectionRange(2, 8);
+  await b.clock.tick();
+  const importingPut = b.requests.find(request => request.method === 'PUT');
+  assert.ok(importingPut?.signal, 'legacy migration PUT shares the initial load cancellation signal');
+  assert.equal(db.get('alice', 'demo').revision, 0); assert.equal(b.legacyStored(), true);
+  await b.clock.tick(10000);
+  assert.equal(importingPut.signal.aborted, true);
+  assert.deepEqual(b.history(), legacy.history);
+  assert.match(b.node.children.get('asLog').innerHTML, /legacy history before lost import/,
+    'a canceled import must render the retained legacy copy rather than an empty transcript');
+  assert.ok(b.run('ASSIST.session.error'), 'the retained unsaved import needs an actionable persistence error');
+  assert.equal(b.node.children.get('asRetry').hidden, false, 'actual retry control must be offered');
+  assert.equal(b.input, input); assert.equal(input.value, 'draft while importing'); assert.equal(b.document.activeElement, input);
+  // Automatic reconciliation can observe revision zero but cannot discard the local import or silently write it.
+  await b.clock.tick(9000);
+  assert.deepEqual(b.history(), legacy.history); assert.equal(db.get('alice', 'demo').revision, 0);
+  assert.equal(b.requests.filter(request => request.method === 'PUT').length, 1);
+  assert.ok(b.run('ASSIST.session.error')); assert.equal(b.legacyStored(), true);
+  const beforeRetry = b.requests.length;
+  await b.node.children.get('asRetry').onclick(); await flush();
+  assert.deepEqual(b.requests.slice(beforeRetry).map(request => request.method), ['GET', 'PUT']);
+  assert.equal(b.requests.at(-1).body.revision, 0, 'retry uses the unchanged server revision for CAS');
+  assert.equal(db.get('alice', 'demo').revision, 1); assert.deepEqual(db.get('alice', 'demo').history, legacy.history);
+  assert.equal(b.legacyStored(), false); assert.equal(b.run('ASSIST.session.error'), ''); assert.equal(b.run('ASSIST.session.dirty'), false);
+  assert.equal(b.input, input); assert.equal(input.value, 'draft while importing'); assert.equal(b.document.activeElement, input);
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [2, 8]);
+});
+
+test('legacy import with lost committed acknowledgement automatically adopts the matching saved snapshot without duplicate PUT', async t => {
+  const db = new SharedMapDB(), legacy = { history: [{ role: 'assistant', content: 'legacy answer already committed' }], provider: 'anthropic', model: 'model-a' };
+  const b = await browser(db, { legacySnapshot: legacy, importPutFault: 'after-commit' }).begin(); t.after(() => b.stop());
+  const input = b.input; input.value = 'another draft during migration'; input.focus(); input.setSelectionRange(1, 7);
+  await b.clock.tick(); assert.equal(db.get('alice', 'demo').revision, 1);
+  await b.clock.tick(10000);
+  assert.ok(b.run('ASSIST.session.error'), 'missing acknowledgement leaves the import visibly recoverable until reconciled');
+  assert.match(b.node.children.get('asLog').innerHTML, /legacy answer already committed/);
+  assert.equal(b.legacyStored(), true);
+  await b.clock.tick(3000);
+  assert.equal(b.run('ASSIST.session.revision'), 1); assert.equal(b.run('ASSIST.session.dirty'), false);
+  assert.equal(b.run('ASSIST.session.error'), ''); assert.equal(b.legacyStored(), false);
+  assert.deepEqual(b.history(), legacy.history); assert.match(b.node.children.get('asLog').innerHTML, /legacy answer already committed/);
+  assert.equal(b.requests.filter(request => request.method === 'PUT').length, 1, 'matching database contents require adoption, never a second import write');
+  assert.equal(b.input, input); assert.equal(input.value, 'another draft during migration'); assert.equal(b.document.activeElement, input);
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [1, 7]);
+});
+
+async function pickedDrawer(t, transforms = {}) {
+  const b = await browser(new SharedMapDB(), { transforms }).ready(); t.after(() => b.stop());
+  const queryAll = b.document.querySelectorAll.bind(b.document), fab = new Element('fab', b.document);
+  b.document.querySelectorAll = selector => selector.split(',').flatMap(part => {
+    part = part.trim();
+    if (part === '#assist .drawer') return [b.node];
+    if (part === '#assist .fab') return [fab];
+    if (part === '#asPage') return [];
+    return queryAll(part);
+  });
+  b.mountPicker();
+  b.run(`location.hash = '#/evaluations/example'; state.pageContext = { route: location.hash, project: state.project, api: [] }; state.domContext = state.pageContext;
+    globalThis.pickedRow = { parentElement: document.body, closest: selector => selector.startsWith('tr, table,') ? pickedRow : null, matches: () => true };
+    bindContext(pickedRow, 'Evaluation row <7>', { score: 0.75 });`);
+  const input = b.input, page = b.node, writes = page.writes;
+  input.value = 'explain the selected result'; input.focus(); input.setSelectionRange(8, 16);
+  b.node.children.get('asPick').onclick();
+  b.run('toggleAssistant(false)');
+  let intercepted = false;
+  b.document.emit('click', { target: b.run('pickedRow'), preventDefault() { intercepted = true; }, stopImmediatePropagation() {} });
+  assert.equal(intercepted, true, 'the actual mounted picker handles the structured row');
+  assert.equal(b.run('ASSIST.selection.data.score'), 0.75);
+  assert.equal(page.hidden, true);
+  b.run('toggleAssistant(true)'); await flush();
+  assert.equal(b.input, input); assert.equal(page.writes, writes, 'reopening updates the attachment without replacing the composer');
+  assert.equal(input.value, 'explain the selected result'); assert.equal(b.document.activeElement, input);
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [8, 16]);
+  return { b, input };
+}
+
+test('picking data with a closed drawer refreshes its attachment on reopening and preserves the composer through remote sync', async t => {
+  const { b, input } = await pickedDrawer(t);
+  const slot = b.node.children.get('asSelection');
+  assert.equal(slot.hidden, false); assert.match(slot.innerHTML, /Attached: Evaluation row &lt;7&gt; · rendered-data/);
+  b.db.put('alice', 'demo', { ...b.db.get('alice', 'demo'), history: [{ role: 'user', content: 'remote turn after picking' }] });
+  await b.clock.tick();
+  assert.match(b.node.children.get('asLog').innerHTML, /remote turn after picking/);
+  assert.equal(b.input, input); assert.equal(input.value, 'explain the selected result');
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [8, 16]); assert.equal(b.document.activeElement, input);
+  slot.children.get('asUnpick').onclick();
+  assert.equal(b.run('ASSIST.selection'), null); assert.equal(slot.hidden, true);
+  assert.equal(b.input, input); assert.equal(input.value, 'explain the selected result');
+});
+
+test('closed-drawer attachment regression detects a missing incremental refresh', async t => {
+  const transforms = { 'assistant/view.js': source => {
+    const faulty = source.replace('else assistRenderSelection(drawer);', '/* controlled fault: omit reopened attachment refresh */');
+    assert.notEqual(faulty, source, 'fault must change the shipped drawer reopening path');
+    return faulty;
+  } };
+  const { b } = await pickedDrawer(t, transforms);
+  assert.throws(() => assert.equal(b.node.children.get('asSelection').hidden, false), assert.AssertionError,
+    'the regression must reject a drawer that keeps a selected row hidden');
 });

@@ -509,7 +509,12 @@ tinystudio/
   rag/               embedder and retrieval helpers
   integrations/      Hugging Face Hub, assistant, tool catalog, MCP server
   cli/               the `tinystudio` command
-  ui/                the web interface (vanilla JS single-page app, no build step)
+  ui/                the web interface (native ES modules, no bundler)
+    studio.js        entry point; application.js composes feature dependencies
+    core/            API transport, state, routing, auth, projects, task lifecycle
+    ui/              shared DOM, formatting, charts, dialogs, feedback and layout
+    pages/           page features with injected API, state and UI boundaries
+    assistant/       context capture, conversations, streaming, view and sync
 ```
 
 ## Storage layout
@@ -539,7 +544,7 @@ docker compose up -d postgres redis qdrant
 .venv/bin/python -m pytest -q tests
 ```
 
-The 48 tests run against a dedicated `tinystudio_test` database on the
+The tests run against a dedicated `tinystudio_test` database on the
 configured PostgreSQL server, Qdrant in the client's local mode, Redis database
 9, and a temporary data directory; they skip with a reason when a store is not
 reachable. They cover records and splits, cleaning and PII redaction, metric
@@ -552,6 +557,25 @@ catalog and MCP registration, the assistant's interface bridge, and the
 interpretability capture, comparison, checkpoint and drift paths on a tiny
 random Llama model. Nothing is downloaded: the SmolLM2 tokenizer is read from
 the local Hub cache.
+
+Frontend checks run the shipped ES module graph in isolated browser realms:
+
+```bash
+node tests/frontend_core.mjs
+node tests/frontend_routing.mjs
+node tests/frontend_pages.cjs
+node tests/frontend_lifecycle.cjs
+node tests/frontend_playground.mjs
+node tests/assistant_frontend.cjs
+node tests/assistant_persistence.cjs
+node --test tests/assistant_sync.cjs tests/conversation_sync.mjs
+.venv/bin/python -m pytest -q tests/test_frontend_assets.py
+```
+
+After editing frontend JavaScript, run `.venv/bin/python scripts/version_frontend.py`
+to refresh the entry point and dependency cache versions together. There is no
+bundle to generate. See [Frontend architecture](docs/architecture.md#frontend)
+for module boundaries and the browser acceptance scope.
 
 ## Sources
 

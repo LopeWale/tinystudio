@@ -1,5 +1,5 @@
 // Offline browser-state contract checks. Run: node tests/assistant_frontend.cjs
-const { readFileSync } = require('node:fs');
+const { loadFrontend } = require('./helpers/frontend-loader.cjs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const storage = new Map();
@@ -22,10 +22,9 @@ const document = { addEventListener() {}, querySelector() { return null; }, quer
 // and its integration run in conversation_sync.mjs and assistant_sync.cjs.
 class ConversationSync { start() {} stop() {} notifySaved() {} requestCheck() {} }
 const context = vm.createContext({ ConversationSync, document, window: { addEventListener() {} }, location: { hash: '#/evaluations/a' }, localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) }, fetch, FormData, AbortController, TextEncoder, console, setTimeout, clearTimeout });
-const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0].replace(/^import .*;\n/gm, '');
-vm.runInContext(source, context);
 const run = (s) => vm.runInContext(s, context);
 (async () => {
+await loadFrontend(context);
 await run(`state.user = {id: 1}; state.project = 'first'; syncAssistantScope(); assistLoad();`);
 await run(`ASSIST.history.push({role:'user',content:'first private history'}); assistSave();`);
 run(`ASSIST.history.push({role:'assistant',content:'unsaved final part'}); ASSIST.session.dirty = true; ASSIST.destructive = true; ASSIST.turn = {controller: new AbortController()}; globalThis.oldSignal = ASSIST.turn.controller.signal; state.project = 'second'; syncAssistantScope();`);
@@ -96,14 +95,16 @@ run(`ASSIST.models = {anthropic:{available:true,models:[{id:'claude-a'}],default
   run("globalThis.attribute = dataContext('Model row', {id:'model-z',parameters:1234567}); globalThis.modelRow = {dataset:{contextId:attribute.match(/ctx_\\d+/)[0]},parentElement:null};");
   assert.equal(run('pickContext(modelRow).data.parameters'), 1234567);
   // Visible conversation redraw must also happen when the global models cache is empty.
-  run(`globalThis.keepRenderAssistant = renderAssistant; globalThis.visibleHistory = null; renderAssistant = () => { visibleHistory = ASSIST.history.map(m=>m.content).join('|'); };
-    globalThis.drawer = {}; document.querySelector = (selector) => selector === '#assist .drawer' ? drawer : null;
+  run(`globalThis.drawerChildren = new Map();
+    globalThis.drawer = {innerHTML:'', querySelector:(selector) => { if (!drawerChildren.has(selector)) drawerChildren.set(selector, {innerHTML:'',scrollTop:0,scrollHeight:0,clientHeight:0,querySelector:()=>null}); return drawerChildren.get(selector); }};
+    document.querySelector = (selector) => selector === '#assist .drawer' ? drawer : null;
+    document.querySelectorAll = (selector) => selector === '#assist .drawer, #asPage' ? [drawer] : [];
     ASSIST.models = null; syncAssistantScope();`);
   await run('assistLoad()');
   await run(`ASSIST.history = [{role:'user',content:'saved visible conversation'}]; assistSave();`);
   await run(`globalThis.savedProject = state.project; state.project = 'temporary'; syncAssistantScope(); state.project = savedProject; syncAssistantScope(); assistLoad();`);
-  assert.equal(run('visibleHistory'), 'saved visible conversation');
-  run('renderAssistant = keepRenderAssistant; document.querySelector = () => null; state.pageContext = {route:location.hash,project:state.project,api:[]}; state.domContext=state.pageContext;');
+  assert.match(run("drawer.querySelector('#asLog').innerHTML"), /saved visible conversation/, 'the real drawer transcript must redraw the restored history with an empty model cache');
+  run('document.querySelector = () => null; document.querySelectorAll = () => []; state.pageContext = {route:location.hash,project:state.project,api:[]}; state.domContext=state.pageContext;');
   // Construct both dialogs: picker bindings must reference their own view's data.
   run(`
     document.createElement = () => ({innerHTML:'', querySelectorAll:() => [], querySelector:() => ({})});

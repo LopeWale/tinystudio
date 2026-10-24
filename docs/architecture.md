@@ -53,7 +53,10 @@ directory, or private R2 through `docs/cloudflare.md`).
 - **Conversation sync.** PostgreSQL owns each user's project conversation and
   its compare-and-swap revision. Conditional GETs authenticate every read, use
   an identity-scoped ETag, and select only the revision for unchanged checks.
-  Private responses use `no-store`. The frontend's `assistant/conversation-sync.js`
+  UI reads, writes and model turns include the expected user identity; the API
+  checks it against the authenticated principal so an account change in another
+  tab cannot mix histories. Private responses use `no-store`.
+  The frontend's `assistant/conversation-sync.js`
   owns timers, cancellation, backoff, browser lifecycle listeners and tab
   invalidations. Its injected check callback reconciles snapshots through the
   conversation's write queue; it never overwrites a dirty reply or live stream.
@@ -70,6 +73,38 @@ directory, or private R2 through `docs/cloudflare.md`).
   and the Redis channel, keeps the last 40 lines on the row, and records the
   result or the error. Stop cancels a queued job or kills the running work
   horse, then marks the task and its experiment stopped.
+
+## Frontend
+
+The browser uses native ES modules. `ui/studio.js` only boots the application;
+`ui/application.js` is its composition root. Feature modules receive named
+boundaries rather than importing the application or a service locator.
+
+| Module | Responsibility |
+| --- | --- |
+| `core/state.js` | Per-application read models and form state |
+| `core/api.js` | Project URLs, credentials, uploads, errors and rendered-response capture |
+| `core/router.js`, `routes.js` | Navigation lifecycle and the complete route inventory |
+| `core/auth.js`, `projects.js`, `tasks.js` | Sign-in views, project selection and owned polling |
+| `core/playground.js` | Account/project conversations, one active stream, cancellation and mounted-view identity |
+| `ui/` | DOM helpers, formatting, charts, dialogs, feedback and application shell |
+| `pages/` | Dataset, training, evaluation, metrics, playground, model, repository, administration, trace, interpretability and statistics features |
+| `assistant/` | Context capture, conversation state/sync, chat transport and presentation |
+
+The dependency direction is from composition to features and from features to
+shared primitives. Cross-feature workflows are callbacks wired at composition.
+The router, task drawer and assistant own their listeners and timers; teardown is explicit.
+Background task responses are independent of page renders, but remain bound to
+their project. Authentication loss stops protected controllers and keeps the
+sign-in view visible. Playground sessions cancel incomplete turns on navigation,
+project changes, reset and teardown; completed history stays with its project.
+Views remain responsible for DOM work; conversation persistence and chat
+transport can run without a DOM. The module contracts follow the browser's
+[native module rules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules).
+
+Frontend regression tests use the real module graph with isolated browser
+realms and controlled HTTP/DOM boundaries. Browser acceptance additionally
+checks the served application, including detail routes and live data.
 
 ## Scaling
 
