@@ -2,7 +2,10 @@
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0];
+const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0].replace(/^import .*;\n/gm, '');
+// Persistence contracts isolate scheduling; automatic integration uses the real
+// controller in assistant_sync.cjs.
+class ConversationSync { start() {} stop() {} notifySaved() {} requestCheck() {} }
 const clone = value => JSON.parse(JSON.stringify(value));
 function browser(database = new Map(), storage = new Map()) {
   const requests = []; let fault = null, before = null;
@@ -26,7 +29,7 @@ function browser(database = new Map(), storage = new Map()) {
     }
     return {ok:status===200,status,statusText:'failed',json:async()=>clone(result)};
   };
-  context = vm.createContext({document,window:{addEventListener(){}},location:{hash:'#/datasets'},fetch,FormData,AbortController,TextEncoder,console,setTimeout,clearTimeout,
+  context = vm.createContext({ConversationSync,document,window:{addEventListener(){}},location:{hash:'#/datasets'},fetch,FormData,AbortController,TextEncoder,console,setTimeout,clearTimeout,
     localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},container});
   vm.runInContext(source,context);
   const run = code => vm.runInContext(code,context);

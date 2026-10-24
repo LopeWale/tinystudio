@@ -325,11 +325,16 @@ record or chart series from a row, chart, or panel. Context is supplied as
 untrusted data, not privileged instructions. Credential screens are excluded.
 Actions/deletions are off by default; deleting, cleaning rows, and the
 autopilot cycle require opt-in. Conversation history is stored in PostgreSQL, separately for each signed-in
-user and project. Sign in as the same user on another device to resume it; use
-**Refresh** in an already-open chat to load newer turns. Existing browser history
+user and project. Sign in as the same user on another device to resume it.
+Open chats sync automatically: visible tabs check every three seconds, other
+tabs receive save notifications, and returning to a tab or reconnecting catches
+up automatically. Background tabs check less often and browsers may suspend
+their timers. Incoming messages preserve your draft, focus, and reading position.
+Existing browser history
 is imported only when no database conversation exists. Revision checks prevent
 concurrent devices from silently overwriting each other; failed saves stay visible
-and block new turns until resolved. Clearing a conversation also updates its
+and block new turns until resolved. A conflict keeps your unsaved messages visible;
+**Load saved version** asks before discarding them. Clearing a conversation also updates its
 revision, so stale browsers cannot restore it. Each conversation supports up to
 1,000 messages and 1 MiB; oversized saves are rejected without truncation.
 Credentials come only from `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` and

@@ -288,9 +288,11 @@ def assistant_ui_result(body: UiResultBody, principal: Principal = Depends(curre
 
 @router.post("/assistant/chat")
 def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(get_db), principal: Principal = Depends(current_user)) -> StreamingResponse:
+    from tinystudio.api.routes.assistant_conversations import require_expected_owner
     from tinystudio.integrations.assistant import stream_events
     from tinystudio.integrations.tools import Studio
 
+    require_expected_owner(request, principal)
     if any(m.get("role") not in ("user", "assistant") for m in body.messages):
         raise HTTPException(status_code=400, detail="conversation roles must be user or assistant")
     if len(json.dumps({"messages": body.messages, "context": body.context}, ensure_ascii=False).encode("utf-8")) > 256000:

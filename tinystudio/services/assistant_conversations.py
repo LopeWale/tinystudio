@@ -72,6 +72,13 @@ def load(db: Session, project_id: str, user_id: str) -> dict[str, Any]:
     return _snapshot(row) if row else {"revision": 0, "history": [], "provider": "", "model": "", "updated": None}
 
 
+def revision(db: Session, project_id: str, user_id: str) -> int:
+    """Check for changes without selecting or decoding the JSONB history."""
+    table = AssistantConversation.__table__
+    value = db.scalar(select(table.c.revision).where(table.c.project_id == project_id, table.c.user_id == user_id))
+    return value if value is not None else 0
+
+
 def save(db: Session, project_id: str, user_id: str, body: ConversationWrite) -> dict[str, Any]:
     """Atomically replace a matching revision, including an empty (cleared) snapshot.
 

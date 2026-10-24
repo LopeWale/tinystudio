@@ -18,8 +18,11 @@ const fetch = async (path, options = {}) => {
   return {ok:status === 200,status,statusText:"error",json:async()=>structuredClone(result)};
 };
 const document = { addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; } };
-const context = vm.createContext({ document, window: { addEventListener() {} }, location: { hash: '#/evaluations/a' }, localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) }, fetch, FormData, AbortController, TextEncoder, console, setTimeout, clearTimeout });
-const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0];
+// This suite isolates existing context/persistence behavior. The real scheduler
+// and its integration run in conversation_sync.mjs and assistant_sync.cjs.
+class ConversationSync { start() {} stop() {} notifySaved() {} requestCheck() {} }
+const context = vm.createContext({ ConversationSync, document, window: { addEventListener() {} }, location: { hash: '#/evaluations/a' }, localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) }, fetch, FormData, AbortController, TextEncoder, console, setTimeout, clearTimeout });
+const source = readFileSync('tinystudio/ui/studio.js', 'utf8').split('// ------------------------------------------------------------------ boot')[0].replace(/^import .*;\n/gm, '');
 vm.runInContext(source, context);
 const run = (s) => vm.runInContext(s, context);
 (async () => {

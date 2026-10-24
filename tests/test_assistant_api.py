@@ -28,3 +28,12 @@ def test_context_payload_has_finite_limit(assistant_api, text):
 def test_turn_requires_user_message(assistant_api):
     result=assistant_api.post('/api/assistant/chat',json={'messages':[{'role':'assistant','content':'hello'}]})
     assert result.status_code==400
+
+def test_stale_tab_identity_cannot_invoke_model(assistant_api, monkeypatch):
+    from tinystudio.integrations import assistant
+    def unexpected_provider(*args, **kwargs):
+        pytest.fail('an account mismatch must be rejected before provider execution')
+    monkeypatch.setattr(assistant, 'stream_events', unexpected_provider)
+    result=assistant_api.post('/api/assistant/chat',headers={'X-Conversation-Owner':'previous-user'},json={'messages':[{'role':'user','content':'private old account history'}]})
+    assert result.status_code==403
+    assert result.headers['X-Conversation-Owner-Mismatch']=='true'

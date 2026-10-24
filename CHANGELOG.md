@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-23 — Automatic assistant conversation sync
+
+- Plan: automatically reconcile the database conversation across devices and open tabs; retain CAS writes, dirty replies and active streams. Isolate synchronization lifecycle from rendering, preserve the composer/draft/focus/scroll, and verify normal updates plus conflict and reconnect behavior.
+- Added an injectable `ConversationSync` module that owns polling, tab notifications, visibility/online wake-up, request cancellation, cleanup and capped retry backoff. Notifications contain scope/revision only. Unchanged authenticated GETs use a lightweight revision lookup and scoped ETags with private/no-store responses.
+- Incoming revisions update the transcript and model controls without rebuilding the composer. Active generation and local edits block automatic replacement; conflicting local content remains visible until explicitly discarded. The normal chat shows automatic sync status; loading a saved version is a recovery action.
+- Validation in progress: 71 Python assistant/API regression tests and both existing frontend suites passed; the sync controller's 10 deterministic tests passed. Independent integration/browser acceptance and scoped review remain pending.
+
 ## 2026-10-23 — Database-backed assistant conversations
 
 - Added PostgreSQL conversation snapshots keyed by authenticated user and project ID, a migration, and authenticated GET/PUT endpoints. Atomic revision checks prevent stale browser/device writes; clearing retains a revision so old browser history cannot resurrect it. Conversations cascade with their user/project, and payloads are bounded without silent truncation.
@@ -74,3 +81,10 @@
 - Corrected dataset, snapshot, and training download links to include the selected project; versioned the JavaScript URL to avoid serving the previous cached bundle.
 - Focused Access/upload tests: 25 passed. Fresh live MCP/SDK run passed edge/origin denial checks, direct R2 import, immutable Parquet recovery, real two-step training/checkpoints, empty-cache model restoration/inference, activation capture recovery, and signed weight download. Disposable projects and scoped artifacts were cleaned up.
 - Initial live run encountered a 502 while the host was under heavy memory/swap pressure. Subsequent full run passed after the host recovered; this does not establish availability under sustained host pressure. No unrelated workloads were stopped.
+
+## 2026-10-23 — Capability roadmap research
+
+- Added `docs/capability-roadmap.md`: source-grounded sequence for vision-language images, visualization, assistant additions and Kubernetes, with shared reliability work and measurable acceptance gates.
+- Read-only researcher confirmed the current text-oriented data/training contracts and NVIDIA deployment boundary. Retained the requested VLM scope instead of its proposed classification-first experiment; checked primary TRL VLM guidance separately.
+- Checked installed package versions. A minimal image round-trip probe stopped at missing Pillow (`No module named 'PIL'`); no image serialization, VLM training or feature delivery is claimed. Wolfram context lookup returned an internal error.
+- Preserved concurrent assistant synchronization work; existing database conversations and keepalive implementations are reflected in the plan. Independent advisor/verifier passed the research roadmap with two nonblocking notes; clarified rollout sequencing and strengthened the proposed reload/image-dependence gate. The Git checkpoint helper stalled and was interrupted; ordinary Git status/diff checks succeeded. No runtime configuration, package dependencies, commit or push changed by this research.

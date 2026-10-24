@@ -50,6 +50,21 @@ directory, or private R2 through `docs/cloudflare.md`).
 - **Assistant.** The in-app assistant runs on the API and calls the API back
   over the loopback address as the signed-in user, with a signed service token
   that lives one hour.
+- **Conversation sync.** PostgreSQL owns each user's project conversation and
+  its compare-and-swap revision. Conditional GETs authenticate every read, use
+  an identity-scoped ETag, and select only the revision for unchanged checks.
+  Private responses use `no-store`. The frontend's `assistant/conversation-sync.js`
+  owns timers, cancellation, backoff, browser lifecycle listeners and tab
+  invalidations. Its injected check callback reconciles snapshots through the
+  conversation's write queue; it never overwrites a dirty reply or live stream.
+  Remote updates patch the transcript and model controls without recreating the
+  composer. Three-second visible polling provides device synchronization;
+  metadata-only tab notifications reduce same-origin latency. Hidden tabs check
+  every 15 seconds while running, then catch up on focus/visibility, pageshow,
+  and online events. See the browser contracts for
+  [BroadcastChannel](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API),
+  [page visibility](https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API),
+  and [conditional reads](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-None-Match).
 - **Tasks.** The API inserts a `tasks` row and enqueues an RQ job whose id is
   the task id. The worker marks the row running, streams lines to the log file
   and the Redis channel, keeps the last 40 lines on the row, and records the

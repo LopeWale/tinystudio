@@ -1,5 +1,6 @@
 // tinystudio web interface: a Studio-style single-page app over the local API.
 // No build step. Hash routes, vanilla DOM, SVG charts.
+import { ConversationSync } from "./assistant/conversation-sync.js?v=effaac73dfc3";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -1052,6 +1053,7 @@ function showSetup() {
 // ------------------------------------------------------------------ assistant (available on every page)
 const ASSIST = { open: false, models: null, attach: true, destructive: false, scope: null, selection: null, picking: false, session: null };
 const assistantSessions = new Map();
+let assistantSync = null;
 const assistKey = () => `tinystudio.assistant.v2.${encodeURIComponent(state.user?.id || state.user?.email || "anonymous")}.${encodeURIComponent(state.project || "none")}`;
 // Each scope owns its asynchronous work. Late responses can never change the active project.
 for (const name of ["history", "provider", "model", "busy", "usage", "turn"]) Object.defineProperty(ASSIST, name, {
@@ -1066,7 +1068,19 @@ function assistRefreshUI() {
   const blocked = !ASSIST.session?.loaded || ASSIST.busy || ASSIST.session?.dirty || ASSIST.session?.error;
   for (const el of $$("#asSend, #asReset, #asProvider, #asModel")) el.disabled = Boolean(blocked);
   for (const el of $$("#asRetry")) el.hidden = !ASSIST.session?.error || ASSIST.session?.conflict;
-  for (const el of $$("#asReload")) el.disabled = Boolean(ASSIST.busy || ASSIST.session?.saving);
+  for (const el of $$("#asReload")) {
+    el.disabled = Boolean(ASSIST.busy || ASSIST.session?.saving);
+    el.hidden = !(ASSIST.session?.error || ASSIST.session?.conflict || ASSIST.session?.dirty && !ASSIST.busy);
+    el.textContent = ASSIST.session?.ownerMismatch ? "Reload to update account" : "Load saved version";
+  }
+  for (const el of $$("#asSyncStatus")) el.textContent = assistSyncStatus();
+}
+function assistSyncStatus() {
+  if (ASSIST.session?.ownerMismatch) return "Sync paused · account changed";
+  const sync = ASSIST.session?.syncState;
+  if (sync === "offline") return "Offline · sync resumes when connected";
+  if (sync === "error") return "Sync unavailable · retrying automatically";
+  return "Syncing automatically";
 }
 function assistStatus() {
   const session = ASSIST.session;
@@ -1076,16 +1090,26 @@ function assistStatus() {
   if (session.dirty) return "Unsaved conversation";
   return "Saved to database";
 }
-async function assistRequest(session, options) {
-  if (session.user !== (state.user?.id || state.user?.email)) throw new Error("Sign in as the conversation owner before retrying");
-  const response = await rawFetch(`/api/p/${encodeURIComponent(session.project)}/assistant/conversation`, options);
-  if (!response.ok) {
-    let detail = response.statusText;
-    try { detail = (await response.json()).detail || detail; } catch (_) {}
-    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-    error.status = response.status; throw error;
+async function assistResponseError(session, response) {
+  let detail = response.statusText;
+  try { detail = (await response.json()).detail || detail; } catch (_) {}
+  const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  if (response.headers?.get("x-conversation-owner-mismatch") === "true") {
+    error.ownerMismatch = true; session.ownerMismatch = true; session.error = error.message; session.conflict = true;
+    if (session === ASSIST.session) { assistantSync?.stop(); assistRefreshUI(); }
   }
-  return response.json();
+  error.status = response.status;
+  return error;
+}
+async function assistRequest(session, options = {}, { conditional = false } = {}) {
+  if (session.ownerMismatch) throw Object.assign(new Error("The signed-in account changed. Reload the page before continuing."), { ownerMismatch: true, status: 403 });
+  if (session.user !== (state.user?.id || state.user?.email)) throw new Error("Sign in as the conversation owner before retrying");
+  const headers = { ...options.headers, "X-Conversation-Owner": String(session.user) };
+  if (conditional && session.etag) headers["If-None-Match"] = session.etag;
+  const response = await rawFetch(`/api/p/${encodeURIComponent(session.project)}/assistant/conversation`, { ...options, headers, cache: "no-store" });
+  if (conditional && response.status === 304) return null;
+  if (!response.ok) throw await assistResponseError(session, response);
+  return { ...await response.json(), etag: response.headers?.get("etag") || null };
 }
 function assistEnqueue(session, work) {
   const pending = session.queue.catch(() => {}).then(work);
@@ -1103,38 +1127,48 @@ function assistSameSnapshot(session, snapshot) {
 }
 function assistAdopt(session, snapshot) {
   session.revision = snapshot.revision; session.history = snapshot.history;
+  session.etag = snapshot.etag || null;
   session.provider = snapshot.provider || session.provider; session.model = snapshot.model || session.model;
   session.loaded = true; session.dirty = false; session.error = ""; session.conflict = false; session.pending = false; session.streaming = false;
 }
 function assistForgetLegacy(session) {
   try { localStorage.removeItem(session.key); } catch (_) { /* revision still prevents reimport */ }
 }
-function assistLoad(session = ASSIST.session, { refresh = false, discard = false } = {}) {
+function assistLoad(session = ASSIST.session, { refresh = false, discard = false, signal, automatic = false } = {}) {
   if (!session) return Promise.resolve();
   return assistEnqueue(session, async () => {
     if (session.busy || session.dirty && !discard && !session.pending || session.loaded && !refresh) return;
     try {
-      const snapshot = await assistRequest(session);
+      const snapshot = await assistRequest(session, { signal });
+      if (signal?.aborted) return;
       if (session.pending && snapshot.revision <= session.revision && !discard) return;
       if (snapshot.revision === 0 && !session.loaded && session.legacy?.history?.length) {
         session.revision = 0; session.history = session.legacy.history;
         session.provider = session.legacy.provider || session.provider; session.model = session.legacy.model || session.model;
         session.loaded = true; session.dirty = true;
         try {
-          const imported = await assistRequest(session, { method: "PUT", body: JSON.stringify(assistSnapshot(session)) });
+          const imported = await assistRequest(session, { method: "PUT", body: JSON.stringify(assistSnapshot(session)), signal });
+          if (signal?.aborted) return;
           assistAdopt(session, imported);
+          if (ASSIST.session === session) assistantSync?.notifySaved(imported.revision);
         } catch (error) {
           if (error.status !== 409) throw error;
-          assistAdopt(session, await assistRequest(session));
+          const winner = await assistRequest(session, { signal });
+          if (signal?.aborted) return;
+          assistAdopt(session, winner);
         }
       } else assistAdopt(session, snapshot);
       session.legacy = null; assistForgetLegacy(session);
-    } catch (error) { session.error = error.message; session.conflict = error.status === 409; throw error; }
-    finally { if (ASSIST.session === session) { assistRefreshUI(); assistRedraw(); } }
+    } catch (error) {
+      if (!signal?.aborted) { session.error = error.message; session.conflict = error.ownerMismatch === true || error.status === 409; }
+      throw error;
+    }
+    finally { if (ASSIST.session === session && !signal?.aborted) { assistRefreshUI(); if (automatic) assistRenderRemote(); else assistRedraw(); } }
   });
 }
 function assistSave(session = ASSIST.session) {
   if (!session) return Promise.resolve();
+  if (session.ownerMismatch) return Promise.reject(new Error("The signed-in account changed. Reload the page before saving."));
   session.dirty = true; session.edits = (session.edits || 0) + 1;
   assistPreferences();
   return assistEnqueue(session, async () => {
@@ -1144,22 +1178,69 @@ function assistSave(session = ASSIST.session) {
     try {
       const edits = session.edits;
       const saved = await assistRequest(session, { method: "PUT", body: JSON.stringify(assistSnapshot(session)) });
-      session.revision = saved.revision; session.dirty = session.edits !== edits; session.conflict = false;
-    } catch (error) { session.error = error.message; session.conflict = error.status === 409; throw error; }
+      session.revision = saved.revision; session.etag = saved.etag; session.dirty = session.edits !== edits; session.conflict = false;
+      if (ASSIST.session === session) assistantSync?.notifySaved(saved.revision);
+    } catch (error) { session.error = error.message; session.conflict = error.ownerMismatch === true || error.status === 409; throw error; }
     finally { session.saving = false; assistRefreshUI(); }
   });
 }
+// Sync reads share the write queue, but never write or discard local work.
+function assistCheckRemote(session, { signal } = {}) {
+  const active = () => !signal?.aborted && session === ASSIST.session && session.key === assistKey();
+  if (!active() || session.ownerMismatch) return Promise.resolve();
+  if (!session.loaded) return assistLoad(session, { refresh: true, signal, automatic: true }).then(() => session.revision);
+  return assistEnqueue(session, async () => {
+    if (!active() || session.busy || session.saving) return session.revision;
+    const edits = session.edits, revision = session.revision;
+    const snapshot = await assistRequest(session, { signal }, { conditional: true });
+    // The user can start editing while the GET is in flight.
+    if (!active() || session.busy || session.saving || edits !== session.edits || revision !== session.revision || !snapshot) return session.revision;
+    if (snapshot.revision < session.revision) return session.revision;
+    if (session.dirty || session.conflict) {
+      if (!session.conflict && assistSameSnapshot(session, snapshot)) {
+        assistAdopt(session, snapshot); assistRefreshUI();
+      } else if (snapshot.revision > session.revision) {
+        session.conflict = true;
+        session.error = "A newer conversation arrived. Your unsaved messages are retained; load the saved version when you are ready to discard them.";
+        assistRefreshUI();
+      }
+      return session.revision;
+    }
+    session.etag = snapshot.etag;
+    if (snapshot.revision > session.revision) {
+      assistAdopt(session, snapshot); session.usage = "";
+      assistRenderRemote();
+    }
+    return session.revision;
+  });
+}
+function startAssistantSync(session = ASSIST.session) {
+  assistantSync?.stop(); assistantSync = null;
+  if (!session?.project || !state.user || session !== ASSIST.session || session.ownerMismatch) return;
+  assistantSync = new ConversationSync({
+    scope: session.key,
+    check: (options) => assistCheckRemote(session, options),
+    onStatus: ({ state: syncState }) => {
+      if (session !== ASSIST.session) return;
+      session.syncState = syncState; assistRefreshUI();
+    },
+  });
+  assistantSync.start();
+}
+window.addEventListener("pagehide", () => assistantSync?.stop());
+window.addEventListener("pageshow", () => startAssistantSync());
 function assistRedraw() {
   const drawer = $("#assist .drawer"); if (drawer && ASSIST.open) renderAssistant(drawer);
   const page = $("#asPage"); if (page) renderAssistant(page, { full: true });
 }
 function syncAssistantScope() {
   const key = assistKey(); if (key === ASSIST.scope) return;
+  assistantSync?.stop(); assistantSync = null;
   const previous = ASSIST.session;
   if (previous) {
     previous.turn?.controller.abort(); previous.turn = null; previous.busy = false;
     if (previous.loaded && previous.dirty && !previous.streaming) assistSave(previous).catch(() => {});
-    if (previous.streaming) { previous.pending = true; previous.error ||= "Waiting for the server to save the interrupted reply. Refresh to check."; }
+    if (previous.streaming) { previous.pending = true; previous.error ||= "Waiting for the server to save the interrupted reply."; }
   }
   ASSIST.scope = key; ASSIST.destructive = false; ASSIST.selection = null;
   let session = assistantSessions.get(key);
@@ -1172,7 +1253,7 @@ function syncAssistantScope() {
   try { const prefs = JSON.parse(localStorage.getItem(`${key}.preferences`) || "{}"); ASSIST.attach = prefs.attach ?? session.legacy?.attach ?? true; ASSIST.open = prefs.open ?? session.legacy?.open ?? false; } catch (_) { ASSIST.attach = true; ASSIST.open = false; }
   state.pageContext = null;
   const drawer = $("#assist .drawer"); if (drawer) { drawer.hidden = !ASSIST.open; $("#assist .fab")?.classList.toggle("on", ASSIST.open); renderAssistant(drawer); }
-  if (session.project && state.user) assistLoad(session, { refresh: session.loaded }).catch(() => {});
+  if (session.project && state.user) startAssistantSync(session);
 }
 function safeContextData(data) {
   if (Array.isArray(data)) return data.map(safeContextData);
@@ -1387,8 +1468,8 @@ function prepareChatBody(body, project) {
 
 // --- streaming turn shared by the widget and the Assistant page
 async function streamChat(body, onEvent, turn) {
-  const response = await rawFetch("/api/assistant/chat", { method: "POST", body: JSON.stringify(prepareChatBody(body, turn.project)), signal: turn.controller.signal });
-  if (!response.ok) { let d = response.statusText; try { d = (await response.json()).detail; } catch (_) {} throw new Error(d); }
+  const response = await rawFetch("/api/assistant/chat", { method: "POST", headers: { "X-Conversation-Owner": String(turn.session.user) }, body: JSON.stringify(prepareChatBody(body, turn.project)), signal: turn.controller.signal });
+  if (!response.ok) throw await assistResponseError(turn.session, response);
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
   for (;;) {
     const { value, done } = await reader.read(); if (done) break;
@@ -1432,15 +1513,46 @@ async function loadAssistantModels(force = false) {
   return ASSIST.models;
 }
 
+function assistantModelOptions() {
+  const models = ASSIST.models?.[ASSIST.provider]?.models || [];
+  const options = models.map((m) => `<option value="${esc(m.id)}" ${m.id === ASSIST.model ? "selected" : ""}>${esc(m.name || m.id)}</option>`).join("");
+  const unlisted = ASSIST.model && !models.some((m) => m.id === ASSIST.model) ? `<option value="${esc(ASSIST.model)}" selected>${esc(ASSIST.model)}</option>` : "";
+  return options + unlisted || "<option value=''>no models listed</option>";
+}
+function assistantProviderOptions() {
+  return [["anthropic", "Claude"], ["openai", "OpenAI"]].map(([id, label]) => {
+    const available = ASSIST.models?.[id]?.available;
+    return `<option value="${id}" ${ASSIST.provider === id ? "selected" : ""} ${available ? "" : "disabled"}>${label}${!ASSIST.models || available ? "" : " (no key)"}</option>`;
+  }).join("");
+}
+function assistantModelNotice() {
+  if (!ASSIST.models) return '<div class="note">Loading model catalog…</div>';
+  const error = ASSIST.models[ASSIST.provider]?.error;
+  const missing = !ASSIST.models.anthropic.available && !ASSIST.models.openai.available;
+  return (error ? `<div class="note">${esc(error)}</div>` : "") + (missing ? '<div class="note">No API credentials found. Set <span class="mono">ANTHROPIC_API_KEY</span> and/or <span class="mono">OPENAI_API_KEY</span> before starting <span class="mono">tinystudio serve</span>.</div>' : "");
+}
+function assistDrawLog(log, { preservePosition = false } = {}) {
+  const top = log.scrollTop, atBottom = log.scrollHeight - top - log.clientHeight < 40;
+  log.innerHTML = ASSIST.history.map((m) => m.role === "user" ? `<div class="bubble user">${esc(m.content)}</div>` : `<div class="bubble assistant">${bubbleHtml(m)}</div>`).join("") || `<div class="muted" style="font-size:12.5px">I can see this page when "page" is ticked, read or operate the interface with the ui_* tools, and run every tinystudio tool: datasets, cleaning, synthetic data, training, evaluation, serving, interpretability. Try: "what is on this page?", "explain the top three neurons of layer 12", "start a LoRA job on the latest snapshot".</div>`;
+  log.scrollTop = preservePosition && !atBottom ? top : log.scrollHeight;
+}
+function assistRenderRemote() {
+  // Incoming revisions update the transcript and model controls, leaving the
+  // composer node, draft, focus, text selection and page-context controls intact.
+  for (const container of $$("#assist .drawer, #asPage")) {
+    const log = $("#asLog", container); if (log) assistDrawLog(log, { preservePosition: true });
+    const provider = $("#asProvider", container); if (provider) provider.innerHTML = assistantProviderOptions();
+    const model = $("#asModel", container); if (model) model.innerHTML = assistantModelOptions();
+    const notice = $("#asModelNotice", container); if (notice) notice.innerHTML = assistantModelNotice();
+    const usage = $("#asUsage", container); if (usage) usage.textContent = ASSIST.usage || "";
+  }
+  assistRefreshUI();
+}
 function renderAssistant(container, { full = false } = {}) {
-  const prov = ASSIST.models || { anthropic: { available: false, models: [] }, openai: { available: false, models: [] } };
-  const p = prov[ASSIST.provider] || { models: [] };
-  const modelOptions = (p.models || []).map((m) => `<option value="${esc(m.id)}" ${m.id === ASSIST.model ? "selected" : ""}>${esc(m.name || m.id)}</option>`).join("") || (ASSIST.model ? `<option selected>${esc(ASSIST.model)}</option>` : "");
-  const none = !prov.anthropic.available && !prov.openai.available;
   container.innerHTML = `
     <div class="head">
-      <select id="asProvider" title="Provider"><option value="anthropic" ${ASSIST.provider === "anthropic" ? "selected" : ""} ${prov.anthropic.available ? "" : "disabled"}>Claude${prov.anthropic.available ? "" : " (no key)"}</option><option value="openai" ${ASSIST.provider === "openai" ? "selected" : ""} ${prov.openai.available ? "" : "disabled"}>OpenAI${prov.openai.available ? "" : " (no key)"}</option></select>
-      <select id="asModel" title="Model (from the provider's live model list)">${modelOptions || "<option value=''>no models listed</option>"}</select>
+      <select id="asProvider" title="Provider">${assistantProviderOptions()}</select>
+      <select id="asModel" title="Model (from the provider's live model list)">${assistantModelOptions()}</select>
       <label class="chk" title="Send what this page shows (route, visible text, the data it fetched, your selection) with each message"><input type="checkbox" id="asAttach" ${ASSIST.attach ? "checked" : ""}> page</label>
       <label class="chk" title="Allow interface changes and destructive tools for this session; destructive actions still require confirmation"><input type="checkbox" id="asDestructive" ${ASSIST.destructive ? "checked" : ""}> actions / deletions</label>
       <span class="spacer" style="flex:1"></span>
@@ -1448,15 +1560,14 @@ function renderAssistant(container, { full = false } = {}) {
       <button class="btn small" id="asReset" title="Clear the conversation" ${ASSIST.busy || !ASSIST.session.loaded || ASSIST.session.dirty || ASSIST.session.error ? "disabled" : ""}>clear</button>
       ${full ? "" : `<a class="btn small" href="#/assistant" title="Open the full page">⤢</a><button class="btn small" id="asClose" title="Close">✕</button>`}
     </div>
-    ${p.error ? `<div class="note">${esc(p.error)}</div>` : ""}
-    ${none ? `<div class="note">No API credentials found. Set <span class="mono">ANTHROPIC_API_KEY</span> and/or <span class="mono">OPENAI_API_KEY</span> before starting <span class="mono">tinystudio serve</span>.</div>` : ""}
+    <div id="asModelNotice">${assistantModelNotice()}</div>
     ${ASSIST.selection ? `<div class="note">Attached: ${esc(ASSIST.selection.label)} · ${esc(ASSIST.selection.source)} <button class="btn small" id="asUnpick">Remove</button></div>` : ""}
-    <div class="note"><span id="asPersistence">${esc(assistStatus())}</span> <button class="btn small" id="asRetry" ${ASSIST.session.error && !ASSIST.session.conflict ? "" : "hidden"}>Retry save / load</button> <button class="btn small" id="asReload" ${ASSIST.busy || ASSIST.session.saving ? "disabled" : ""}>Refresh conversation</button></div>
+    <div class="note"><span id="asPersistence">${esc(assistStatus())}</span> · <span id="asSyncStatus" role="status" aria-live="polite">${esc(assistSyncStatus())}</span> <button class="btn small" id="asRetry" ${ASSIST.session.error && !ASSIST.session.conflict ? "" : "hidden"}>Retry save / load</button> <button class="btn small" id="asReload" hidden>Load saved version</button></div>
     <div class="chatlog ${full ? "" : "compact"}" id="asLog"></div>
     <div class="composer"><textarea id="asInput" placeholder="Ask about what you see, or ask for something to be done… (Enter to send, Shift+Enter for a new line)"></textarea><button class="btn primary" id="asSend" ${ASSIST.busy || !ASSIST.session.loaded || ASSIST.session.dirty || ASSIST.session.error ? "disabled" : ""}>Send</button></div>
     <div class="muted mono" id="asUsage" style="padding:4px 12px;font-size:11px">${esc(ASSIST.usage || "")}</div>`;
   const log = $("#asLog", container);
-  const draw = () => { log.innerHTML = ASSIST.history.map((m) => m.role === "user" ? `<div class="bubble user">${esc(m.content)}</div>` : `<div class="bubble assistant">${bubbleHtml(m)}</div>`).join("") || `<div class="muted" style="font-size:12.5px">I can see this page when "page" is ticked, read or operate the interface with the ui_* tools, and run every tinystudio tool: datasets, cleaning, synthetic data, training, evaluation, serving, interpretability. Try: "what is on this page?", "explain the top three neurons of layer 12", "start a LoRA job on the latest snapshot".</div>`; log.scrollTop = log.scrollHeight; };
+  const draw = () => assistDrawLog(log);
   draw(); assistRefreshUI();
   $("#asProvider", container).onchange = guard(async (e) => { const session = ASSIST.session; session.provider = e.target.value; session.model = null; await loadAssistantModels(); if (session !== ASSIST.session) return; await assistSave(session); if (session === ASSIST.session) renderAssistant(container, { full }); });
   $("#asModel", container).onchange = guard(async (e) => { ASSIST.model = e.target.value; await assistSave(); });
@@ -1482,6 +1593,7 @@ function renderAssistant(container, { full = false } = {}) {
   });
   $("#asReload", container).onclick = guard(async () => {
     const session = ASSIST.session; if (session.busy || session.saving) return;
+    if (session.ownerMismatch) { location.reload(); return; }
     if (session.dirty && !await confirmModal("Reload conversation?", "Discard the unsaved messages shown here and load the database conversation?", async () => {}, "Discard and reload")) return;
     await assistLoad(session, { refresh: true, discard: true });
   });
@@ -1494,7 +1606,7 @@ function renderAssistant(container, { full = false } = {}) {
   const send = guard(async () => {
     const session = ASSIST.session;
     const text = $("#asInput", container).value.trim();
-    if (!text || session.busy || session.dirty || session.error) return;
+    if (!text || !session.loaded || session.busy || session.dirty || session.error) return;
     await assistLoad(session);
     if (session !== ASSIST.session || !session.loaded || session.busy || session.dirty || session.error) return;
     $("#asInput", container).value = "";
@@ -1516,7 +1628,7 @@ function renderAssistant(container, { full = false } = {}) {
         if (ev.type === "text") reply.content += ev.delta;
         else if (ev.type === "tool_call") reply.calls.push({ id: ev.id, name: ev.name, input: ev.input, kind: ev.name.startsWith("ui_") ? "ui" : "tool" });
         else if (ev.type === "tool_result") { const c = reply.calls.find((x) => x.id === ev.id && x.output === undefined) || reply.calls[reply.calls.length - 1]; if (c) c.output = ev.output; pollTasks(); }
-        else if (ev.type === "conversation_saved") { session.revision = ev.revision; session.dirty = false; session.streaming = false; session.pending = false; session.error = ""; session.conflict = false; assistRefreshUI(); }
+        else if (ev.type === "conversation_saved") { session.revision = ev.revision; session.etag = null; session.dirty = false; session.streaming = false; session.pending = false; session.error = ""; session.conflict = false; assistantSync?.notifySaved(ev.revision); assistRefreshUI(); }
         else if (ev.type === "conversation_error") { session.error = ev.message || "The database conversation changed"; session.streaming = false; session.pending = false; session.conflict = ev.conflict === true; session.dirty = true; assistRefreshUI(); }
         else if (ev.type === "error") streamError = new Error(ev.message);
         else if (ev.type === "done") { session.usage = `${ev.model} · ${ev.usage.input_tokens} in / ${ev.usage.output_tokens} out`; $$("#asUsage").forEach((el) => { el.textContent = session.usage; }); }
@@ -1534,7 +1646,7 @@ function renderAssistant(container, { full = false } = {}) {
       if (active()) {
         // Keep replies in memory on failure and disable send until saved or explicitly discarded.
         try { if (reply && session.dirty && !session.conflict) { session.error ||= "Reply has not been confirmed saved. Refresh to check the database, or retry saving."; } }
-        finally { session.busy = false; session.turn = null; assistRefreshUI(); }
+        finally { session.busy = false; session.turn = null; assistRefreshUI(); assistantSync?.requestCheck(); }
       }
     }
   });
@@ -1548,7 +1660,11 @@ function toggleAssistant(open) {
   drawer.hidden = !ASSIST.open;
   $("#assist .fab").classList.toggle("on", ASSIST.open);
   assistPreferences();
-  if (ASSIST.open) guard(async () => { const session = ASSIST.session; await assistLoad(session, { refresh: true }).catch(() => {}); if (session !== ASSIST.session) return; await loadAssistantModels(); if (session !== ASSIST.session) return; renderAssistant(drawer); $("#asInput", drawer)?.focus(); })();
+  if (ASSIST.open) {
+    if (!$("#asInput", drawer)) renderAssistant(drawer);
+    assistantSync?.requestCheck(); $("#asInput", drawer)?.focus();
+    guard(async () => { const session = ASSIST.session; await loadAssistantModels(); if (session === ASSIST.session) assistRenderRemote(); })();
+  }
 }
 function mountAssistant() {
   const host = document.getElementById("assist"); if (!host || host.dataset.mounted) return;
@@ -1565,7 +1681,7 @@ async function pageAssistant() {
   const view = state.pageContext;
   await ensureOverview(true); assertRender(view);
   const st = await api("/api/assistant/status");
-  await assistLoad(ASSIST.session, { refresh: true }).catch(() => {});
+  assistantSync?.requestCheck();
   await loadAssistantModels();
   assertRender(view);
   const content = layout("assistant", `<div class="page-head"><h1>Assistant</h1><span class="meta">A frontier model that sees the interface, operates it, and drives the same ${st.mcp.tools} tools as the MCP server. It is also available on every page from the ✦ button (⌘K).</span></div>

@@ -5,12 +5,13 @@ from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 
 from tinystudio.api.app import create_app
 from tinystudio.db.models import AssistantConversation, Project, User
 from tinystudio.services.users import create_user
 from tinystudio.services.assistant_conversations import MAX_SNAPSHOT_BYTES
+from tinystudio.services import assistant_conversations as conversations
 
 CSRF = {"X-Requested-With": "tinystudio"}
 
@@ -160,3 +161,132 @@ def test_database_invalid_text_is_a_client_error(conversation_clients, content):
     result = alice.put(url, content=json.dumps(payload(content=content)), headers={"Content-Type": "application/json"})
     assert result.status_code == 400
     assert alice.get(url).json()["revision"] == 0
+
+
+@pytest.mark.parametrize("validator_kind", ["exact", "weak", "list", "wildcard"])
+def test_unchanged_poll_avoids_history_load(conversation_clients, db, monkeypatch, validator_kind):
+    alice, _, url = conversation_clients
+    assert alice.put(url, json=payload()).status_code == 200
+    initial = alice.get(url)
+    tag = initial.headers["etag"]
+    assert initial.headers["cache-control"] == "private, no-store"
+    validator = {"exact": tag, "weak": f"W/{tag}", "list": f'"other", W/{tag}, "last"', "wildcard": "*"}[validator_kind]
+
+    def unexpected_load(*args):
+        pytest.fail("an unchanged poll must not load the snapshot")
+
+    monkeypatch.setattr(conversations, "load", unexpected_load)
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if "assistant_conversations" in statement.lower():
+            statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        unchanged = alice.get(url, headers={"If-None-Match": validator})
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert unchanged.status_code == 304 and unchanged.content == b""
+    assert unchanged.headers["etag"] == tag
+    assert unchanged.headers["cache-control"] == "private, no-store"
+    assert len(statements) == 1
+    assert "history" not in statements[0].lower()
+
+
+def test_changed_poll_and_clear_return_current_snapshot_and_tag(conversation_clients):
+    alice, _, url = conversation_clients
+    empty_tag = alice.get(url).headers["etag"]
+    saved = alice.put(url, json=payload())
+    assert saved.headers["cache-control"] == "private, no-store"
+    changed = alice.get(url, headers={"If-None-Match": empty_tag})
+    assert changed.status_code == 200 and changed.json() == saved.json()
+    assert changed.headers["etag"] == saved.headers["etag"] != empty_tag
+    cleared = alice.put(url, json={"revision": 1, "history": []})
+    poll = alice.get(url, headers={"If-None-Match": changed.headers["etag"]})
+    assert poll.status_code == 200 and poll.json() == cleared.json()
+    assert poll.json()["history"] == [] and poll.json()["revision"] == 2
+    assert poll.headers["etag"] != changed.headers["etag"]
+    assert alice.put(url, json=payload(1)).status_code == 409
+
+
+def test_conditional_poll_is_identity_and_project_scoped(conversation_clients):
+    alice, bob, url = conversation_clients
+    assert alice.put(url, json=payload(content="alice")).status_code == 200
+    assert bob.put(url, json=payload(content="bob")).status_code == 200
+    tag = alice.get(url).headers["etag"]
+    bob_poll = bob.get(url, headers={"If-None-Match": tag})
+    assert bob_poll.status_code == 200
+    assert bob_poll.json()["history"][0]["content"] == "bob"
+    assert bob_poll.headers["etag"] != tag
+    second = alice.post("/api/projects", json={"name": "Second Project"}).json()
+    second_url = f"/api/p/{second['slug']}/assistant/conversation"
+    assert alice.put(second_url, json=payload(content="second")).status_code == 200
+    second_poll = alice.get(second_url, headers={"If-None-Match": tag})
+    assert second_poll.status_code == 200 and second_poll.headers["etag"] != tag
+    assert second_poll.json()["history"][0]["content"] == "second"
+    with TestClient(alice.app) as anon:
+        for validator in (tag, "*"):
+            assert anon.get(url, headers={"If-None-Match": validator}).status_code == 401
+    assert alice.get("/api/p/missing/assistant/conversation", headers={"If-None-Match": "*"}).status_code == 404
+
+
+def test_changed_poll_tags_the_snapshot_loaded_after_revision_check(conversation_clients, monkeypatch):
+    alice, _, url = conversation_clients
+    old_tag = alice.get(url).headers["etag"]
+    saved = alice.put(url, json=payload()).json()
+    current = alice.get(url)
+    original_load = conversations.load
+
+    def load_after_write(db, project_id, user_id):
+        conversations.save(db, project_id, user_id, conversations.ConversationWrite(revision=1, history=[]))
+        return original_load(db, project_id, user_id)
+
+    monkeypatch.setattr(conversations, "load", load_after_write)
+    raced = alice.get(url, headers={"If-None-Match": old_tag})
+    assert raced.status_code == 200 and raced.json()["revision"] == saved["revision"] + 1
+    assert raced.headers["etag"] != current.headers["etag"]
+    monkeypatch.setattr(conversations, "load", original_load)
+    assert alice.get(url).headers["etag"] == raced.headers["etag"]
+
+
+def test_cookie_account_switch_cannot_read_or_write_stale_owners_conversation(conversation_clients, db, monkeypatch):
+    alice, bob, url = conversation_clients
+    alice_id = str(db.scalar(select(User.id).where(User.email == "alice@example.com")))
+    bob_id = str(db.scalar(select(User.id).where(User.email == "bob@example.com")))
+    alice_headers = {"X-Conversation-Owner": alice_id}
+    bob_headers = {"X-Conversation-Owner": bob_id}
+    assert alice.put(url, json=payload(content="alice private"), headers=alice_headers).status_code == 200
+    bob_snapshot = bob.put(url, json=payload(content="bob private"), headers=bob_headers).json()
+    assert bob_snapshot["revision"] == 1
+
+    # An already open Alice tab keeps its expected owner while another tab's
+    # login replaces the shared session cookie with Bob's real credential.
+    alice.cookies.clear()
+    alice.cookies.update(bob.cookies)
+
+    def unexpected_access(*args):
+        pytest.fail("owner mismatch must precede every conversation read or write")
+
+    with monkeypatch.context() as guarded:
+        for name in ("revision", "load", "save"):
+            guarded.setattr(conversations, name, unexpected_access)
+        denied = [
+            alice.get(url, headers=alice_headers),
+            alice.get(url, headers={**alice_headers, "If-None-Match": "*"}),
+            alice.put(url, json=payload(1, "stale Alice history"), headers=alice_headers),
+            alice.get(url, headers={"X-Conversation-Owner": f" {bob_id}"}),
+            alice.get(url, headers={"X-Conversation-Owner": ""}),
+        ]
+    for result in denied:
+        assert result.status_code == 403
+        assert result.headers["x-conversation-owner-mismatch"] == "true"
+        assert result.headers["cache-control"] == "private, no-store"
+        assert "bob private" not in result.text
+    restored = alice.get(url, headers=bob_headers)
+    assert restored.status_code == 200 and restored.json() == bob_snapshot
+    assert alice.get(url, headers={**bob_headers, "If-None-Match": restored.headers["etag"]}).status_code == 304
+    assert bob.get(url).json() == bob_snapshot  # SDKs without the header remain supported.
+    changed = alice.put(url, json=payload(1, "Bob's authorized update"), headers=bob_headers)
+    assert changed.status_code == 200 and changed.json()["revision"] == 2
