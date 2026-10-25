@@ -1,7 +1,7 @@
 import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
 
 // Context belongs to the active render, never to a prior route or account.
-export function createContext({ state, assistantState: ASSIST, navigation, redraw }) {
+export function createContext({ state, assistantState: ASSIST, navigation, redraw, onPickingChange = () => {}, onSelectionChanged = null }) {
   const renderAssistant = (...args) => redraw(...args);
 function safeContextData(data) {
   if (Array.isArray(data)) return data.map(safeContextData);
@@ -69,14 +69,18 @@ function pickContext(target) {
 }
 function setAssistantPicking(on) {
   ASSIST.picking = on; document.body.classList.toggle("assistant-picking", on);
-  const button = $("#asPick"); if (button) button.textContent = on ? "Cancel pick" : "Pick data";
+  for (const button of $$("#asPick")) { button.textContent = on ? "Cancel pick" : "Pick data"; button.setAttribute?.("aria-pressed", String(on)); }
+  onPickingChange(on);
 }
 const onPick = (event) => {
   if (!ASSIST.picking || event.target.closest("#assist, #asPage")) return;
   const selected = pickContext(event.target); if (!selected) return;
   event.preventDefault(); event.stopImmediatePropagation(); ASSIST.selection = selected; setAssistantPicking(false);
-  const drawer = $("#assist .drawer"); if (drawer && ASSIST.open) renderAssistant(drawer);
-  const page = $("#asPage"); if (page) renderAssistant(page, { full: true });
+  if (onSelectionChanged) onSelectionChanged(selected);
+  else {
+    const drawer = $("#assist .drawer"); if (drawer && ASSIST.open) renderAssistant(drawer);
+    const page = $("#asPage"); if (page) renderAssistant(page, { full: true });
+  }
 };
 
 const uiRefs = new Map();

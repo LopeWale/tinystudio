@@ -16,48 +16,101 @@ export const ICONS = {
   interp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 9V4M12 20v-5M9 12H3M21 12h-6M9.9 9.9L6 6M18 18l-3.9-3.9M14.1 9.9L18 6M6 18l3.9-3.9"/></svg>',
 };
 
+const APPEARANCE_KEY = "tinystudio.appearance";
+const PAGE_NAMES = { datasets: "Datasets", repositories: "Repositories", finetuning: "Finetuning", evaluations: "Evaluations", metrics: "Metrics", playground: "Playground", assistant: "Assistant", interp: "Interpretability", models: "Models", traces: "Traces", keys: "API Keys", stats: "Stats", settings: "Settings", users: "Users", projects: "Projects" };
+
 export function createShell({ state, feedback, dialogs, http, navigation, selectProject, newProjectModal }) {
+  let detach = () => {}, observer = null, preferred = "system";
+  try { preferred = localStorage.getItem(APPEARANCE_KEY) || "system"; } catch (_) {}
+  function applyAppearance(value) {
+    preferred = ["light", "dark"].includes(value) ? value : "system";
+    const root = document.documentElement;
+    if (root) { if (preferred === "system") delete root.dataset.theme; else root.dataset.theme = preferred; }
+  }
+  applyAppearance(preferred);
   function sidebar(active) {
-    const o = state.overview || {};
-    const item = (hash, key, label, icon) => `<a href="${hash}" class="${active === key ? "active" : ""}">${ICONS[icon]}<span>${label}</span></a>`;
-    return `<aside class="sidebar">
-      <div class="brand"><div class="logo"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M8 22 L13 12 L18 18 L24 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div>tinystudio<small>${esc(o.project?.name || "")}</small></div></div>
-      <div class="project-switch"><select id="projectSwitch" title="Project">${state.projects.map((pr) => `<option value="${esc(pr.slug)}" ${pr.slug === state.project ? "selected" : ""}>${esc(pr.name)}</option>`).join("")}<option value="__new__">+ New project…</option><option value="__all__">Manage projects…</option></select></div>
-      <nav class="nav">
-        ${item("#/datasets", "datasets", "Datasets", "datasets")}
-        ${item("#/repositories", "repositories", "Repositories", "docs")}
-        ${item("#/finetuning", "finetuning", "Finetuning", "finetune")}
-        ${item("#/evaluations", "evaluations", "Evaluations", "evals")}
-        <div class="sub">${item("#/evaluations", "evaluations-sub", "Eval", "evals").replace(ICONS.evals, "")}${item("#/metrics", "metrics", "Metrics", "evals").replace(ICONS.evals, "")}</div>
-        ${item("#/playground", "playground", "Playground", "play")}
-        ${item("#/assistant", "assistant", "Assistant", "assistant")}
-        ${item("#/interp", "interp", "Interpretability", "interp")}
-        <hr>
-        ${item("#/models", "models", "Models", "models")}
-        ${item("#/traces", "traces", "Traces", "traces")}
-        ${item("#/api-keys", "keys", "API Keys", "keys")}
-        ${item("#/stats", "stats", "Stats", "stats")}
-        ${state.user?.role === "admin" ? item("#/settings", "settings", "Settings", "settings") : ""}
-        ${state.user?.role === "admin" ? item("#/users", "users", "Users", "keys") : ""}
-        <hr>
-        <a href="/docs" target="_blank">${ICONS.docs}<span>API reference</span><span class="external">↗</span></a>
+    const item = (hash, key, label, icon) => `<a href="${hash}" class="${active === key ? "active" : ""}" ${active === key ? 'aria-current="page"' : ""}>${ICONS[icon]}<span>${label}</span></a>`;
+    const group = (label, links) => `<div class="nav-label">${label}</div>${links.join("")}`;
+    return `<aside class="sidebar" id="workspaceNav" aria-label="Workspace navigation" data-open="false">
+      <div class="brand"><div class="logo" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M8 22 L13 12 L18 18 L24 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div>tinystudio<small>Your model workspace</small></div><button type="button" class="btn icon nav-close" id="navClose" aria-label="Close navigation">×</button></div>
+      <div class="project-switch"><label for="projectSwitch">Current project</label><select id="projectSwitch" title="Project">${state.projects.map((pr) => `<option value="${esc(pr.slug)}" ${pr.slug === state.project ? "selected" : ""}>${esc(pr.name)}</option>`).join("")}<option value="__new__">+ New project…</option><option value="__all__">Manage projects…</option></select></div>
+      <nav class="nav" aria-label="Main navigation">
+        ${group("Build", [item("#/datasets", "datasets", "Datasets", "datasets"), item("#/repositories", "repositories", "Repositories", "docs")])}
+        ${group("Train & evaluate", [item("#/finetuning", "finetuning", "Finetuning", "finetune"), item("#/evaluations", "evaluations", "Evaluations", "evals"), item("#/metrics", "metrics", "Metrics", "evals")])}
+        ${group("Explore", [item("#/playground", "playground", "Playground", "play"), item("#/assistant", "assistant", "Assistant", "assistant"), item("#/interp", "interp", "Interpretability", "interp")])}
+        ${group("Serve & improve", [item("#/models", "models", "Models", "models"), item("#/traces", "traces", "Traces", "traces")])}
+        ${group("Workspace", [item("#/projects", "projects", "Projects", "docs"), item("#/api-keys", "keys", "API Keys", "keys"), item("#/stats", "stats", "Stats", "stats"), ...(state.user?.role === "admin" ? [item("#/settings", "settings", "Settings", "settings"), item("#/users", "users", "Users", "keys")] : [])])}
+        <hr><a href="/docs" target="_blank" rel="noopener">${ICONS.docs}<span>API reference</span><span class="external" aria-hidden="true">↗</span></a>
       </nav>
-      <div class="foot"><div class="avatar">${esc((state.user?.name || state.user?.email || "t")[0].toUpperCase())}</div><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">${esc(state.user?.name || state.user?.email || "")}</div><div class="mono" style="font-size:11px">${esc(state.user?.role || "")} · <a href="#" id="signOut">sign out</a></div></div></div>
+      <div class="foot"><div class="avatar" aria-hidden="true">${esc((state.user?.name || state.user?.email || "t")[0].toUpperCase())}</div><div class="account-info"><div class="account-name">${esc(state.user?.name || state.user?.email || "")}</div><div class="account-role">${esc(state.user?.role || "")} · <a href="#" id="signOut">sign out</a></div></div></div>
     </aside>`;
   }
+  function setLoading(loading) {
+    const app = $("#app"), progress = $("#routeProgress");
+    app?.setAttribute?.("aria-busy", String(loading));
+    if (progress) progress.hidden = !loading;
+  }
+  function enhanceTables(content) {
+    for (const table of content.querySelectorAll?.("table") || []) {
+      let region = table.parentElement;
+      if (!region?.classList?.contains("table-wrap")) {
+        region = document.createElement("div"); region.className = "table-wrap";
+        table.parentElement.insertBefore(region, table); region.appendChild(table);
+      }
+      region.setAttribute("role", "region");
+      region.setAttribute("aria-label", table.querySelector("caption")?.textContent?.trim() || "Data table");
+      region.setAttribute("tabindex", "0");
+    }
+  }
+  function destroy() { detach(); detach = () => {}; observer?.disconnect(); observer = null; setLoading(false); }
   function layout(active, contentHtml, crumbs = []) {
-    const app = $("#app");
-    app.innerHTML = `${sidebar(active)}<div class="main"><div class="topbar">${crumbs.map((c, i) => `${i ? '<span class="sep">›</span>' : ""}${c.href ? `<a href="${c.href}">${esc(c.label)}</a>` : `<span>${esc(c.label)}</span>`}`).join("")}<span class="spacer"></span><span id="llmStatus"></span></div><div class="content">${contentHtml}</div></div>`;
+    destroy();
+    const app = $("#app"), title = PAGE_NAMES[active] || active;
+    const trail = crumbs.length ? crumbs : [{ label: title }];
+    app.innerHTML = `<a class="skip-link" href="#mainContent" id="skipContent">Skip to content</a>${sidebar(active)}<button type="button" class="nav-backdrop" id="navBackdrop" data-open="false" tabindex="-1" aria-hidden="true"></button><div class="main"><header class="topbar"><button type="button" class="btn icon nav-toggle" id="navToggle" aria-label="Open navigation" aria-controls="workspaceNav" aria-expanded="false">☰</button><nav class="breadcrumbs" aria-label="Breadcrumb">${trail.map((c, i) => `${i ? '<span class="sep" aria-hidden="true">/</span>' : ""}${c.href ? `<a href="${c.href}">${esc(c.label)}</a>` : `<span aria-current="page">${esc(c.label)}</span>`}`).join("")}</nav><span class="spacer"></span><span class="workspace-label">${esc(state.overview?.project?.name || state.project || "Workspace")}</span><label class="sr-only" for="appearanceSelect">Appearance</label><select id="appearanceSelect" class="appearance-control" title="Appearance"><option value="system" ${preferred === "system" ? "selected" : ""}>System</option><option value="light" ${preferred === "light" ? "selected" : ""}>Light</option><option value="dark" ${preferred === "dark" ? "selected" : ""}>Dark</option></select><span id="llmStatus"></span></header><div class="route-progress" id="routeProgress" role="status" aria-label="Loading page" hidden></div><main class="content" id="mainContent" tabindex="-1">${contentHtml}</main></div>`;
     state.domContext = state.pageContext;
+    let open = false;
+    const menu = $("#workspaceNav", app), toggle = $("#navToggle", app), backdrop = $("#navBackdrop", app), content = $(".content", app);
+    function setNav(value, restore = false) {
+      open = value;
+      if (menu) menu.dataset.open = String(open);
+      if (backdrop) backdrop.dataset.open = String(open);
+      toggle?.setAttribute?.("aria-expanded", String(open));
+      if (open) $("#navClose", app)?.focus?.(); else if (restore) toggle?.focus?.();
+    }
+    if (toggle) toggle.onclick = () => setNav(!open);
+    const close = $("#navClose", app); if (close) close.onclick = () => setNav(false, true);
+    if (backdrop) backdrop.onclick = () => setNav(false, true);
+    const onKeyDown = (event) => {
+      if (!open) return;
+      if (event.key === "Escape") { event.preventDefault(); setNav(false, true); }
+      if (event.key === "Tab") {
+        const focusable = [...menu.querySelectorAll('a[href], button, select')].filter((el) => !el.disabled && el.getClientRects().length);
+        const first = focusable[0], last = focusable.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
+    };
+    document.addEventListener?.("keydown", onKeyDown);
+    detach = () => document.removeEventListener?.("keydown", onKeyDown);
+    for (const link of menu?.querySelectorAll?.('a[href]') || []) link.addEventListener("click", () => setNav(false));
+    const skip = $("#skipContent", app); if (skip) skip.onclick = (event) => { event.preventDefault(); content.focus(); };
+    const appearance = $("#appearanceSelect", app); if (appearance) appearance.onchange = (event) => { applyAppearance(event.target.value); try { localStorage.setItem(APPEARANCE_KEY, preferred); } catch (_) {} };
     const sw = $("#projectSwitch", app);
     if (sw) sw.onchange = feedback.guard(async () => {
+      setNav(false);
       if (sw.value === "__new__") { sw.value = state.project; return newProjectModal(); }
       if (sw.value === "__all__") { sw.value = state.project; return navigation.go("#/projects"); }
       await selectProject(sw.value); state.overview = null; navigation.go("#/datasets"); navigation.render();
     });
     const out = $("#signOut", app);
-    if (out) out.onclick = feedback.guard(async (e) => { e.preventDefault(); const result = await http.post("/api/auth/logout", {}); if (result.logout_url) location.assign(result.logout_url); else location.reload(); });
-    return $(".content", app);
+    if (out) out.onclick = feedback.guard(async (event) => { event.preventDefault(); const result = await http.post("/api/auth/logout", {}); if (result.logout_url) location.assign(result.logout_url); else location.reload(); });
+    if (content) {
+      enhanceTables(content);
+      if (globalThis.MutationObserver) { observer = new MutationObserver(() => enhanceTables(content)); observer.observe(content, { childList: true, subtree: true }); }
+    }
+    document.title = `${title} · tinystudio`;
+    return content;
   }
-  return { sidebar, layout };
+  return { sidebar, layout, setLoading, destroy };
 }

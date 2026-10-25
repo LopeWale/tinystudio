@@ -8,7 +8,7 @@ export function createAssistant({ state, http, feedback, dialogs, shell, navigat
   let view;
   const conversation = createConversations({ state, http, presentation: { refresh: () => view.assistRefreshUI(), remote: () => view.assistRenderRemote(), scopeChanged: () => view.assistScopeChanged() } });
   const ASSIST = conversation.state;
-  const context = createContext({ state, assistantState: ASSIST, navigation, redraw: (...args) => view.renderAssistant(...args) });
+  const context = createContext({ state, assistantState: ASSIST, navigation, redraw: (...args) => view.renderAssistant(...args), onPickingChange: (on) => view?.assistPickingChanged(on), onSelectionChanged: () => view?.assistSelectionChanged() });
   const chat = createChat({ state, assistantState: ASSIST, http, feedback, conversation, context, refresh: () => view.assistRefreshUI(), pollTasks });
   view = createAssistantView({ state, assistantState: ASSIST, http, feedback, dialogs, shell, conversation, context, chat, ensureOverview });
   function beginRender(route = location.hash || "#/") {
