@@ -1,4 +1,4 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
 
 // Context belongs to the active render, never to a prior route or account.
 export function createContext({ state, assistantState: ASSIST, navigation, redraw, onPickingChange = () => {}, onSelectionChanged = null }) {

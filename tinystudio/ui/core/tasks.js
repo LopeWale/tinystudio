@@ -1,8 +1,10 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc } from "../ui/format.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
+import { esc } from "../ui/format.js?v=c96cb305d835";
 
 export function createTaskDrawer({ state, http, feedback, navigation }) {
   let timer = null, disposed = false, scope = null, generation = 0, pending = null;
+  const refreshHolds = new Set();
+  let refreshPending = false;
   const scopeKey = () => `${state.user?.id ?? ""}:${state.project ?? ""}`;
   function syncScope() {
     const next = scopeKey();
@@ -10,7 +12,20 @@ export function createTaskDrawer({ state, http, feedback, navigation }) {
     scope = next; generation++;
     clearTimeout(timer); timer = null;
     pending?.controller.abort(); pending = null;
+    refreshHolds.clear(); refreshPending = false;
     state.tasks = [];
+  }
+  function holdRefresh() {
+    syncScope();
+    const hold = {};
+    refreshHolds.add(hold);
+    return (refresh = true) => {
+      if (!refreshHolds.delete(hold)) return;
+      if (!refresh) refreshPending = false; // navigation already refreshes the page
+      if (!disposed && !refreshHolds.size && refreshPending && scope === scopeKey()) {
+        refreshPending = false; navigation.render();
+      }
+    };
   }
   function showTasks() { $("#tasks").hidden = false; }
   function queued(result, what) { if (!result || !result.queued) return false; feedback.toast(`${what} runs as a background task (large dataset); the page refreshes when it finishes`); showTasks(); pollTasks(); return true; }
@@ -25,7 +40,7 @@ export function createTaskDrawer({ state, http, feedback, navigation }) {
     const schedule = () => { if (current()) timer = setTimeout(pollTasks, 2500); };
     request.promise = (async () => {
     let tasks;
-    try { tasks = await http.background("/api/tasks", { signal: request.controller.signal }); }
+    try { tasks = await http.background("/api/tasks?include_result=false", { signal: request.controller.signal }); }
     catch (error) { if (error.name !== "AbortError" && error.name !== "AuthenticationRequiredError") schedule(); return; }
     if (!current()) return;
     const wasRunning = new Set(state.tasks.filter((t) => t.state === "running" || t.state === "queued").map((t) => t.id));
@@ -35,10 +50,18 @@ export function createTaskDrawer({ state, http, feedback, navigation }) {
     $("#tHide", box).onclick = () => box.hidden = true;
     $$("[data-stop]", box).forEach((b) => b.onclick = feedback.guard(async () => { await http.post(`/api/tasks/${b.dataset.stop}/stop`, {}); pollTasks(); }));
     const running = tasks.some((t) => t.state === "running" || t.state === "queued");
-    if (tasks.some((t) => wasRunning.has(t.id) && t.state !== "running" && t.state !== "queued")) { feedback.toast("a task finished"); navigation.render(); }
+    const finished = tasks.filter((t) => wasRunning.has(t.id) && t.state !== "running" && t.state !== "queued");
+    if (finished.length) {
+      feedback.toast("a task finished");
+      // Profiling only produces a task result; refreshing would close its waiting dialog.
+      if (finished.some((t) => t.kind !== "dataset.profile")) {
+        if (refreshHolds.size) refreshPending = true;
+        else navigation.render();
+      }
+    }
     if (running) { showTasks(); schedule(); }
     })().finally(() => { if (pending === request) pending = null; });
     return request.promise;
   }
-  return { showTasks, pollTasks, queued, syncScope, destroy() { disposed = true; generation++; clearTimeout(timer); timer = null; pending?.controller.abort(); pending = null; } };
+  return { showTasks, pollTasks, queued, syncScope, holdRefresh, destroy() { disposed = true; generation++; refreshHolds.clear(); refreshPending = false; clearTimeout(timer); timer = null; pending?.controller.abort(); pending = null; } };
 }

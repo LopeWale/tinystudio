@@ -1,6 +1,6 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc } from "../ui/format.js?v=82e74d4b5ecb";
-import { PlaygroundSessions } from "../core/playground.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
+import { esc } from "../ui/format.js?v=c96cb305d835";
+import { PlaygroundSessions } from "../core/playground.js?v=c96cb305d835";
 
 // Owns this feature's page rendering and dialogs; application services stay at explicit boundaries.
 export function createPlaygroundPages({ state, http, feedback, shell, context, ensureOverview }) {

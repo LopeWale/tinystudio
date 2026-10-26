@@ -1,5 +1,5 @@
-import { $ } from "./dom.js?v=82e74d4b5ecb";
-import { esc } from "./format.js?v=82e74d4b5ecb";
+import { $ } from "./dom.js?v=c96cb305d835";
+import { esc } from "./format.js?v=c96cb305d835";
 
 export const ICONS = {
   datasets: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',

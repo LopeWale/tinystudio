@@ -1,7 +1,7 @@
-import { createConversations } from "./conversations.js?v=82e74d4b5ecb";
-import { createContext } from "./context.js?v=82e74d4b5ecb";
-import { createChat } from "./chat.js?v=82e74d4b5ecb";
-import { createAssistantView } from "./view.js?v=82e74d4b5ecb";
+import { createConversations } from "./conversations.js?v=c96cb305d835";
+import { createContext } from "./context.js?v=c96cb305d835";
+import { createChat } from "./chat.js?v=c96cb305d835";
+import { createAssistantView } from "./view.js?v=c96cb305d835";
 
 // Construct without network activity; mounting/scope activation starts synchronization.
 export function createAssistant({ state, http, feedback, dialogs, shell, navigation, ensureOverview, pollTasks }) {

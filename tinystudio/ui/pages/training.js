@@ -1,5 +1,5 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc, fmtNum, fmtDate, fmtParams, SERIES } from "../ui/format.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
+import { esc, fmtNum, fmtDate, fmtParams, SERIES } from "../ui/format.js?v=c96cb305d835";
 
 // Owns this feature's page rendering and dialogs; application services stay at explicit boundaries.
 export function createTrainingPages({ state, http, feedback, dialogs, shell, navigation, context, ensureOverview, showTasks, pollTasks, newEvaluationDialog, checkpointCaptureDialog }) {

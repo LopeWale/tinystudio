@@ -1,9 +1,9 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc, fmtDate } from "../ui/format.js?v=82e74d4b5ecb";
-import { histogram as drawHistogram } from "../ui/charts.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
+import { esc, fmtDate } from "../ui/format.js?v=c96cb305d835";
+import { histogram as drawHistogram } from "../ui/charts.js?v=c96cb305d835";
 
 // Owns this feature's page rendering and dialogs; application services stay at explicit boundaries.
-export function createDatasetsPages({ state, http, feedback, dialogs, shell, navigation, context, ensureOverview, showTasks, pollTasks, queued, createJobDialog }) {
+export function createDatasetsPages({ state, http, feedback, dialogs, shell, navigation, context, ensureOverview, showTasks, pollTasks, queued, holdTaskRefresh, createJobDialog }) {
   const api = (...args) => http.api(...args);
   const post = (...args) => http.post(...args);
   const put = (...args) => http.put(...args);
@@ -225,11 +225,43 @@ export function createDatasetsPages({ state, http, feedback, dialogs, shell, nav
   }
 
   async function qualityDialog(dataset, after) {
+    const view = state.pageContext, project = state.project, user = state.user?.id;
+    const controller = new AbortController();
+    const releaseRefresh = holdTaskRefresh();
+    let closed = false, timer = null, wake = null;
+    const current = () => !closed && state.pageContext === view && state.project === project && state.user?.id === user;
     const body = document.createElement("div");
     body.innerHTML = `<div class="muted"><span class="spinner"></span> profiling…</div>`;
-    const m = modal({ title: `Data quality · ${dataset}`, body, wide: true, footer: `<button class="btn" data-close>Close</button>` });
+    const m = modal({ title: `Data quality · ${dataset}`, body, wide: true, footer: `<button class="btn" data-close>Close</button>`, onClose: (reason) => {
+      const refresh = current() && reason !== "navigation";
+      closed = true; controller.abort(); clearTimeout(timer); wake?.();
+      releaseRefresh(refresh);
+    } });
     $("[data-close]", m.el).onclick = m.close;
-    const p = await api(`/api/datasets/${encodeURIComponent(dataset)}/quality`);
+    let p;
+    try {
+      p = await api(`/api/datasets/${encodeURIComponent(dataset)}/quality`, { signal: controller.signal });
+      if (!current()) return;
+      if (p.queued) {
+        const taskId = p.task.id;
+        showTasks(); pollTasks();
+        let task = p.task;
+        while (current()) {
+          if (task.state === "succeeded") { p = task.result; break; }
+          if (task.state === "failed" || task.state === "stopped") throw new Error(task.error || `Profiling ${task.state}`);
+          body.innerHTML = `<div class="muted" role="status"><span class="spinner"></span> Profiling ${esc(task.state)} in the background. You can close this dialog; the task will continue.</div>`;
+          await new Promise((resolve) => { wake = resolve; timer = setTimeout(resolve, 2500); });
+          wake = null; timer = null;
+          if (!current()) return;
+          task = await api(`/api/tasks/${encodeURIComponent(taskId)}`, { signal: controller.signal });
+        }
+      }
+      if (!current()) return;
+      if (!p || p.truncated) throw new Error("The profiling task did not return a complete result.");
+    } catch (error) {
+      if (current() && error.name !== "AbortError") body.textContent = `Could not profile dataset: ${error.message}`;
+      return;
+    }
     const stat = (k, v) => `<div ${dataContext(k, {label:k,value:v})} class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
     const dist = (pairs) => pairs.length ? `<div class="table-wrap"><table aria-label="Dataset records">${pairs.map(([k, v]) => `<tr ${dataContext("Distribution entry", {label:k,value:v})}><td>${esc(k)}</td><td class="num">${v}</td><td style="width:40%"><div style="height:8px;border-radius:4px;background:var(--s1);width:${Math.max(2, 100 * v / pairs[0][1])}%"></div></td></tr>`).join("")}</table></div>` : `<div class="muted">none</div>`;
     const o = p.outliers, d = p.duplicates;

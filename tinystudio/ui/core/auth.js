@@ -1,5 +1,5 @@
-import { $ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc } from "../ui/format.js?v=82e74d4b5ecb";
+import { $ } from "../ui/dom.js?v=c96cb305d835";
+import { esc } from "../ui/format.js?v=c96cb305d835";
 
 export function createAuthViews({ http }) {
   function authPage(title, body) {

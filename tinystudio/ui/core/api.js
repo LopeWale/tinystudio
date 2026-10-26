@@ -26,7 +26,7 @@ export function createApiClient({ getProject, getCapture, assertRender, recordAp
     scoped(path) {
       const project = getProject();
       if (project && PROJECT_PREFIXES.some((pre) => path === pre || path.startsWith(pre + "/") || path.startsWith(pre + "?"))) return `/api/p/${encodeURIComponent(project)}` + path.slice(4);
-      if (path === "/api/tasks" && project) return `/api/tasks?project=${encodeURIComponent(project)}`;
+      if ((path === "/api/tasks" || path === "/api/tasks?include_result=false") && project) return `${path}${path.includes("?") ? "&" : "?"}project=${encodeURIComponent(project)}`;
       return path;
     },
     rawFetch(path, options = {}) {

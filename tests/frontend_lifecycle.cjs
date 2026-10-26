@@ -56,7 +56,7 @@ async function fixture(options = {}) {
     if (path === '/api/auth/status') return options.status;
     if (path === '/api/projects') return [{ slug: 'project-one', name: 'Project One' }];
     if (path === '/api/overview') return { project: { name: 'Project One' }, tree: { datasets: [] } };
-    if (path === '/api/tasks') return options.tasks || [];
+    if (path === '/api/tasks?include_result=false') return options.tasks || [];
     throw new Error('unexpected API path: ' + path);
   };
   app.http.post = async (path, body) => { posts.push({ path, body: JSON.parse(JSON.stringify(body)) }); };
@@ -118,7 +118,7 @@ test('authenticated boot establishes project and overview before mounting and re
   f.app.assistant.mountAssistant = () => { assert.equal(f.app.state.project, 'project-one'); assert.equal(f.app.state.overview.project.name, 'Project One'); phases.push('mount'); };
   f.app.router.render = async () => { assert.deepEqual(phases, ['mount']); phases.push('render'); };
   await f.app.start(); await f.app.start();
-  assert.deepEqual(f.requests, ['/api/auth/status', '/api/projects', '/api/overview', '/api/tasks']);
+  assert.deepEqual(f.requests, ['/api/auth/status', '/api/projects', '/api/overview', '/api/tasks?include_result=false']);
   assert.equal(f.app.state.user, user);
   assert.deepEqual(phases, ['mount', 'render']);
   assert.match(f.tasksElement.innerHTML, /Nothing running/);
@@ -135,7 +135,7 @@ test('running tasks poll, stop through API, and refresh once on completion', asy
   assert.equal(f.timers.size, 1);
   assert.equal([...f.timers.values()][0].delay, 2500);
   f.tasksElement.querySelector('#tHide').onclick(); assert.equal(f.tasksElement.hidden, true);
-  f.app.http.api = async (path) => { assert.equal(path, '/api/tasks'); return [{ id: 'task-7', state: 'succeeded', kind: 'clean' }]; };
+  f.app.http.api = async (path) => { assert.equal(path, '/api/tasks?include_result=false'); return [{ id: 'task-7', state: 'succeeded', kind: 'clean' }]; };
   await f.tasksElement.querySelectorAll('[data-stop]')[0].onclick();
   await new Promise(setImmediate);
   assert.deepEqual(f.posts, [{ path: '/api/tasks/task-7/stop', body: {} }]);
@@ -145,6 +145,56 @@ test('running tasks poll, stop through API, and refresh once on completion', asy
   await f.app.tasks.pollTasks(); assert.equal(renders, 1, 'completed state must not repeatedly refresh the page');
   f.app.destroy();
 });
+
+test('completed quality profiles keep the waiting dialog open without refreshing the page', async () => {
+  const f = await fixture({ tasks: [{ id: 'profile-1', state: 'running', kind: 'dataset.profile' }] });
+  let renders = 0;
+  f.app.navigation.render = () => { renders++; };
+  await f.app.tasks.pollTasks();
+  f.app.http.api = async () => [{ id: 'profile-1', state: 'succeeded', kind: 'dataset.profile' }];
+  await f.app.tasks.pollTasks();
+  assert.equal(renders, 0);
+  assert.deepEqual(f.errors, [['a task finished']]);
+  assert.equal(f.timers.size, 0);
+  f.app.destroy();
+});
+
+test('quality dialog defers concurrent mutation refresh until it closes, exactly once', async () => {
+  const tasks = [{id:'profile',state:'running',kind:'dataset.profile'}, {id:'eval',state:'running',kind:'eval.run'}];
+  const f = await fixture({tasks});
+  let renders = 0;
+  f.app.navigation.render = () => { renders++; };
+  const release = f.app.tasks.holdRefresh();
+  await f.app.tasks.pollTasks();
+  f.app.http.api = async () => tasks.map(t => ({...t,state:'succeeded'}));
+  await f.app.tasks.pollTasks();
+  assert.equal(renders, 0, 'mixed completion must preserve the quality dialog');
+  assert.equal(f.timers.size, 0, 'refresh waits for dialog closure, not repeated polling');
+  release();
+  assert.equal(renders, 1, 'mutation completion must eventually refresh');
+  release();
+  await f.app.tasks.pollTasks();
+  assert.equal(renders, 1, 'release and repeated terminal polls cannot duplicate refresh');
+  f.app.destroy();
+});
+
+for (const finish of ['navigation', 'project-change', 'destroy']) {
+  test(`deferred task refresh is discarded on ${finish}`, async () => {
+    const f = await fixture({tasks:[{id:'eval',state:'running',kind:'eval.run'}]});
+    let renders = 0;
+    f.app.navigation.render = () => { renders++; };
+    const release = f.app.tasks.holdRefresh();
+    await f.app.tasks.pollTasks();
+    f.app.http.api = async () => [{id:'eval',state:'succeeded',kind:'eval.run'}];
+    await f.app.tasks.pollTasks();
+    if (finish === 'navigation') release(false);
+    if (finish === 'project-change') { f.app.state.project='another'; f.app.tasks.syncScope(); }
+    if (finish === 'destroy') f.app.destroy();
+    release();
+    assert.equal(renders, 0);
+    f.app.destroy();
+  });
+}
 
 test('destroy clears pending task timer and ignores a late in-flight response', async () => {
   const f = await fixture({ tasks: [{ id: 'late', state: 'queued', kind: 'eval' }] });
@@ -189,7 +239,7 @@ test('real task transport survives navigation, deduplicates polling and retries 
   assert.equal(f.app.tasks.pollTasks(), pending, 'overlapping wakes must share the same request');
   f.context.location.hash = '#/stats'; f.app.assistant.beginRender('#/stats');
   release(jsonResponse([{ id: 'task', state: 'running', kind: 'eval' }])); await pending;
-  assert.deepEqual(urls, ['/api/tasks?project=one']);
+  assert.deepEqual(urls, ['/api/tasks?include_result=false&project=one']);
   assert.equal(f.app.state.tasks[0].state, 'running', 'a route change must not discard background state');
   assert.equal(f.timers.size, 1);
   assert.equal(f.app.state.pageContext.api.length, 0, 'background records must not enter page context');
@@ -225,13 +275,13 @@ test('a delayed successful page response cannot replace sign-in after a backgrou
   let release;
   f.setNetwork(async (url) => {
     if (url.endsWith('/overview')) return new Promise(resolve => { release = resolve; });
-    if (url.startsWith('/api/tasks')) return jsonResponse({ detail: 'expired' }, 401);
+    if (url.startsWith('/api/tasks?include_result=false')) return jsonResponse({ detail: 'expired' }, 401);
     return jsonResponse([]);
   });
   let protectedRenders = 0;
   f.app.shell.layout = () => { protectedRenders++; f.appElement.innerHTML = 'protected page'; return new Element(); };
   const page = f.app.router.render(); await new Promise(setImmediate);
-  await assert.rejects(f.app.http.background('/api/tasks'), { name: 'AuthenticationRequiredError' });
+  await assert.rejects(f.app.http.background('/api/tasks?include_result=false'), { name: 'AuthenticationRequiredError' });
   assert.ok(f.appElement.querySelector('#loginForm'));
   release(jsonResponse({ tree: { datasets: [] } })); await page;
   assert.ok(f.appElement.querySelector('#loginForm'), 'authentication recovery must survive an older success');

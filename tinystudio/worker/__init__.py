@@ -188,7 +188,8 @@ def run_task(task_id: str, echo: Any = None) -> dict[str, Any] | None:
         result = HANDLERS[kind](Context(task_id, project_id, user_id, args, log))
         log(f"[task {task_id}] succeeded")
         with session() as db:
-            tasks_svc.mark_finished(db, task_id, "succeeded", result=_jsonable(result))
+            # The quality page consumes the complete profile from this durable result.
+            tasks_svc.mark_finished(db, task_id, "succeeded", result=_jsonable(result, truncate=kind != "dataset.profile"))
         return result
     except KeyboardInterrupt:
         with session() as db:
@@ -206,7 +207,7 @@ def run_task(task_id: str, echo: Any = None) -> dict[str, Any] | None:
         log.close()
 
 
-def _jsonable(value: Any) -> dict[str, Any] | None:
+def _jsonable(value: Any, *, truncate: bool = True) -> dict[str, Any] | None:
     import json
 
     if value is None:
@@ -215,7 +216,7 @@ def _jsonable(value: Any) -> dict[str, Any] | None:
         text = json.dumps(value, default=str)
     except TypeError:
         return {"repr": repr(value)[:2000]}
-    if len(text) > 200_000:
+    if truncate and len(text) > 200_000:
         return {"truncated": True, "preview": text[:2000]}
     loaded = json.loads(text)
     return loaded if isinstance(loaded, dict) else {"value": loaded}

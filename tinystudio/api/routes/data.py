@@ -212,8 +212,10 @@ def download_dataset(name: str, project: Project = Depends(project_dep), db: Ses
 
 
 @router.get("/datasets/{name}/quality")
-def dataset_quality(name: str, project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
-    return datasets_svc.profile(db, wrap(lambda: datasets_svc.get_dataset(db, project, name)))
+def dataset_quality(name: str, project: Project = Depends(project_dep), db: Session = Depends(get_db), principal: Principal = Depends(current_user)) -> Any:
+    """Return the quality profile, or a task for datasets above the synchronous row limit."""
+    queued = _queued_if_large(db, project, name, "dataset.profile", {"dataset": name}, principal)
+    return queued or datasets_svc.profile(db, wrap(lambda: datasets_svc.get_dataset(db, project, name)))
 
 
 def _queued_if_large(db: Session, project: Project, dataset_name: str, kind: str, args: dict[str, Any], principal: Principal) -> JSONResponse | None:

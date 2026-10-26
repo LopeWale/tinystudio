@@ -1,4 +1,4 @@
-import { $ } from "../ui/dom.js?v=82e74d4b5ecb";
+import { $ } from "../ui/dom.js?v=c96cb305d835";
 
 const PROJECT_KEY = "tinystudio.project";
 export function createProjectController({ state, http, dialogs, feedback, onProjectChange }) {

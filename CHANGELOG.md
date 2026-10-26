@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-26 — Background dataset quality profiling
+
+- Plan: reuse the synchronous row limit and durable worker tasks for large quality profiles, preserve inline profiles and the existing statistics, and let the quality dialog consume the completed task result.
+- Added `dataset.profile` routing and handler; the full profile survives the generic task preview limit in PostgreSQL. The worker retains existing queued/running/succeeded/failed/stopped behavior. Small datasets still return the profile directly.
+- The quality dialog shows background progress, renders the saved result, and reports failures/stops. Closing or leaving the dialog stops its polling; profiling continues. Profile completion does not trigger a page refresh that would dismiss the dialog. Tool guidance explains how to retrieve queued results.
+- Agent Team delegated the bounded backend implementation and integration tests; parent owns frontend integration. Validation: 28 backend integration tests and 15 core/frontend-asset tests passed; 21 frontend lifecycle checks, 21 page scenarios with quality-dialog checks, and shared-core contracts passed. Queue coverage proves the request skips profiling and full results survive Redis job removal. No live large-import benchmark was run.
+- After explicit authorization, the restricted verifier identified two integration issues: concurrent task completion could dismiss the quality dialog, and status polling downloaded full saved profiles. Fixed both: dialog-owned refresh holds defer one refresh until closure and discard it on navigation/scope changes; lightweight task listings defer the result column and return null while default listings and detail retain complete results.
+- Corrected validation: 28 backend tests, 25 frontend lifecycle tests, page/shared-core contracts, two asset tests, and whitespace checks passed. SQL assertions prove lightweight polling omits the result column; UI checks cover mixed completion, exactly-once refresh, and dialog/navigation cleanup. The follow-up independent verifier/advisor returned PASS with no new blocking findings. Live large-import performance remains unverified. Publication authorized after review, including the shared modal lifecycle implementation and supporting tests required by profiling. Unrelated frontend changes remain excluded.
+
+
 ## 2026-10-23 — Modular frontend
 
 - Plan and scope: replace the full `studio.js` monolith with native modules for routing, application state, API transport, reusable UI, page features and the assistant. Preserve the existing templates, routes, endpoints, project scoping, context capture and permission gates. Verify the actual module graph, every browser page and independent review; no advisor.

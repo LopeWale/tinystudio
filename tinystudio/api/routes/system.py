@@ -152,9 +152,9 @@ def settings_test(body: SettingsTestBody, db: Session = Depends(get_db), _: Prin
 
 # ---------------------------------------------------------------- tasks
 @router.get("/tasks")
-def list_tasks(project: str | None = None, limit: int = 50, db: Session = Depends(get_db), _: Principal = Depends(current_user)) -> list[dict[str, Any]]:
+def list_tasks(project: str | None = None, limit: int = 50, include_result: bool = True, db: Session = Depends(get_db), _: Principal = Depends(current_user)) -> list[dict[str, Any]]:
     row = projects_svc.get_project(db, project) if project else None
-    return tasks_svc.list_tasks(db, row, max(1, min(limit, 500)))
+    return tasks_svc.list_tasks(db, row, max(1, min(limit, 500)), include_result=include_result)
 
 
 @router.get("/tasks/{task_id}")

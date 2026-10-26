@@ -7,9 +7,18 @@ const { loadFrontend } = require('./helpers/frontend-loader.cjs');
 // It intentionally supplies no auto-created selectors or fallback API properties.
 const decode = text => text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, key) => ({amp:'&',lt:'<',gt:'>',quot:'"','#39':"'",nbsp:' '})[key]);
 const voids = new Set(['input','br','hr','img','meta','link']);
+let activeDocument;
 class Element {
   constructor(tag = 'div', attrs = {}) { this.tagName = tag.toLowerCase(); this.attrs = attrs; this.children = []; this.dataset = {}; this.style = {}; this.listeners = {}; for (const [key,value] of Object.entries(attrs)) if (key.startsWith('data-')) this.dataset[key.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())] = value; this.disabled = 'disabled' in attrs; this.checked = 'checked' in attrs; this.hidden = 'hidden' in attrs; this.scrollHeight = 100; }
   get id() { return this.attrs.id; }
+  get tabIndex() { return this.attrs.tabindex !== undefined ? Number(this.attrs.tabindex) : ['a','button','input','select','textarea'].includes(this.tagName) ? 0 : -1; }
+  get inert() { return 'inert' in this.attrs; }
+  set inert(value) { if (value) this.attrs.inert = ''; else delete this.attrs.inert; }
+  get isConnected() { let node = this; while (node.parentElement) { if (!node.parentElement.children.includes(node)) return false; node = node.parentElement; } return node === activeDocument?.body; }
+  getClientRects() { return this.closest('[hidden]') ? [] : [{}]; }
+  hasAttribute(name) { return name in this.attrs; }
+  contains(child) { for (let node = child; node; node = node.parentElement) if (node === this) return true; return false; }
+  focus() { activeDocument.activeElement = this; }
   get className() { return this.attrs.class || ''; }
   set className(value) { this.attrs.class = value; }
   get classList() { return { add: value => this.classList.toggle(value,true), remove: value => this.classList.toggle(value,false), contains: value => this.className.split(/\s+/).includes(value), toggle: (value,on) => { const classes = new Set(this.className.split(/\s+/).filter(Boolean)); on ??= !classes.has(value); on ? classes.add(value) : classes.delete(value); this.className = [...classes].join(' '); return on; } }; }
@@ -97,6 +106,7 @@ const responses = new Map([
 (async () => {
   const body = new Element('body');
   const document = {body,createElement:tag=>new Element(tag),querySelector:sel=>body.querySelector(sel),querySelectorAll:sel=>body.querySelectorAll(sel),addEventListener(){},removeEventListener(){}};
+  activeDocument = document;
   class ConversationSync {start(){} stop(){} requestCheck(){} notifySaved(){}}
   const context = vm.createContext({document,Element,ConversationSync,window:{addEventListener(){},removeEventListener(){}},location:{hash:'#/datasets',origin:'https://test.invalid'},history:{replaceState(_state,_title,hash){context.location.hash=hash;}},localStorage:{getItem(){return null;},setItem(){},removeItem(){}},FormData,AbortController,TextEncoder,TextDecoder,URLSearchParams,console,setTimeout,clearTimeout,fetch:async()=>{throw new Error('Unexpected network access');}});
   const app = await loadFrontend(context);
@@ -117,23 +127,47 @@ const responses = new Map([
   }
   await page('#/datasets',()=>app.pages.datasets.pageDatasets(),'Datasets',[['#newDataset'],['#dsSearch','oninput'],['[data-ds]']]);
   assert.equal(binding('[data-ds]').data.name,'support');
-  control('#dsSearch','oninput').oninput({target:{value:'missing'}});assert.match(content.textContent,/No datasets yet/);
-  control('#dsSearch','oninput').oninput({target:{value:'support'}});control('[data-ds]').onclick();assert.equal(context.location.hash,'#/datasets/support');
+  control('#dsSearch','oninput').oninput({target:{value:'missing'}});assert.match(content.textContent,/No matching datasets/);
+  control('#dsSearch','oninput').oninput({target:{value:'support'}});control('[data-ds]').onclick({ button:0, preventDefault(){} });assert.equal(context.location.hash,'#/datasets/support');
   await page('#/datasets/support',()=>app.pages.datasets.pageDataset('support'),'support',[['#btnFinetune'],['#btnQuality'],['#bucketFilter','onchange'],['tr[data-i]']]);
   assert.equal(binding('tr[data-i]').data.messages[0].content,'Reset thermostat?');assert.match(content.textContent,/Hold reset\./);
-  control('#btnFinetune').onclick();assert.match(body.textContent,/New finetuning job/,'Dataset action must invoke the training feature');
+  // Quality keeps its existing view for inline results and consumes queued results
+  // without resubmitting profiling. Closing/navigation must stop dialog polling.
+  {
+    const hist = {bins:[],counts:[]};
+    const profile = {count:2,approx_tokens:{total:10},turns:{mean:2,with_system_prompt:0},duplicates:{exact_user_rows:0,near_pair_count:0,examples:[],near_pairs:[]},outliers:{empty_like:[],too_short:[],too_long:[],fences:{low:20,high:100}},format:{answers_json:0,answers_json_pct:0},ratings:{count:0},user_chars:{summary:{median:10,p95:10,max:10},histogram:hist},answer_chars:{summary:{median:10,p95:10,max:10},histogram:hist},buckets:{training:1,validation:1},labels:[],sources:[],pii:{emails:0,phones:0,urls:0,ids:0,cards:0}};
+    const savedApi=app.http.api, savedShow=app.tasks.showTasks, savedPoll=app.tasks.pollTasks, savedHold=app.tasks.holdRefresh;
+    let holds=0;const releases=[];
+    app.tasks.holdRefresh=()=>{holds++;const release=savedHold();return refresh=>{holds--;releases.push(refresh);release(refresh);};};
+    const savedTimeout=context.setTimeout, savedClear=context.clearTimeout;
+    let tick, signal, calls, result;
+    context.setTimeout = fn => { tick=fn; return 1; }; context.clearTimeout = () => { tick=null; };
+    app.tasks.showTasks=()=>{};app.tasks.pollTasks=()=>{};
+    app.http.api=async(path,options)=>{calls.push(path);signal=options.signal;return structuredClone(path.endsWith('/quality') ? result : {state:'succeeded',result:profile});};
+    const open=async(response)=>{calls=[];result=response;const pending=app.pages.datasets.qualityDialog('support',()=>{});await flush();return {pending,dialog:body.querySelector('.modal-back')};};
+    const queuedProfile={queued:true,task:{id:'profile-1',state:'queued'}};
+    const inline=await open(profile);await inline.pending;assert.match(inline.dialog.textContent,/Approx. tokens/);app.dialogs.closeAll();
+    const queued=await open(queuedProfile);assert.equal(holds,1);assert.match(queued.dialog.textContent,/queued in the background/);tick();await queued.pending;
+    assert.deepEqual(calls,['/api/datasets/support/quality','/api/tasks/profile-1']);assert.match(queued.dialog.textContent,/Approx. tokens/);assert.equal(holds,1);queued.dialog.querySelector('[data-close]').onclick();assert.equal(holds,0);assert.equal(releases.at(-1),true);
+    for(const state of ['failed','stopped']) { const failed=await open({queued:true,task:{id:'profile-1',state,error:'profiling '+state}});await failed.pending;assert.match(failed.dialog.textContent,new RegExp('Could not profile dataset: profiling '+state));app.dialogs.closeAll(); }
+    const closed=await open(queuedProfile);app.dialogs.closeAll();await closed.pending;assert.equal(signal.aborted,true);assert.equal(tick,null);assert.equal(calls.length,1);
+    const navigated=await open(queuedProfile);const original=app.state.project;app.state.project='another';tick();await navigated.pending;assert.equal(calls.length,1);app.state.project=original;app.dialogs.closeAll();
+    assert.equal(holds,0);assert.equal(releases.at(-1),false,'navigation must not trigger another refresh');
+    app.http.api=savedApi;app.tasks.showTasks=savedShow;app.tasks.pollTasks=savedPoll;app.tasks.holdRefresh=savedHold;context.setTimeout=savedTimeout;context.clearTimeout=savedClear;
+  }
+  control('#btnFinetune').onclick({ button:0, preventDefault(){} });assert.match(body.textContent,/New finetuning job/,'Dataset action must invoke the training feature');
   await page('#/finetuning',()=>app.pages.training.pageFinetuning(),'Finetuning',[['#newJob'],['#autopilotBtn'],['[data-job]']]);
   assert.equal(binding('[data-job]').data.experiments[0].state,'succeeded');
   await page('#/finetuning/support-job',()=>app.pages.training.pageJob('support-job'),'support-job',[['#btnEval'],['#btnDeleteJob'],['#showEval','onchange']]);
   assert.match(content.textContent,/Training loss comparison/);assert.equal(binding('.exp').data.number,1);assert.equal(binding('#lossChart svg').data.series[0].train[0].y,1);
-  await control('#btnEval').onclick();await flush();assert.match(body.textContent,/New evaluation/,'Completed job opens the evaluation feature');
+  await control('#btnEval').onclick({ button:0, preventDefault(){} });await flush();assert.match(body.textContent,/New evaluation/,'Completed job opens the evaluation feature');
   await page('#/finetuning/draft',()=>app.pages.training.pageJob('draft'),'draft',[['#addExp'],['#saveStart'],['#btnStart']]);
-  control('#addExp').onclick();assert.ok(content.querySelector('input[data-f="base_model"]'));assert.match(content.textContent,/Experiment 1/);
+  control('#addExp').onclick({ button:0, preventDefault(){} });assert.ok(content.querySelector('input[data-f="base_model"]'));assert.match(content.textContent,/Experiment 1/);
   await page('#/evaluations',()=>app.pages.evaluations.pageEvaluations(),'Evaluations',[['#newEval'],['[data-ev]']]);
   assert.equal(binding('[data-ev]').data.name,'compare-v1');
   await page('#/evaluations/compare-v1',()=>app.pages.evaluations.pageEval('compare-v1'),'compare-v1',[['#delEval'],['[data-mt]'],['[data-cell]']]);
   assert.equal(binding('[data-cell]').data.score,.75);assert.equal(binding('#scoreHist svg').data.rows[0].prediction,'Hold reset.');assert.match(content.textContent,/75%/);
-  control('[data-cell]').onclick();assert.match(body.textContent,/Evaluation result details/);
+  control('[data-cell]').onclick({ button:0, preventDefault(){} });assert.match(body.textContent,/Evaluation result details/);
   await page('#/metrics',()=>app.pages.metrics.pageMetrics(),'Metrics',[['#newMetric'],['[data-me]']]);assert.equal(binding('[data-me]').data.name,'Exact');
   await page('#/playground',()=>app.pages.playground.pagePlayground(null),'Playground',[['#pgSend'],['#pgReset'],['#pgModel','onchange']]);assert.match(content.textContent,/ft-support-job-1/);assert.match(content.textContent,/manuals/);
   await page('#/models',()=>app.pages.models.pageModels(),'Models',[['[data-toggle]'],['#hubSearch'],['#hfSave']]);assert.equal(binding('tr[data-context-id]').data.id,model.id);
@@ -145,8 +179,8 @@ const responses = new Map([
   await page('#/stats',()=>app.pages.stats.pageStats(),'Stats');assert.equal(binding('.tile').data.value,1);assert.match(content.textContent,/Requests per day/);
   await page('#/api-keys',()=>app.pages.keys.pageKeys(),'API Keys',[['#newKey']]);assert.match(content.textContent,/No keys yet/);assert.match(content.textContent,/test\/</);
   await page('#/interp',()=>app.pages.interpretability.pageInterp(),'Interpretability',[['#newCapture'],['#newDiff'],['[data-cap]'],['[data-diff]']]);assert.equal(binding('[data-cap]').data.name,capture.name);
-  await page('#/interp/c/support-capture',()=>app.pages.interpretability.pageCapture(capture.name,new URLSearchParams()),capture.name,[['#explainTop'],['#layerSel','onchange'],['tr[data-n]']]);assert.equal(binding('tr[data-n]').data.neuron,3);await control('tr[data-n]').onclick();assert.match(content.textContent,/L0 · N3/);assert.equal(binding('.ipanel').data.stats.max,2);
-  await page('#/interp/d/support-diff',()=>app.pages.interpretability.pageDiff(comparison.name,new URLSearchParams()),model.id,[['#layerSel','onchange'],['#sortSel','onchange'],['tr[data-n]']]);assert.equal(binding('tr[data-n]').data.r,.8);await control('tr[data-n]').onclick();assert.match(content.textContent,/Datapoints that drove the change/);assert.equal(binding('.ipanel').data.datapoints[0].delta_sum,2);
+  await page('#/interp/c/support-capture',()=>app.pages.interpretability.pageCapture(capture.name,new URLSearchParams()),capture.name,[['#explainTop'],['#layerSel','onchange'],['tr[data-n]']]);assert.equal(binding('tr[data-n]').data.neuron,3);await control('tr[data-n]').onclick({ button:0, preventDefault(){} });assert.match(content.textContent,/L0 · N3/);assert.equal(binding('.ipanel').data.stats.max,2);
+  await page('#/interp/d/support-diff',()=>app.pages.interpretability.pageDiff(comparison.name,new URLSearchParams()),model.id,[['#layerSel','onchange'],['#sortSel','onchange'],['tr[data-n]']]);assert.equal(binding('tr[data-n]').data.r,.8);await control('tr[data-n]').onclick({ button:0, preventDefault(){} });assert.match(content.textContent,/Datapoints that drove the change/);assert.equal(binding('.ipanel').data.datapoints[0].delta_sum,2);
   // Assistant persistence/streaming have separate suites; render the full page here too.
   app.http.rawFetch=async()=>({ok:true,json:async()=>({revision:0,history:[],provider:'openai',model:'test-model',updated:null}),headers:{get:()=>null}});
   await app.assistant.conversation.assistLoad();

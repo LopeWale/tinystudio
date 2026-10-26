@@ -1,6 +1,6 @@
-import { $, $$ } from "../ui/dom.js?v=82e74d4b5ecb";
-import { esc } from "../ui/format.js?v=82e74d4b5ecb";
-import { ICONS } from "../ui/layout.js?v=82e74d4b5ecb";
+import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
+import { esc } from "../ui/format.js?v=c96cb305d835";
+import { ICONS } from "../ui/layout.js?v=c96cb305d835";
 
 export function createAssistantView({ state, assistantState: ASSIST, http, feedback, dialogs, shell, conversation, context, chat, ensureOverview }) {
   const api = (...args) => http.api(...args);

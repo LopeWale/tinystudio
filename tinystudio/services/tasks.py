@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from tinystudio.core.project import ProjectError, iso
 from tinystudio.db.models import Project, Task, User
@@ -14,8 +14,8 @@ from tinystudio.db.models import Project, Task, User
 TAIL_LINES = 40
 
 
-def task_dict(task: Task) -> dict[str, Any]:
-    return {"id": task.id, "kind": task.kind, "args": task.args, "state": task.state, "created": iso(task.created), "started": iso(task.started), "finished": iso(task.finished), "error": task.error, "result": task.result, "project_id": task.project_id, "log_tail": task.log_tail or [], "worker": task.worker}
+def task_dict(task: Task, *, include_result: bool = True) -> dict[str, Any]:
+    return {"id": task.id, "kind": task.kind, "args": task.args, "state": task.state, "created": iso(task.created), "started": iso(task.started), "finished": iso(task.finished), "error": task.error, "result": task.result if include_result else None, "project_id": task.project_id, "log_tail": task.log_tail or [], "worker": task.worker}
 
 
 def create_task(db: Session, kind: str, args: dict[str, Any], project: Project | None = None, user: User | None = None) -> Task:
@@ -32,13 +32,15 @@ def get_task(db: Session, task_id: str) -> Task:
     return task
 
 
-def list_tasks(db: Session, project: Project | None = None, limit: int = 50, states: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+def list_tasks(db: Session, project: Project | None = None, limit: int = 50, states: tuple[str, ...] | None = None, *, include_result: bool = True) -> list[dict[str, Any]]:
     query = select(Task).order_by(Task.created.desc()).limit(limit)
+    if not include_result:
+        query = query.options(defer(Task.result, raiseload=True))
     if project is not None:
         query = query.where(Task.project_id == project.id)
     if states:
         query = query.where(Task.state.in_(states))
-    return [task_dict(t) for t in db.scalars(query)]
+    return [task_dict(t, include_result=include_result) for t in db.scalars(query)]
 
 
 def mark_running(db: Session, task_id: str, worker: str) -> Task:

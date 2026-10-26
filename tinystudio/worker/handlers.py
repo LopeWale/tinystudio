@@ -93,6 +93,18 @@ def dataset_auto_label(ctx: Context) -> dict[str, Any]:
         return datasets_svc.replace_rows(db, datasets_svc.get_dataset(db, project, a["dataset"]), labeled)
 
 
+def dataset_profile(ctx: Context) -> dict[str, Any]:
+    from tinystudio.services import datasets as datasets_svc
+
+    name = ctx.args["dataset"]
+    ctx.progress(f"profiling {name}")
+    with session() as db:
+        dataset = datasets_svc.get_dataset(db, ctx.project(db), name)
+        result = datasets_svc.profile(db, dataset)
+    ctx.progress(f"profiled {name}: {result['count']} datapoints")
+    return result
+
+
 def dataset_clean(ctx: Context) -> dict[str, Any]:
     from tinystudio.core.quality import CleanSpec
     from tinystudio.services import datasets as datasets_svc
@@ -290,6 +302,7 @@ HANDLERS: dict[str, Any] = {
     "dataset.synthetic": dataset_synthetic,
     "dataset.augment": dataset_augment,
     "dataset.auto_label": dataset_auto_label,
+    "dataset.profile": dataset_profile,
     "dataset.clean": dataset_clean,
     "dataset.split": dataset_split,
     "snapshot.create": snapshot_create,

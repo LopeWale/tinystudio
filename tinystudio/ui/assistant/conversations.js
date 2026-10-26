@@ -1,4 +1,4 @@
-import { ConversationSync } from "./conversation-sync.js?v=82e74d4b5ecb";
+import { ConversationSync } from "./conversation-sync.js?v=c96cb305d835";
 
 // Each project/account session owns its revision queue and asynchronous work.
 export function createConversations({ state, http, presentation }) {

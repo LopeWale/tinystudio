@@ -152,7 +152,7 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
         return studio.call("GET", f"/api/datasets/{dataset}", params=params)
 
     def profile_dataset(dataset: str) -> dict[str, Any]:
-        """Data-quality profile of a dataset: length stats and histograms, duplicates, near-duplicates, outliers, label/bucket/source distributions, JSON-answer share, ratings, PII-like patterns."""
+        """Data-quality profile: lengths, duplicates, outliers, distributions, JSON answers, ratings and PII. Large datasets return {queued: true, task: ...}; poll get_task with task.id until succeeded, then read the full profile from result. Failed/stopped tasks carry an error."""
         return studio.call("GET", f"/api/datasets/{dataset}/quality")
 
     def list_jobs() -> list[dict[str, Any]]:

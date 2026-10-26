@@ -39,6 +39,7 @@ assert.equal(client.scoped('/api/datasets?a=1'), '/api/p/a%2Fb%20%3F/datasets?a=
 assert.equal(client.scoped('/api/datasets/foo'), '/api/p/a%2Fb%20%3F/datasets/foo');
 assert.equal(client.scoped('/api/datasets-other'), '/api/datasets-other');
 assert.equal(client.scoped('/api/tasks'), '/api/tasks?project=a%2Fb%20%3F');
+assert.equal(client.scoped('/api/tasks?include_result=false'), '/api/tasks?include_result=false&project=a%2Fb%20%3F');
 assert.equal(client.scoped('/api/tasks?all=1'), '/api/tasks?all=1');
 assert.equal(client.scoped('/api/hub/models'), '/api/hub/models');
 await client.api('/api/datasets');
@@ -96,15 +97,21 @@ assert.match(chart, /height="32.0"/);
 
 // A deliberately small DOM boundary verifies mounting, escaping and lifecycle callbacks.
 class Node {
-  constructor() { this.dataset = {}; this.children = []; this.listeners = {}; this.nodes = new Map(); }
-  set innerHTML(value) { this.html = value; for (const sel of ['.mbody', '.x', '[data-cancel]', '[data-ok]']) if (value.includes(sel === '.mbody' ? 'mbody' : sel === '.x' ? 'class="x"' : sel.slice(1, -1))) this.nodes.set(sel, new Node()); }
+  constructor() { this.dataset = {}; this.children = []; this.listeners = {}; this.nodes = new Map(); this.attrs = {}; }
+  set innerHTML(value) { this.html = value; for (const sel of ['.modal', '.mbody', '.x', '[data-cancel]', '[data-ok]']) if (value.includes(sel === '.modal' ? 'class="modal ' : sel === '.mbody' ? 'mbody' : sel === '.x' ? 'class="x"' : sel.slice(1, -1))) { const node = new Node(); node.parent = this; this.nodes.set(sel, node); } }
   get innerHTML() { return this.html; }
   querySelector(sel) { return this.nodes.get(sel); }
+  querySelectorAll() { return []; } // Detailed keyboard/focus contracts live in frontend_dialogs.mjs.
+  contains(node) { for (let current = node; current; current = current.parent) if (current === this) return true; return false; }
+  closest() { return null; }
+  focus() { document.activeElement = this; }
+  setAttribute(name, value) { this.attrs[name] = value; }
   appendChild(node) { this.children.push(node); node.parent = this; }
   addEventListener(type, fn) { this.listeners[type] = fn; }
+  removeEventListener(type) { delete this.listeners[type]; }
   remove() { this.removed = true; }
 }
-globalThis.document = { body: new Node(), createElement: () => new Node() };
+globalThis.document = { body: new Node(), createElement: () => new Node(), addEventListener() {}, removeEventListener() {} };
 const { modal, confirmModal } = await load('ui/dialogs.js');
 let mounted;
 const child = new Node();
