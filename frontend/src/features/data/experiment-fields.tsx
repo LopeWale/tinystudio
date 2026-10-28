@@ -212,25 +212,29 @@ export function ExperimentFields({
           Assistant only loss
         </Checkbox>
       </section>
-      {value.training_type !== "full" && (
-        <section
-          className="experiment-fields-group"
-          aria-label="LoRA configuration"
-        >
-          <header>
-            <h3>LoRA adapters</h3>
-            <p>
-              {value.training_type === "dpo"
+      <section
+        className="experiment-fields-group"
+        aria-label="LoRA configuration"
+      >
+        <header>
+          <h3>
+            {value.training_type === "full"
+              ? "Retained adapter settings"
+              : "LoRA adapters"}
+          </h3>
+          <p>
+            {value.training_type === "full"
+              ? "Full training retains these configuration values. They must remain valid when saving."
+              : value.training_type === "dpo"
                 ? "DPO preference training uses LoRA adapters."
                 : "Set the capacity and scaling of the trainable adapters."}
-            </p>
-          </header>
-          <div className="experiment-fields-pair">
-            {number("lora_r", "LoRA rank", 1, 256)}
-            {number("lora_alpha", "LoRA alpha", 1, 512)}
-          </div>
-        </section>
-      )}
+          </p>
+        </header>
+        <div className="experiment-fields-pair">
+          {number("lora_r", "LoRA rank", 1, 256)}
+          {number("lora_alpha", "LoRA alpha", 1, 512)}
+        </div>
+      </section>
       <Disclosure
         className="experiment-fields-group experiment-fields-checkpoints"
         isDisabled={disabled}

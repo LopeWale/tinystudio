@@ -1,0 +1,206 @@
+@reference "../../styles/globals.css";
+.training-job-identity,
+.training-job-identity > div,
+.training-setup-footer,
+.training-editor > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.training-job-identity {
+  padding-block: 0.5rem;
+}
+.training-job-identity span,
+.training-setup-footer > span {
+  color: var(--color-text-secondary);
+  @apply text-body-2-regular;
+}
+.training-job [role="tabpanel"] {
+  min-inline-size: 0;
+}
+.training-job .data-job-workspace {
+  grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 1fr);
+  align-items: start;
+}
+.training-setup-layout {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+.training-drafts {
+  display: grid;
+  gap: 0.5rem;
+  min-inline-size: 0;
+  position: sticky;
+  inset-block-start: 0;
+}
+.training-drafts > p {
+  margin: 0 0 0.5rem;
+  color: var(--color-text-secondary);
+  @apply text-caption-1-semibold;
+}
+.training-drafts button {
+  justify-content: start;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.training-drafts button[aria-pressed] {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  block-size: auto;
+}
+.training-drafts button[aria-pressed="true"] {
+  background: var(--color-background-secondary-default);
+  border-color: var(--color-border-focus-ring);
+}
+.training-drafts button span {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+}
+.training-editor {
+  display: grid;
+  gap: 1.5rem;
+  min-inline-size: 0;
+  padding-inline-start: 1.5rem;
+  border-inline-start: 1px solid var(--color-separator-border);
+}
+.training-editor h3,
+.training-review h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+  @apply text-headline-medium;
+}
+.training-review {
+  display: grid;
+  gap: 1rem;
+}
+.training-review article {
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 1.5rem;
+  padding: 1rem;
+}
+.training-review p {
+  color: var(--color-text-secondary);
+  @apply text-body-2-regular;
+}
+@media (max-width: 800px) {
+  .training-setup-layout,
+  .training-job .data-job-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .training-drafts {
+    position: static;
+  }
+  .training-editor {
+    padding-inline-start: 0;
+    padding-block-start: 1rem;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--color-separator-border);
+  }
+}
+.training-setup .experiment-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.training-setup .experiment-fields-group {
+  gap: 0.75rem;
+}
+.training-setup .experiment-fields-group + .experiment-fields-group {
+  padding-block-start: 0;
+  border-block-start: 0;
+}
+.training-setup .experiment-fields-pair,
+.training-setup .experiment-fields-triple {
+  gap: 0.5rem;
+}
+.training-setup .experiment-fields-group header p {
+  @apply text-caption-1-regular;
+}
+.training-setup .experiment-fields-triple {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.training-setup .experiment-fields-select {
+  grid-column: 1 / -1;
+}
+@media (max-width: 1000px) {
+  .training-setup .experiment-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.training-job
+  > .data-template
+  > .studio-template__layout
+  > .studio-template__content {
+  overflow: hidden;
+}
+.training-job [role="tabpanel"] {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.training-job .data-job-workspace {
+  flex: 1;
+  min-block-size: 0;
+  align-items: stretch;
+}
+.training-job .data-master {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.training-job .data-job-detail,
+.training-job #training-curves,
+.training-job #training-analysis {
+  overflow: auto;
+  overscroll-behavior: contain;
+  min-block-size: 0;
+}
+.training-job .studio-template__summary,
+.training-job .training-job-identity,
+.training-job .studio-segmented-control {
+  flex: none;
+}
+.training-job .data-job-detail {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.training-job-scroll {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+}
+.training-job-scroll-body {
+  flex: 1;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* Only setup owns this nested scroll surface; shared modal headers/footers stay fixed. */
+.training-setup > .modal-content {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.training-setup > header,
+.training-setup > footer {
+  flex-shrink: 0;
+}
+.training-setup .training-job-scroll-body {
+  padding: 1rem 1.25rem;
+}

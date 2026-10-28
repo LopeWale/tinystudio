@@ -8,7 +8,11 @@ import { useAnalyticalResource } from "./analytical-resource";
 import { TrainingChart } from "./training-chart";
 import "./analytical-workspace.css";
 import { useComponentAction } from "../assistant/actions";
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { Activity, useState, useEffect, useRef, type ReactNode } from "react";
+import { SegmentedControl } from "../../components/affectui/controls";
+import { ExperimentFields } from "./experiment-fields";
+import { validateExperimentDraft } from "./experiment-validation";
+import "./training-job.css";
 import { useParams } from "react-router-dom";
 import { useStudio, useResource } from "../../app/StudioContext";
 import {
@@ -1024,100 +1028,80 @@ export function FinetuningPage() {
     </Page>
   );
 }
-function ExperimentForm({
-  value,
-  onChange,
-  catalog,
-  models,
-}: {
-  value: any;
-  onChange: (v: any) => void;
-  catalog: any[];
-  models: any[];
-}) {
-  const change = (k: string) => (x: any) =>
-    onChange({
-      ...value,
-      [k]: x,
-      ...(k === "training_type"
-        ? {
-            learning_rate:
-              x === "dpo" ? 0.000005 : x === "full" ? 0.00005 : 0.0002,
-          }
-        : {}),
-    });
+function TrainingPaneScroll({ children }: { children: ReactNode }) {
+  const [depth, setDepth] = useState(0);
   return (
-    <div className="data-grid">
-      <Input
-        label="Base model"
-        list="training-catalog"
-        value={value.base_model}
-        onChange={change("base_model")}
-      />
-      <datalist id="training-catalog">
-        {catalog.map((x) => (
-          <option key={x.id} value={x.id} />
-        ))}
-      </datalist>
-      <Select
-        label="Training type"
-        value={value.training_type}
-        onChange={change("training_type")}
-        options={["lora", "full", "qlora", "dpo"]}
-      />
-      <Select
-        label="Refine from finished experiment"
-        value={value.refinetune_from || ""}
-        onChange={(x: string) => change("refinetune_from")(x || null)}
-        options={[
-          { value: "", label: "Start from base model" },
-          ...models.filter((x) => x.kind === "fine-tuned").map((x) => x.alias),
-        ]}
-      />
-      {[
-        ["batch_size", "Batch size", 1, 64],
-        ["learning_rate", "Learning rate", 0, 1],
-        ["epochs", "Number of epochs", 0.1, 50],
-        ["max_length", "Max length (tokens)", 64, 8192],
-        ["gradient_accumulation_steps", "Gradient accumulation", 1, 64],
-        ["lora_r", "LoRA rank", 1, 256],
-        ["lora_alpha", "LoRA alpha", 1, 512],
-        [
-          "checkpoint_every_steps",
-          "Checkpoint every N steps (0 = off)",
-          0,
-          100000,
-        ],
-        ["keep_checkpoints", "Keep newest K checkpoints (0 = all)", 0, 1000],
-      ].map(([k, l, min, max]) => (
-        <Input
-          key={k}
-          label={l}
-          type="number"
-          step={k === "learning_rate" || k === "epochs" ? "any" : 1}
-          min={min}
-          max={max}
-          value={value[k]}
-          onChange={change(String(k))}
-        />
-      ))}
-      <Check
-        label="Assistant only loss"
-        checked={value.assistant_only_loss}
-        onChange={change("assistant_only_loss")}
-      />
+    <div className="training-job-scroll">
+      <div className="training-scroll-fade" aria-hidden="true">
+        <span style={{ opacity: depth }} />
+        <span style={{ opacity: depth }} />
+        <span style={{ opacity: depth }} />
+      </div>
+      <div
+        className="training-job-scroll-body"
+        onScroll={(event) =>
+          setDepth(Math.min(1, event.currentTarget.scrollTop / 24))
+        }
+      >
+        {children}
+      </div>
     </div>
   );
 }
+function ExperimentSelectionAction({
+  experiments,
+  selected,
+  onSelect,
+}: {
+  experiments: any[];
+  selected: number | null;
+  onSelect: (number: number) => void;
+}) {
+  useComponentAction({
+    id: "job.experiment",
+    label: "Inspect an experiment",
+    kind: "select",
+    state: selected == null ? "" : String(selected),
+    options: experiments.map((item) => ({
+      value: String(item.number),
+      label: `Experiment ${item.number}`,
+    })),
+    disabled: !experiments.length,
+    run: (value) => {
+      const item = experiments.find((e) => String(e.number) === value);
+      if (!item) throw Error("Choose an available experiment");
+      onSelect(item.number);
+    },
+  });
+  return null;
+}
 export function JobPage() {
   const params = useParams(),
-    name = params.job || params.name || "";
+    s = useStudio();
+  const name = params.job || params.name || "";
+  return <TrainingJobPage key={`${s.scopeKey}:${name}`} name={name} />;
+}
+function TrainingJobPage({ name }: { name: string }) {
   const s = useStudio(),
     a = useAction(),
     r = useAnalyticalResource<any>(`/api/jobs/${enc(name)}`),
     models = useResource<any[]>("/api/models"),
     hub = useResource<any>("/api/hub/models");
-  const [drafts, D] = useState<any[]>([]),
+  const active = useRef(true);
+  const dialogGeneration = useRef(0);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+  const [pane, setPane] = useState("experiments"),
+    [setup, setSetup] = useState(false),
+    [admitted, setAdmitted] = useState(false),
+    [review, setReview] = useState(false),
+    [draftIndex, setDraftIndex] = useState(0),
+    [validation, setValidation] = useState(""),
+    [drafts, D] = useState<any[]>([]),
     [evaluate, E] = useState(false),
     [capture, C] = useState<any>(null),
     [captureDs, CD] = useState(""),
@@ -1136,28 +1120,19 @@ export function JobPage() {
     (e: any) => e.state === "pending" && e.task_id,
   );
   useEffect(() => {
-    if (!running && !pendingTask) return;
+    if (
+      r.data?.experiments?.length &&
+      !r.data.experiments.some(
+        (e: any) => e.state === "pending" || e.state === "running",
+      )
+    )
+      setAdmitted(false);
+  }, [r.data]);
+  useEffect(() => {
+    if (!running && !pendingTask && !admitted) return;
     const timer = setInterval(r.reload, 4000);
     return () => clearInterval(timer);
-  }, [running, pendingTask, r.reload]);
-  useComponentAction({
-    id: "job.experiment",
-    label: "Inspect an experiment",
-    kind: "select",
-    state: experimentNumber == null ? "" : String(experimentNumber),
-    options: (r.data?.experiments || []).map((item: any) => ({
-      value: String(item.number),
-      label: `Experiment ${item.number}`,
-    })),
-    disabled: !r.data?.experiments?.length,
-    run: (value) => {
-      const item = r.data?.experiments.find(
-        (e: any) => String(e.number) === value,
-      );
-      if (!item) throw Error("Choose an available experiment");
-      chooseExperiment(item.number);
-    },
-  });
+  }, [running, pendingTask, admitted, r.reload]);
   const detail = r.data;
   if (!detail)
     return (
@@ -1179,9 +1154,11 @@ export function JobPage() {
     ...(s.overview?.catalog || []),
     ...(hub.data?.models || []).filter((x: any) => x.transformers_loadable),
   ];
-  const add = (option?: any) =>
-    D([
-      ...drafts,
+  const draftLocked = a.busy || running || pendingTask || admitted;
+  const add = (option?: any) => {
+    if (draftLocked) return;
+    D((current) => [
+      ...current,
       option
         ? {
             ...defaultExperiment(option.base_model),
@@ -1190,9 +1167,55 @@ export function JobPage() {
           }
         : defaultExperiment(catalog[0]?.id || ""),
     ]);
+    setDraftIndex(drafts.length);
+    setReview(false);
+    setValidation("");
+    setSetup(true);
+  };
+  const validate = () => {
+    const invalid = drafts.map(validateExperimentDraft).findIndex(Boolean);
+    if (invalid !== -1) {
+      setValidation(
+        `Draft experiment ${invalid + 1}: ${validateExperimentDraft(drafts[invalid])}`,
+      );
+      setDraftIndex(invalid);
+      setReview(false);
+      return false;
+    }
+    setValidation("");
+    return true;
+  };
+  const submit = (launch: boolean) => {
+    const ownDialog = dialogGeneration.current;
+    return a.run(async () => {
+      if (running || pendingTask || admitted)
+        throw Error("A training task is already submitted for this job");
+      if (!validate()) return;
+      if (drafts.length) {
+        await s.api.post(`/api/jobs/${enc(name)}/experiments`, {
+          experiments: drafts,
+        });
+        if (!active.current) return;
+        D([]);
+        r.reload();
+      }
+      if (launch) {
+        const task = await s.api.post(`/api/jobs/${enc(name)}/start`, {});
+        if (!active.current) return;
+        setAdmitted(true);
+        track(s, task);
+        s.toast("Training task submitted");
+        r.reload();
+      } else s.toast("Experiments saved as pending");
+      if (ownDialog === dialogGeneration.current) {
+        setSetup(false);
+        setReview(false);
+      }
+    });
+  };
   return (
     <Page
-      className="data-workspace analytical-workspace"
+      className="data-workspace analytical-workspace collection-page training-job"
       title={name}
       description={`Snapshot ${job.snapshot} · ${detail.snapshot?.training_count ?? "?"} training / ${detail.snapshot?.validation_count ?? "?"} validation`}
       actions={
@@ -1216,7 +1239,9 @@ export function JobPage() {
                     `Delete job "${name}" and all its experiments and weights?`,
                   )
                 ) {
+                  if (!active.current) return;
                   await s.api.del(`/api/jobs/${enc(name)}`);
+                  if (!active.current) return;
                   s.navigate("#/finetuning");
                 }
               })
@@ -1248,307 +1273,549 @@ export function JobPage() {
           </div>
         }
       >
-        <ErrorNotice error={r.error || a.error} />
-        <a href={`#/datasets/${enc(detail.snapshot?.dataset || "")}`}>
-          Dataset {detail.snapshot?.dataset || "missing snapshot"}
-        </a>
-        <Badge>
-          {running
-            ? "Running"
-            : configuring
-              ? "Ready to start experiments"
-              : experiments.every((e: any) => e.state === "succeeded")
-                ? "Completed"
-                : "Partially run"}
-        </Badge>
-        <TrainingChart
-          key={`${s.scopeKey}:${name}`}
-          experiments={experiments}
-          onInspect={chooseExperiment}
-        />
-        <div
-          className={`data-master-detail data-job-workspace ${experimentNumber != null ? "has-selection" : ""}`}
-        >
-          <div className="data-master">
-            <DataTable
-              scopeKey={s.scopeKey + ":" + s.route}
-              label="Experiments"
-              rows={experiments}
-              getRowId={(item: any) => String(item.number)}
-              pagination="client"
-              columns={[
-                {
-                  id: "col-0",
-                  label: "Experiment",
-                  value: (item: any) => item.number,
-                  render: (item: any) => (
-                    <>
-                      <Button
-                        variant="ghost"
-                        aria-pressed={
-                          inspectedExperiment?.number === item.number
-                        }
-                        onClick={() => chooseExperiment(item.number)}
-                      >
-                        Experiment {item.number}
-                      </Button>
-                    </>
-                  ),
-                },
-                {
-                  id: "col-1",
-                  label: "State",
-                  value: (item: any) => item.state,
-                  render: (item: any) => (
-                    <>
-                      <Badge>{item.state}</Badge>
-                    </>
-                  ),
-                },
-                {
-                  id: "col-2",
-                  label: "Base model",
-                  value: (item: any) => item.config.base_model,
-                  render: (item: any) => <>{item.config.base_model}</>,
-                },
-                {
-                  id: "col-3",
-                  label: "Training",
-                  value: (item: any) => item.config.training_type,
-                  render: (item: any) => (
-                    <>
-                      {item.config.training_type} · {item.config.epochs} epochs
-                    </>
-                  ),
-                },
-                {
-                  id: "col-4",
-                  label: "Train loss",
-                  value: (item: any) => item.train_loss,
-                  render: (item: any) => <>{item.train_loss ?? "—"}</>,
-                },
-                {
-                  id: "col-5",
-                  label: "Eval loss",
-                  value: (item: any) => item.metrics?.eval_loss,
-                  render: (item: any) => <>{item.metrics?.eval_loss ?? "—"}</>,
-                },
-              ]}
-              renderRow={(item: any, { key, ...props }, cells) => (
-                <Evidence
-                  as="tr"
-                  {...props}
-                  key={key}
-                  label="Experiment summary"
-                  data={item}
-                >
-                  {cells}
-                </Evidence>
-              )}
-            />
+        <ErrorNotice error={r.error || (!setup && a.error)} />
+        <div className="training-job-identity">
+          <div>
+            <Badge>
+              {running
+                ? "Running"
+                : pendingTask || admitted
+                  ? "Task submitted"
+                  : !experiments.length
+                    ? "Ready to configure"
+                    : configuring
+                      ? "Pending experiments"
+                      : experiments.every((e: any) => e.state === "succeeded")
+                        ? "Completed"
+                        : "Partially run"}
+            </Badge>
+            <a href={`#/datasets/${enc(detail.snapshot?.dataset || "")}`}>
+              Dataset {detail.snapshot?.dataset || "missing snapshot"}
+            </a>
+            <span>{experiments.length} saved experiments</span>
           </div>
-          <div className="data-job-detail">
-            <div className="data-mobile-back">
-              <Button variant="ghost" onClick={() => chooseExperiment(null)}>
-                Back to experiments
+          {!running && !pendingTask && !admitted && (
+            <div className="data-actions">
+              <Button
+                onClick={() => {
+                  setSetup(true);
+                  setReview(false);
+                }}
+              >
+                Configure experiments
+                {drafts.length ? ` · ${drafts.length} drafts` : ""}
               </Button>
-            </div>
-            {experiments
-              .filter(
-                (item: any) => item.number === inspectedExperiment?.number,
-              )
-              .map((e: any) => (
-                <Evidence
-                  key={e.number}
-                  label="Experiment configuration"
-                  data={e}
+              {experiments.some(
+                (e: any) => e.state === "pending" && !e.task_id,
+              ) && (
+                <Button
+                  variant="primary"
+                  loading={a.busy}
+                  onClick={() => {
+                    setSetup(true);
+                    setReview(true);
+                  }}
                 >
-                  <Panel
-                    title={`Experiment ${e.number} · ${e.state}`}
-                    actions={
-                      e.state !== "running" && (
-                        <Button
-                          variant="danger"
-                          onClick={() =>
-                            a.run(async () => {
-                              if (
-                                await s.confirm(
-                                  `Delete experiment ${e.number} and its weights?`,
-                                )
-                              ) {
-                                await s.api.del(
-                                  `/api/jobs/${enc(name)}/experiments/${e.number}`,
-                                );
-                                r.reload();
-                              }
-                            })
+                  Review & start
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+        <SegmentedControl
+          kind="tabs"
+          variant="underline"
+          aria-label="Training job tasks"
+          value={pane}
+          onChange={setPane}
+          options={[
+            {
+              value: "experiments",
+              label: "Experiments",
+              controls: "training-experiments",
+            },
+            {
+              value: "curves",
+              label: "Training curves",
+              controls: "training-curves",
+            },
+            {
+              value: "analysis",
+              label: "Dataset analysis",
+              controls: "training-analysis",
+            },
+          ]}
+        />
+        <Activity mode={pane === "curves" ? "visible" : "hidden"}>
+          <section
+            id="training-curves"
+            role="tabpanel"
+            aria-label="Training curves"
+          >
+            <TrainingPaneScroll>
+              <TrainingChart
+                experiments={experiments}
+                onInspect={(number) => {
+                  chooseExperiment(number);
+                  setPane("experiments");
+                }}
+              />
+            </TrainingPaneScroll>
+          </section>
+        </Activity>
+        <Activity mode={pane === "experiments" ? "visible" : "hidden"}>
+          <section
+            id="training-experiments"
+            role="tabpanel"
+            aria-label="Experiments"
+          >
+            <ExperimentSelectionAction
+              experiments={experiments}
+              selected={experimentNumber}
+              onSelect={chooseExperiment}
+            />
+            {!experiments.length && (
+              <EmptyState>
+                <h3>No saved experiments</h3>
+                <p>
+                  Configure a draft, review its settings, then save or start
+                  training.
+                </p>
+                <Button disabled={draftLocked} onClick={() => add()}>
+                  Add experiment
+                </Button>
+              </EmptyState>
+            )}
+            <div
+              className={`data-master-detail data-job-workspace ${experimentNumber != null ? "has-selection" : ""}`}
+            >
+              <div className="data-master">
+                <DataTable
+                  layout="fill"
+                  scopeKey={s.scopeKey + ":" + s.route}
+                  label="Experiments"
+                  rows={experiments}
+                  getRowId={(item: any) => String(item.number)}
+                  pagination="client"
+                  columns={[
+                    {
+                      id: "col-0",
+                      label: "Experiment",
+                      value: (item: any) => item.number,
+                      render: (item: any) => (
+                        <>
+                          <Button
+                            variant="ghost"
+                            aria-pressed={
+                              inspectedExperiment?.number === item.number
+                            }
+                            onClick={() => chooseExperiment(item.number)}
+                          >
+                            Experiment {item.number}
+                          </Button>
+                        </>
+                      ),
+                    },
+                    {
+                      id: "col-1",
+                      label: "State",
+                      value: (item: any) => item.state,
+                      render: (item: any) => (
+                        <>
+                          <Badge>{item.state}</Badge>
+                        </>
+                      ),
+                    },
+                    {
+                      id: "col-2",
+                      label: "Base model",
+                      value: (item: any) => item.config.base_model,
+                      render: (item: any) => <>{item.config.base_model}</>,
+                    },
+                    {
+                      id: "col-3",
+                      label: "Training",
+                      value: (item: any) => item.config.training_type,
+                      render: (item: any) => (
+                        <>
+                          {item.config.training_type} · {item.config.epochs}{" "}
+                          epochs
+                        </>
+                      ),
+                    },
+                    {
+                      id: "col-4",
+                      label: "Train loss",
+                      value: (item: any) => item.train_loss,
+                      render: (item: any) => <>{item.train_loss ?? "—"}</>,
+                    },
+                    {
+                      id: "col-5",
+                      label: "Eval loss",
+                      value: (item: any) => item.metrics?.eval_loss,
+                      render: (item: any) => (
+                        <>{item.metrics?.eval_loss ?? "—"}</>
+                      ),
+                    },
+                  ]}
+                  renderRow={(item: any, { key, ...props }, cells) => (
+                    <Evidence
+                      as="tr"
+                      {...props}
+                      key={key}
+                      label="Experiment summary"
+                      data={item}
+                    >
+                      {cells}
+                    </Evidence>
+                  )}
+                />
+              </div>
+              <div className="data-job-detail">
+                <TrainingPaneScroll>
+                  <div className="data-mobile-back">
+                    <Button
+                      variant="ghost"
+                      onClick={() => chooseExperiment(null)}
+                    >
+                      Back to experiments
+                    </Button>
+                  </div>
+                  {experiments
+                    .filter(
+                      (item: any) =>
+                        item.number === inspectedExperiment?.number,
+                    )
+                    .map((e: any) => (
+                      <Evidence
+                        key={e.number}
+                        label="Experiment configuration"
+                        data={e}
+                      >
+                        <Panel
+                          title={`Experiment ${e.number} · ${e.state}`}
+                          actions={
+                            e.state !== "running" && (
+                              <Button
+                                variant="danger"
+                                onClick={() =>
+                                  a.run(async () => {
+                                    if (
+                                      await s.confirm(
+                                        `Delete experiment ${e.number} and its weights?`,
+                                      )
+                                    ) {
+                                      await s.api.del(
+                                        `/api/jobs/${enc(name)}/experiments/${e.number}`,
+                                      );
+                                      r.reload();
+                                    }
+                                  })
+                                }
+                              >
+                                Delete
+                              </Button>
+                            )
                           }
                         >
-                          Delete
-                        </Button>
-                      )
+                          <p>
+                            {e.config.base_model} · {e.config.training_type} ·{" "}
+                            {e.config.epochs} epochs · lr{" "}
+                            {e.config.learning_rate}
+                          </p>
+                          <details>
+                            <summary>Full configuration</summary>
+                            <pre className="data-prose">
+                              {JSON.stringify(e.config, null, 2)}
+                            </pre>
+                          </details>
+                          {e.error && <ErrorNotice error={e.error} />}
+                          <p>
+                            Train loss {e.train_loss ?? "—"} · Eval loss{" "}
+                            {e.metrics?.eval_loss ?? "—"} · {e.seconds ?? "—"}s
+                          </p>
+                          {e.state === "succeeded" && (
+                            <div className="data-actions">
+                              <a
+                                href={`#/playground?model=${enc(`${name}/${e.number}`)}`}
+                              >
+                                Test model
+                              </a>
+                              <a
+                                href={scopedDownload(
+                                  s.project,
+                                  `/api/jobs/${enc(name)}/experiments/${e.number}/download`,
+                                )}
+                              >
+                                Download weights
+                              </a>
+                              <Button
+                                onClick={() =>
+                                  a.run(async () => {
+                                    await navigator.clipboard.writeText(
+                                      e.alias,
+                                    );
+                                    s.toast("Alias copied");
+                                  })
+                                }
+                              >
+                                Copy {e.alias}
+                              </Button>
+                              {e.checkpoints?.length > 0 && (
+                                <Button
+                                  onClick={() => {
+                                    a.clearError();
+                                    C(e);
+                                    CD(
+                                      s.overview?.tree?.datasets?.[0]?.name ||
+                                        "",
+                                    );
+                                  }}
+                                >
+                                  {e.checkpoints.length} checkpoints · capture
+                                  for drift
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </Panel>
+                      </Evidence>
+                    ))}
+                </TrainingPaneScroll>
+              </div>
+            </div>
+          </section>
+        </Activity>
+        <Activity mode={pane === "analysis" ? "visible" : "hidden"}>
+          <section
+            id="training-analysis"
+            role="tabpanel"
+            aria-label="Dataset analysis"
+          >
+            <TrainingPaneScroll>
+              <Panel
+                title="Dataset analysis"
+                actions={
+                  <Button
+                    onClick={() =>
+                      a.run(async () => {
+                        track(
+                          s,
+                          await s.api.post(
+                            `/api/jobs/${enc(name)}/analyze`,
+                            {},
+                          ),
+                        );
+                        s.toast("Analysis started");
+                      })
                     }
                   >
-                    <p>
-                      {e.config.base_model} · {e.config.training_type} ·{" "}
-                      {e.config.epochs} epochs · lr {e.config.learning_rate}
-                    </p>
-                    <details>
-                      <summary>Full configuration</summary>
-                      <pre className="data-prose">
-                        {JSON.stringify(e.config, null, 2)}
-                      </pre>
-                    </details>
-                    {e.error && <ErrorNotice error={e.error} />}
-                    <p>
-                      Train loss {e.train_loss ?? "—"} · Eval loss{" "}
-                      {e.metrics?.eval_loss ?? "—"} · {e.seconds ?? "—"}s
-                    </p>
-                    {e.state === "succeeded" && (
-                      <div className="data-actions">
-                        <a
-                          href={`#/playground?model=${enc(`${name}/${e.number}`)}`}
-                        >
-                          Test model
-                        </a>
-                        <a
-                          href={scopedDownload(
-                            s.project,
-                            `/api/jobs/${enc(name)}/experiments/${e.number}/download`,
-                          )}
-                        >
-                          Download weights
-                        </a>
-                        <Button
-                          onClick={() =>
-                            a.run(async () => {
-                              await navigator.clipboard.writeText(e.alias);
-                              s.toast("Alias copied");
-                            })
-                          }
-                        >
-                          Copy {e.alias}
-                        </Button>
-                        {e.checkpoints?.length > 0 && (
-                          <Button
-                            onClick={() => {
-                              a.clearError();
-                              C(e);
-                              CD(s.overview?.tree?.datasets?.[0]?.name || "");
-                            }}
-                          >
-                            {e.checkpoints.length} checkpoints · capture for
-                            drift
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </Panel>
-                </Evidence>
-              ))}
-          </div>
-        </div>
-        {configuring && (
-          <Panel title="Configure experiments">
-            {drafts.map((d, i) => (
-              <Panel
-                key={i}
-                title={`Draft experiment ${i + 1}`}
-                actions={
-                  <Button onClick={() => D(drafts.filter((_, j) => i !== j))}>
-                    Remove
+                    {analysis?.analysis
+                      ? "Re-analyze"
+                      : "Analyze with helper LLM"}
                   </Button>
                 }
               >
-                <ExperimentForm
-                  value={d}
-                  onChange={(v) => D(drafts.map((x, j) => (j === i ? v : x)))}
-                  catalog={catalog}
-                  models={models.data || []}
-                />
+                {analysis?.analysis ? (
+                  <Evidence label="Dataset analysis" data={analysis}>
+                    {Object.entries(analysis.analysis).map(([k, v]) => (
+                      <details key={k}>
+                        <summary>{k.replaceAll("_", " ")}</summary>
+                        <pre className="data-prose">
+                          {Array.isArray(v)
+                            ? v.join("\n")
+                            : typeof v === "object"
+                              ? JSON.stringify(v, null, 2)
+                              : String(v)}
+                        </pre>
+                      </details>
+                    ))}
+                    {analysis.recommendation && (
+                      <pre className="data-prose">
+                        {JSON.stringify(analysis.recommendation, null, 2)}
+                      </pre>
+                    )}
+                  </Evidence>
+                ) : (
+                  <p>
+                    Analyze the snapshot for task summary, success criteria,
+                    edge cases, and model recommendation. Requires helper LLM.
+                  </p>
+                )}
               </Panel>
-            ))}
-            <div className="data-actions">
-              <Button onClick={() => add()}>Add experiment</Button>
-              {analysis?.recommendation?.recommended && (
-                <Button
-                  onClick={() => add(analysis.recommendation.recommended)}
-                >
-                  Add recommended experiment
-                </Button>
+            </TrainingPaneScroll>
+          </section>
+        </Activity>
+        {setup && (
+          <Modal
+            open
+            wide
+            className="training-setup"
+            title={review ? "Review experiments" : "Configure experiments"}
+            onClose={() => {
+              dialogGeneration.current++;
+              setSetup(false);
+            }}
+            footer={
+              <div className="training-setup-footer">
+                <span>
+                  {experiments.filter((e: any) => e.state === "pending").length}{" "}
+                  saved pending · {drafts.length} unsaved drafts
+                </span>
+                {review ? (
+                  <div className="data-actions">
+                    <Button disabled={a.busy} onClick={() => setReview(false)}>
+                      Back to configuration
+                    </Button>
+                    {!!drafts.length && (
+                      <Button disabled={a.busy} onClick={() => submit(false)}>
+                        Save experiments
+                      </Button>
+                    )}
+                    <Button
+                      variant="primary"
+                      loading={a.busy}
+                      disabled={
+                        running ||
+                        pendingTask ||
+                        admitted ||
+                        (!drafts.length &&
+                          !experiments.some((e: any) => e.state === "pending"))
+                      }
+                      onClick={() => submit(true)}
+                    >
+                      {drafts.length
+                        ? "Save & start experiments"
+                        : "Start saved experiments"}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="primary"
+                    disabled={a.busy || (!drafts.length && !experiments.length)}
+                    onClick={() => {
+                      if (validate()) setReview(true);
+                    }}
+                  >
+                    Review experiments
+                  </Button>
+                )}
+              </div>
+            }
+          >
+            <TrainingPaneScroll>
+              <ErrorNotice error={validation || a.error} />
+              {review ? (
+                <div className="training-review">
+                  <p>
+                    Saving creates pending experiments. Starting submits a
+                    background training task for all saved pending experiments
+                    in this job.
+                  </p>
+                  {experiments
+                    .filter((e: any) => e.state === "pending")
+                    .map((e: any) => (
+                      <article key={`saved-${e.number}`}>
+                        <h3>Saved experiment {e.number} · pending</h3>
+                        <p>
+                          {e.config.base_model} · {e.config.training_type} ·{" "}
+                          {e.config.epochs} epochs
+                        </p>
+                      </article>
+                    ))}
+                  {drafts.map((draft, i) => (
+                    <article key={i}>
+                      <h3>Draft experiment {i + 1}</h3>
+                      <p>
+                        {draft.base_model} · {draft.training_type} ·{" "}
+                        {draft.epochs} epochs · learning rate{" "}
+                        {draft.learning_rate}
+                      </p>
+                      <details>
+                        <summary>All settings</summary>
+                        <pre className="data-prose">
+                          {JSON.stringify(draft, null, 2)}
+                        </pre>
+                      </details>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="training-setup-layout">
+                  <aside
+                    className="training-drafts"
+                    aria-label="Draft experiments"
+                  >
+                    <p>Unsaved drafts</p>
+                    {drafts.map((draft, i) => (
+                      <Button
+                        key={i}
+                        disabled={a.busy}
+                        aria-pressed={draftIndex === i}
+                        onClick={() => setDraftIndex(i)}
+                      >
+                        Draft {i + 1}
+                        <span>{draft.base_model || "Choose a model"}</span>
+                      </Button>
+                    ))}
+                    <Button disabled={draftLocked} onClick={() => add()}>
+                      Add experiment
+                    </Button>
+                    {analysis?.recommendation?.recommended && (
+                      <Button
+                        disabled={draftLocked}
+                        onClick={() => add(analysis.recommendation.recommended)}
+                      >
+                        Add recommended experiment
+                      </Button>
+                    )}
+                  </aside>
+                  <div className="training-editor">
+                    {drafts[draftIndex] ? (
+                      <>
+                        <header>
+                          <h3>Draft experiment {draftIndex + 1}</h3>
+                          <Button
+                            disabled={a.busy}
+                            onClick={() => {
+                              D(drafts.filter((_, i) => i !== draftIndex));
+                              setDraftIndex(Math.max(0, draftIndex - 1));
+                              setValidation("");
+                            }}
+                          >
+                            Remove draft
+                          </Button>
+                        </header>
+                        <ExperimentFields
+                          value={drafts[draftIndex]}
+                          onChange={(value) => {
+                            D(
+                              drafts.map((draft, i) =>
+                                i === draftIndex ? value : draft,
+                              ),
+                            );
+                            setValidation("");
+                          }}
+                          catalog={catalog}
+                          models={models.data || []}
+                          disabled={a.busy}
+                        />
+                      </>
+                    ) : (
+                      <EmptyState>
+                        <h3>Choose the experiments to train</h3>
+                        <p>
+                          Add a draft or review the job’s saved pending
+                          experiments.
+                        </p>
+                      </EmptyState>
+                    )}
+                  </div>
+                </div>
               )}
-              <Button
-                variant="primary"
-                disabled={!drafts.length && !experiments.length}
-                loading={a.busy}
-                onClick={() =>
-                  a.run(async () => {
-                    if (drafts.length) {
-                      if (drafts.some((x) => !x.base_model.trim()))
-                        throw Error("Choose a base model for every experiment");
-                      await s.api.post(`/api/jobs/${enc(name)}/experiments`, {
-                        experiments: drafts,
-                      });
-                      D([]);
-                    }
-                    track(
-                      s,
-                      await s.api.post(`/api/jobs/${enc(name)}/start`, {}),
-                    );
-                    r.reload();
-                  })
-                }
-              >
-                Save & start experiments
-              </Button>
-            </div>
-          </Panel>
+            </TrainingPaneScroll>
+          </Modal>
         )}
-        <Panel
-          title="Dataset analysis"
-          actions={
-            <Button
-              onClick={() =>
-                a.run(async () => {
-                  track(
-                    s,
-                    await s.api.post(`/api/jobs/${enc(name)}/analyze`, {}),
-                  );
-                  s.toast("Analysis started");
-                })
-              }
-            >
-              {analysis?.analysis ? "Re-analyze" : "Analyze with helper LLM"}
-            </Button>
-          }
-        >
-          {analysis?.analysis ? (
-            <Evidence label="Dataset analysis" data={analysis}>
-              {Object.entries(analysis.analysis).map(([k, v]) => (
-                <details key={k}>
-                  <summary>{k.replaceAll("_", " ")}</summary>
-                  <pre className="data-prose">
-                    {Array.isArray(v)
-                      ? v.join("\n")
-                      : typeof v === "object"
-                        ? JSON.stringify(v, null, 2)
-                        : String(v)}
-                  </pre>
-                </details>
-              ))}
-              {analysis.recommendation && (
-                <pre className="data-prose">
-                  {JSON.stringify(analysis.recommendation, null, 2)}
-                </pre>
-              )}
-            </Evidence>
-          ) : (
-            <p>
-              Analyze the snapshot for task summary, success criteria, edge
-              cases, and model recommendation. Requires helper LLM.
-            </p>
-          )}
-        </Panel>
         {evaluate && (
           <EvaluationDialog
             snapshot={job.snapshot}

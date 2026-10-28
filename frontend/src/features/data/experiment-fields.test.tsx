@@ -148,9 +148,10 @@ describe("Experiment configuration fields", () => {
     });
     await user.click(screen.getByRole("button", { name: /Training type/ }));
     await user.click(screen.getByRole("option", { name: "full" }));
-    expect(
-      screen.queryByRole("spinbutton", { name: "LoRA rank" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "LoRA rank" })).toHaveValue(
+      48,
+    );
+    expect(screen.getByText("Retained adapter settings")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Training type/ }));
     await user.click(screen.getByRole("option", { name: "dpo" }));
     expect(screen.getByRole("spinbutton", { name: "LoRA rank" })).toHaveValue(
