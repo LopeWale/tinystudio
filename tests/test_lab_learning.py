@@ -105,7 +105,9 @@ def test_cancellation_preserves_resumable_state(tmp_path):
 
 def test_distillation_updates_student_from_local_teacher(tmp_path):
     execute_learning(specification(steps=2), tmp_path / "teacher", lambda row: None, lambda: False)
-    spec = specification(steps=3, teacher_checkpoint=str(tmp_path / "teacher/checkpoint.pt"))
+    spec = specification(steps=3, teacher_checkpoint=str(tmp_path / "teacher/checkpoint.pt"),
+        texts=["rain clouds cross the mountains " * 2, "sunlight warms the meadow " * 2,
+               "wind carries falling leaves " * 2, "snow covers distant hills " * 2])
     spec["definition"]["learning"]["objective"] = "distillation"
     spec["definition"]["seed"] = 99
     result = execute_learning(spec, tmp_path / "student", lambda row: None, lambda: False)
@@ -163,7 +165,9 @@ def test_execute_retrieval_returns_saved_trace(tmp_path):
 def test_distillation_resume_binds_teacher_and_loss_configuration(tmp_path):
     execute_learning(specification(steps=2), tmp_path / "teacher", lambda row: None, lambda: False)
     def student(steps, **parameters):
-        spec = specification(steps=steps, teacher_checkpoint=str(tmp_path / "teacher/checkpoint.pt"), **parameters)
+        spec = specification(steps=steps, teacher_checkpoint=str(tmp_path / "teacher/checkpoint.pt"),
+            texts=["rain clouds cross the mountains " * 2, "sunlight warms the meadow " * 2,
+                   "wind carries falling leaves " * 2, "snow covers distant hills " * 2], **parameters)
         spec["definition"]["learning"]["objective"] = "distillation"
         spec["definition"]["seed"] = 99
         return spec

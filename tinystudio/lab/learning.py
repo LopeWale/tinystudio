@@ -10,6 +10,7 @@ import io
 import json
 import math
 import random
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -342,6 +343,13 @@ def _windows(texts: list[str], tokenizer: ByteTokenizer, context: int):
 
 def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                      cancelled: Callable[[], bool]) -> dict:
+    from tinystudio.training.runtime import training_session
+    with training_session():
+        return _execute_learning(spec, output_dir, emit, cancelled)
+
+
+def _execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
+                      cancelled: Callable[[], bool]) -> dict:
     import torch
     from torch.nn import functional as F
 
@@ -365,6 +373,8 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
     objective = selector(learning.get("objective", "causal_lm"), "objective")
     if objective not in {"causal_lm", "next_token", "cross_entropy", "distillation"}:
         raise ValueError(f"unsupported learning objective {objective!r}")
+    from .distillation import FrozenTeacher, distillation_loss, training_evidence
+    teacher = FrozenTeacher.load(teacher_binding) if objective == "distillation" else None
     family = selector(learning.get("family", params.get("family", saved["architecture"]["family"] if saved else "transformer")), "family")
     aliases = {"tiny_transformer": "transformer", "decoder_transformer": "transformer", "rnn": "gru"}
     family = aliases.get(family, family)
@@ -382,6 +392,10 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
         raise ValueError("hidden_size must be divisible by heads")
     if saved is not None:
         architecture = dict(saved["architecture"])
+    if teacher is not None:
+        from .learning_initialization import inherited_representation
+        inherited_representation(learning, params, teacher.tokenizer, teacher.configuration)
+        teacher.validate_student(restored_tokenizer or teacher.tokenizer, architecture["context"])
     if "batch_size" in params and params["batch_size"] != 1:
         raise ValueError("scratch language backend currently supports batch_size=1 only")
     seed = int(definition.get("seed", 42))
@@ -393,14 +407,20 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
     from .compatibility import partition_snapshot
     partitions = partition_snapshot(documents, seed, validation_fraction, params.get("leakage_policy"), min_training_rows=1)
     val_ids, train_ids = partitions["validation"], partitions["train"]
+    teacher_exposure = teacher.exposure(documents, partitions, definition.get("research_overrides", [])) if teacher else None
+    if teacher_exposure and teacher_exposure["qualification"]["blocking_checks"]:
+        raise ValueError("teacher:heldout_training_overlap: teacher training evidence matches student held-out data; "
+                         "use disjoint data or an explicit research override with check_id, reason and approved_by")
     representation = learning.get("representation", "byte")
     rep_options = representation if isinstance(representation, dict) else {}
     representation = rep_options.get("kind", "byte") if isinstance(representation, dict) else representation
-    tokenizer = restored_tokenizer or ByteTokenizer.fit([texts[index] for index in train_ids], representation,
+    tokenizer = restored_tokenizer or (teacher.tokenizer if teacher else None) or ByteTokenizer.fit([texts[index] for index in train_ids], representation,
         int(rep_options.get("vocab_size", params.get("vocab_size", 320))),
         rep_options.get("vocabulary", params.get("vocabulary")))
     if saved is not None:
         tokenizer_configuration = saved.get("tokenizer_configuration") or {"vocab_size": tokenizer.vocab_size}
+    elif teacher is not None:
+        tokenizer_configuration = teacher.configuration
     else:
         tokenizer_configuration = {"vocab_size": int(rep_options.get("vocab_size", params.get("vocab_size", 320)))
                                    if tokenizer.kind == "bpe" else tokenizer.vocab_size}
@@ -413,19 +433,32 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
     lr = learning_rate(params, 0.003)
     if not math.isfinite(lr) or not 0 < lr <= 1:
         raise ValueError("learning rate must be finite and between zero and one")
-    temperature = float(params.get("temperature", 2.0))
-    alpha = float(params.get("distillation_alpha", 0.5))
+    from .signals import number
+    temperature = number(params.get("temperature", 2.0), "temperature")
+    alpha = number(params.get("distillation_alpha", 0.5), "distillation_alpha")
     if not math.isfinite(temperature) or temperature <= 0 or not 0 <= alpha <= 1:
         raise ValueError("distillation needs positive temperature and alpha in [0, 1]")
-    teacher_path = teacher_binding["path"] if teacher_binding else None
     teacher_digest = teacher_binding["sha256"] if teacher_binding else None
     distillation = {"temperature": temperature, "alpha": alpha}
+    if teacher is not None:
+        distillation.update(format="tinystudio.distillation.loss.v1", normalization="token_mean", target="log_probabilities")
+    metric_clock = {"clock_domain": "optimizer_step", "clock_units": "step",
+                    "clock_origin": 0, "clock_session": uuid.uuid4().hex}
+    if initialization == "resume" and saved.get("metric_clock") is not None:
+        retained_clock = saved["metric_clock"]
+        if (not isinstance(retained_clock, dict) or set(retained_clock) != set(metric_clock)
+            or retained_clock.get("clock_domain") != "optimizer_step" or retained_clock.get("clock_units") != "step"
+            or type(retained_clock.get("clock_origin")) is not int or retained_clock["clock_origin"] != 0
+            or not isinstance(retained_clock.get("clock_session"), str) or not retained_clock["clock_session"].strip()):
+            raise ValueError("resume checkpoint has an invalid optimizer-step clock")
+        metric_clock = dict(retained_clock)
     if initialization == "resume":
         if (saved["corpus_sha256"] != corpus_digest or saved["split"] != {"train": train_ids, "validation": val_ids}
             or saved["objective"] != objective or saved["learning_rate"] != lr
             or saved["backend"] != "cpu" or saved["torch_version"] != str(torch.__version__)
             or saved["teacher_sha256"] != teacher_digest or saved["distillation"] != distillation):
-            raise ValueError("resume checkpoint does not match corpus, split, architecture, tokenizer, objective or learning rate")
+            raise ValueError("resume checkpoint does not match corpus, split, architecture, tokenizer, objective, teacher, "
+                             "learning rate or loss semantics; use weights initialization to restart after changes")
         if steps <= saved["step"]:
             raise ValueError("resume target steps must exceed checkpoint step")
     lineage = (saved.get("lineage") or {"initialization": "scratch", "parent_checkpoint_sha256": None}) if initialization == "resume" else {
@@ -451,15 +484,8 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                 torch.set_rng_state(saved["torch_rng"])
                 start = saved["step"]
             initial = {key: value.detach().clone() for key, value in model.state_dict().items()}
-            teacher = None
-            if objective == "distillation":
-                training_rng = torch.get_rng_state()
-                teacher, teacher_tokenizer, teacher_state = load_checkpoint(teacher_path, expected_sha256=teacher_digest)
-                torch.set_rng_state(training_rng)
-                if teacher_tokenizer.state() != tokenizer.state() or teacher_state["architecture"]["context"] < architecture["context"]:
-                    raise ValueError("teacher and student must share tokenizer and compatible context")
-                for parameter in teacher.parameters():
-                    parameter.requires_grad_(False)
+            if teacher is not None:
+                teacher.bind_optimizer(optimizer, model)
             records = []
             model.eval()
             def evaluate():
@@ -481,18 +507,18 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                 ce = F.cross_entropy(logits, y)
                 loss = ce
                 if teacher is not None:
-                    with torch.no_grad():
-                        teacher_logits = teacher(x).reshape(-1, tokenizer.vocab_size)
-                    kl = F.kl_div(F.log_softmax(logits / temperature, dim=-1),
-                        F.softmax(teacher_logits / temperature, dim=-1), reduction="batchmean") * temperature ** 2
-                    loss = (1 - alpha) * ce + alpha * kl
+                    losses = distillation_loss(logits, teacher.logits(x).reshape(-1, tokenizer.vocab_size), y, temperature, alpha)
+                    loss, ce, kl = losses["loss"], losses["cross_entropy"], losses["distillation_kl"]
                 if not torch.isfinite(loss):
                     raise ValueError("training produced non-finite loss")
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 completed = step + 1
-                row = {"step": completed, "loss": float(loss.detach()), "cross_entropy": float(ce.detach())}
+                row = {"step": completed, "loss": float(loss.detach()), "cross_entropy": float(ce.detach()),
+                       "time": completed, "event_time": completed, "available_at": completed,
+                       **metric_clock, "episode_id": "optimization", "source_record_id": f"optimizer-step:{completed}",
+                       "field_units": {"loss": "nats/token", "cross_entropy": "nats/token", "distillation_kl": "nats/token"}}
                 if teacher is not None:
                     row["distillation_kl"] = float(kl.detach())
                 records.append(row)
@@ -500,9 +526,15 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
             model.eval()
             final_validation = evaluate()
             changed = any(not torch.equal(initial[key], value) for key, value in model.state_dict().items())
+            teacher_receipt = teacher.finish() if teacher is not None else None
+            tokenizer_source = "checkpoint" if binding else "teacher" if teacher else "training_partition"
             state = {"format": "tinystudio.learning.v1", "backend": "cpu", "torch_version": str(torch.__version__),
                      "architecture": architecture, "tokenizer": tokenizer.state(), "model": model.state_dict(),
                      "tokenizer_configuration": tokenizer_configuration, "lineage": lineage,
+                     "metric_clock": metric_clock,
+                     "tokenizer_source": tokenizer_source,
+                     "training_evidence": training_evidence(documents, train_ids),
+                     "teacher_receipt": teacher_receipt, "teacher_exposure": teacher_exposure,
                      "initialization": initialization, "parent_checkpoint_sha256": lineage["parent_checkpoint_sha256"],
                      "optimizer_state_restored": initialization == "resume",
                      "initialization_checkpoint_sha256": binding["sha256"] if binding else None,
@@ -531,19 +563,28 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                        "validation_documents": len(val_ids), "excluded_test_documents": len(partitions["excluded_test"]), "corpus_sha256": corpus_digest}
             manifest = output_dir / "learning.json"
             manifest.write_text(json.dumps({"architecture": architecture, "tokenizer": tokenizer.state(),
+                "tokenizer_configuration": tokenizer_configuration, "tokenizer_source": tokenizer_source,
+                "metric_clock": metric_clock,
+                "teacher_receipt": teacher_receipt, "teacher_exposure": teacher_exposure,
+                "integrity_scope": "current_student_optimizer_only",
                 "metrics": metrics, "split": state["split"], "partitions": partitions, "records": records}, indent=2))
             return {"records": records, "metrics": metrics,
                     "artifacts": [artifact(checkpoint, "checkpoint", "application/octet-stream"),
                                   artifact(manifest, "training_manifest"), artifact(sample_path, "generation")],
-                    "qualification": {"status": "cancelled" if completed < steps else "completed",
+                    "qualification": {"status": "cancelled" if completed < steps else
+                        "research_only" if teacher_exposure and teacher_exposure["qualification"]["status"] == "research_only" else "completed",
                         "backend": "cpu", "dtype": "float32", "from_scratch": initialization in {"scratch", "from_scratch", "random"},
                         "initialization": initialization, "lineage": lineage,
                         "parent_checkpoint_sha256": lineage["parent_checkpoint_sha256"],
                         "initialization_checkpoint_sha256": binding["sha256"] if binding else None,
                         "optimizer_state_restored": initialization == "resume", "parameters_changed": changed,
                         "save_unload_reload": reload_equal, "held_out_validation": True,
+                        "held_out_validation_scope": "current_student_optimizer_only",
+                        "teacher_receipt": teacher_receipt, "teacher_exposure": teacher_exposure,
+                        "tokenizer_source": tokenizer_source,
                         "partition_strategy": partitions["strategy"], "group_isolation": partitions["group_isolation"],
                         "final_test_excluded_from_training_and_validation": True,
+                        "final_test_exclusion_scope": "current_student_optimizer_only",
                         "resume_scope": "identical corpus/configuration and CPU PyTorch version"}}
         finally:
             torch.set_num_threads(previous_threads)

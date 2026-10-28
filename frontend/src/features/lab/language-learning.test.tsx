@@ -441,3 +441,208 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
     target_id: "local",
   });
 });
+
+function distillationDefinition(initialization = "scratch") {
+  const definition = makeDefinition("learning.language");
+  definition.learning = {
+    objective: "distillation",
+    initialization,
+    family: "gru",
+    architecture: { hidden_size: 48, layers: 2, context: 24 },
+  };
+  definition.inputs = [
+    { artifact_id: "teacher", sha256: "d".repeat(64), role: "teacher" },
+    ...(initialization === "scratch"
+      ? []
+      : [
+          {
+            artifact_id: "student",
+            sha256: "e".repeat(64),
+            role: initialization === "resume" ? "resume" : "initial_weights",
+          },
+        ]),
+  ];
+  return definition;
+}
+
+it("reopens omitted distillation tokenizer as From teacher while retaining independent student architecture", () => {
+  const initial = distillationDefinition();
+  const view = render(<Harness initial={initial} />);
+  expect(
+    screen.getByRole("button", { name: /From teacher Representation$/ }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: /gru Model family$/ }),
+  ).toBeVisible();
+  expect(screen.getByLabelText("Hidden size")).toHaveValue("48");
+  expect(
+    screen.getByText(
+      /Student model family and dimensions remain independent choices/,
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+  edit("Hidden size", "64");
+  const saved = JSON.parse(JSON.stringify(current()));
+  view.unmount();
+  render(<Harness initial={saved} />);
+  expect(
+    screen.getByRole("button", { name: /From teacher Representation$/ }),
+  ).toBeVisible();
+  expect(screen.getByLabelText("Hidden size")).toHaveValue("64");
+  expect(current()).toEqual(saved);
+  expect(current().learning).not.toHaveProperty("representation");
+});
+
+it("explicit From teacher removes supported constraints in both locations and preserves custom data and bindings", async () => {
+  const initial = distillationDefinition();
+  initial.learning!.representation = {
+    kind: "bpe",
+    vocab_size: 400,
+    vocabulary: ["valve"],
+    vendor: { keep: true },
+  };
+  initial.parameters = {
+    ...initial.parameters,
+    vocab_size: 400,
+    vocabulary: ["valve"],
+    vendor: { keep: true },
+  };
+  render(<Harness initial={initial} />);
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  await select("Representation", "From teacher");
+  expect(current().learning).toEqual({
+    ...initial.learning,
+    representation: { vendor: { keep: true } },
+  });
+  const {
+    vocab_size: _budget,
+    vocabulary: _words,
+    ...parameters
+  } = initial.parameters;
+  expect(current().parameters).toEqual(parameters);
+  expect(current().inputs).toEqual(initial.inputs);
+  expect(
+    screen.getByRole("button", { name: /From teacher Representation$/ }),
+  ).toBeVisible();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "custom representation fields in Definition JSON",
+  );
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+});
+
+it.each(["scratch", "weights", "resume"])(
+  "inherits optional BPE budget during %s distillation without injecting a fitting default",
+  async (initialization) => {
+    const initial = distillationDefinition(initialization);
+    initial.learning!.representation = "bpe";
+    render(<Harness initial={initial} />);
+    expect(screen.getByLabelText("BPE vocabulary size")).toHaveValue("");
+    expect(
+      screen.getByRole("button", { name: "Save definition" }),
+    ).toBeEnabled();
+    edit("Generation prompt", "An independent student");
+    expect(current().learning!.representation).toBe("bpe");
+    expect(current().parameters).not.toHaveProperty("vocab_size");
+    edit("BPE vocabulary size", "400");
+    expect(current().learning!.representation).toEqual({
+      kind: "bpe",
+      vocab_size: 400,
+    });
+    edit("BPE vocabulary size", "");
+    expect(current().learning!.representation).toEqual({ kind: "bpe" });
+    expect(
+      screen.getByRole("button", { name: "Save definition" }),
+    ).toBeEnabled();
+  },
+);
+
+it.each(["scratch", "weights", "resume"])(
+  "allows engineering vocabulary inherited from the frozen tokenizer during %s distillation",
+  (initialization) => {
+    const initial = distillationDefinition(initialization);
+    initial.learning!.representation = "engineering";
+    render(<Harness initial={initial} />);
+    expect(
+      screen.getByText(
+        `Engineering vocabulary is inherited from the ${initialization === "scratch" ? "teacher" : "checkpoint"}.`,
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByLabelText("Engineering vocabulary JSON"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Save definition" }),
+    ).toBeEnabled();
+    expect(current()).toEqual(initial);
+  },
+);
+
+it("preserves authored tokenizer constraints through objective changes and warns about retained teacher binding", async () => {
+  const initial = distillationDefinition();
+  initial.learning!.objective = "causal_lm";
+  initial.learning!.representation = {
+    kind: "bpe",
+    vocab_size: 400,
+    vendor: true,
+  };
+  initial.parameters.vocab_size = 400;
+  render(<Harness initial={initial} />);
+  await select("Learning objective", "distillation");
+  expect(current().learning!.representation).toEqual(
+    initial.learning!.representation,
+  );
+  expect(current().parameters.vocab_size).toBe(400);
+  await select("Learning objective", "causal_lm");
+  expect(current()).toEqual(initial);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "retained teacher binding requires distillation",
+  );
+});
+
+it.each(["weights", "resume"])(
+  "keeps checkpoint tokenizer inheritance for %s distillation",
+  (initialization) => {
+    const initial = distillationDefinition(initialization);
+    delete initial.learning!.family;
+    initial.learning!.architecture = {};
+    render(<Harness initial={initial} />);
+    expect(
+      screen.getByRole("button", { name: /From checkpoint Representation$/ }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /From checkpoint Model family$/ }),
+    ).toBeVisible();
+    expect(screen.getByLabelText("Hidden size")).toHaveValue("");
+    expect(
+      screen.getByText(/its tokenizer must match the teacher exactly/),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Save definition" }),
+    ).toBeEnabled();
+  },
+);
+
+it.each(["scratch", "random"])(
+  "explicit From teacher omits representation for %s students when no custom fields remain",
+  async (initialization) => {
+    const initial = distillationDefinition();
+    initial.learning!.initialization = initialization;
+    initial.learning!.representation = { kind: "bpe", vocab_size: 400 };
+    initial.parameters.vocab_size = 400;
+    render(<Harness initial={initial} />);
+    await select("Representation", "From teacher");
+    expect(current().learning).not.toHaveProperty("representation");
+    expect(current().parameters).not.toHaveProperty("vocab_size");
+    expect(current().learning!.architecture).toEqual(
+      initial.learning!.architecture,
+    );
+    expect(current().learning!.family).toBe("gru");
+    expect(
+      screen.getByRole("button", { name: "Save definition" }),
+    ).toBeEnabled();
+  },
+);

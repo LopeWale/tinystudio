@@ -39,17 +39,23 @@ export function LanguageLearning({
     "scratch",
   );
   const checkpointMode = ["weights", "resume"].includes(initialization);
+  const objective = selector(l.objective, "causal_lm");
+  const distillation = objective === "distillation";
+  const tokenizerInherited = checkpointMode || distillation;
+  const tokenizerSource = checkpointMode ? "checkpoint" : "teacher";
   const familyInherited =
     checkpointMode && l.family === undefined && p.family === undefined;
   const representationInherited =
-    checkpointMode && l.representation === undefined;
+    tokenizerInherited &&
+    (l.representation === undefined ||
+      (typeof l.representation === "object" && rep.kind === undefined));
   const family = selector(
     l.family ?? p.family,
     familyInherited ? "checkpoint" : "transformer",
   );
   const representation = selector(
     l.representation,
-    representationInherited ? "checkpoint" : "byte",
+    representationInherited ? tokenizerSource : "byte",
   );
   const familyKind =
     (
@@ -77,7 +83,6 @@ export function LanguageLearning({
         : checkpointMode
           ? undefined
           : fallback;
-  const objective = selector(l.objective, "causal_lm");
   const [invalid, setInvalid] = useState<Set<string>>(() => new Set());
   const callback = useRef(onValidityChange);
   callback.current = onValidityChange;
@@ -128,7 +133,7 @@ export function LanguageLearning({
         "byte",
         "bpe",
         "engineering",
-        ...(representationInherited ? ["checkpoint"] : []),
+        ...(representationInherited ? [tokenizerSource] : []),
       ],
     ],
     [
@@ -153,6 +158,15 @@ export function LanguageLearning({
         `Retained ${name} ${value} is unsupported by this language engine. Choose a supported value or review Definition JSON.`,
       );
 
+  if (
+    representationInherited &&
+    Object.keys(rep).some(
+      (key) => !["kind", "vocab_size", "vocabulary"].includes(key),
+    )
+  )
+    conflicts.push(
+      "Retained tokenizer configuration is unsupported by this language engine. Review the custom representation fields in Definition JSON.",
+    );
   if (familyKind === "gru" && ("heads" in a || "heads" in p))
     conflicts.push(
       "GRU does not support heads. Remove the retained heads setting explicitly or return to Transformer.",
@@ -204,7 +218,7 @@ export function LanguageLearning({
   const vocabulary = rep.vocabulary ?? p.vocabulary;
   if (
     representationKind === "engineering" &&
-    (!checkpointMode || vocabulary !== undefined) &&
+    (!tokenizerInherited || vocabulary !== undefined) &&
     (!Array.isArray(vocabulary) ||
       !vocabulary.length ||
       vocabulary.some((word) => typeof word !== "string" || !word.trim()) ||
@@ -353,6 +367,20 @@ export function LanguageLearning({
       },
     });
   };
+  const inheritTeacherRepresentation = () => {
+    const parameters = { ...p },
+      representation = { ...rep },
+      learning = { ...l };
+    delete parameters.vocab_size;
+    delete parameters.vocabulary;
+    delete representation.kind;
+    delete representation.vocab_size;
+    delete representation.vocabulary;
+    if (Object.keys(representation).length)
+      learning.representation = representation;
+    else delete learning.representation;
+    onChange({ parameters, learning });
+  };
   return (
     <section aria-label="Language learning" className="flex flex-col gap-4">
       <SettingsSection
@@ -390,18 +418,24 @@ export function LanguageLearning({
             label="Representation"
             value={representation}
             options={[
-              ...(representationInherited
-                ? [
-                    {
-                      id: "checkpoint",
-                      name: "From checkpoint",
-                      disabled: true,
-                    },
-                  ]
-                : []),
+              ...(distillation && !checkpointMode
+                ? [{ id: "teacher", name: "From teacher" }]
+                : representationInherited
+                  ? [
+                      {
+                        id: "checkpoint",
+                        name: "From checkpoint",
+                        disabled: true,
+                      },
+                    ]
+                  : []),
               ...choices(["byte", "bpe", "engineering"]),
             ]}
-            onChange={(value) => chooseAxis("representation", value)}
+            onChange={(value) =>
+              value === "teacher"
+                ? inheritTeacherRepresentation()
+                : chooseAxis("representation", value)
+            }
           />
           <LabChoice
             disabled={!!invalid.size}
@@ -426,6 +460,18 @@ export function LanguageLearning({
           tokenizer settings must match the checkpoint. The executor verifies
           checkpoint contents; preflight checks the declared binding roles.
         </p>
+        {distillation && (
+          <p>
+            Distillation uses the teacher’s frozen tokenizer. Omitted tokenizer
+            options inherit it; authored representation, BPE budget and
+            vocabulary constrain compatibility and never fit a new tokenizer.
+            The executor verifies tokenizer compatibility and student context
+            against the teacher.
+            {checkpointMode
+              ? " The student also inherits its checkpoint architecture and tokenizer; its tokenizer must match the teacher exactly."
+              : " Student model family and dimensions remain independent choices."}
+          </p>
+        )}
       </SettingsSection>
       <WorkspaceDisclosure
         title="Architecture and vocabulary"
@@ -465,7 +511,7 @@ export function LanguageLearning({
               "BPE vocabulary size",
               rep.vocab_size ??
                 p.vocab_size ??
-                (checkpointMode ? undefined : 320),
+                (tokenizerInherited ? undefined : 320),
               (value) =>
                 axis("representation", {
                   ...rep,
@@ -474,11 +520,11 @@ export function LanguageLearning({
                 }),
               257,
               true,
-              checkpointMode,
+              tokenizerInherited,
             )}
         </div>
         {representationKind === "engineering" &&
-          (!checkpointMode || vocabulary !== undefined) && (
+          (!tokenizerInherited || vocabulary !== undefined) && (
             <DraftField
               label="Engineering vocabulary JSON"
               fieldKey="vocabulary"
@@ -495,10 +541,12 @@ export function LanguageLearning({
             />
           )}
         {representationKind === "engineering" &&
-          checkpointMode &&
+          tokenizerInherited &&
           vocabulary === undefined && (
             <div>
-              <p>Engineering vocabulary is inherited from the checkpoint.</p>
+              <p>
+                Engineering vocabulary is inherited from the {tokenizerSource}.
+              </p>
               <Button
                 onClick={() =>
                   axis("representation", {
@@ -513,7 +561,7 @@ export function LanguageLearning({
             </div>
           )}
         {representationKind === "engineering" &&
-          checkpointMode &&
+          tokenizerInherited &&
           vocabulary !== undefined && (
             <Button onClick={() => removeRep("vocabulary")}>
               Inherit engineering vocabulary

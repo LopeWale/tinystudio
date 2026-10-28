@@ -353,6 +353,66 @@ or switching representations with retained vocabulary settings, requires an
 explicit conflict resolution. Advanced fields and immutable bindings remain in
 the same versioned definition used by the code view.
 
+## Retained-teacher language distillation
+
+Select `learning.language`, the student's Transformer or GRU architecture, and
+`objective: "distillation"`. In Inputs, attach a retained
+`tinystudio.learning.v1` checkpoint with the `teacher` role and model visibility.
+The input library includes completed-run checkpoints with their originating
+definition/revision/run, so a teacher does not need to be downloaded and uploaded
+again. The student can use a different family and smaller dimensions, with context
+no larger than the teacher's supported context.
+
+For scratch/random students, **From teacher** in Representation inherits the
+teacher's frozen byte, BPE or engineering tokenizer. The explicit choice removes
+supported representation/vocabulary constraints while preserving architecture,
+inputs and unrelated settings. Explicit representation, BPE fitting budget and
+engineering vocabulary fields remain compatibility constraints; they never fit a
+new tokenizer during distillation. A BPE fitting budget is distinct from its
+actual token count. Weights/resume students retain their own checkpoint tokenizer
+and must match the teacher exactly. Unsupported retained custom tokenizer fields
+remain visible as configuration errors rather than being discarded.
+
+The loss is `(1-alpha)*CE + alpha*T^2*KL(teacher/T || student/T)`, averaged over
+flattened token rows. Temperature must be finite and positive, and alpha between
+zero and one. This follows the [PyTorch distillation tutorial](https://docs.pytorch.org/tutorials/beginner/knowledge_distillation_tutorial.html)
+with [token-row batchmean reduction](https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.kl_div.html).
+The frozen teacher runs in evaluation mode without gradients. Its full tensor
+state, input-file checksum and exclusion from the student optimizer are checked
+before publishing even a cancelled checkpoint. Teacher/tokenizer/context/schema
+errors fail before constructing the optimizer or creating an output directory.
+In-process calls reuse the existing serialized training context for RNG and
+thread restoration. Student checkpoints contain their own inference dependencies;
+the teacher reference remains provenance, not an inference-time file requirement.
+
+Retained metric rows carry an `optimizer_step` clock with `step` units and a
+separate session identity. The existing interactive replay/trend workbench can
+therefore inspect loss, cross-entropy and distillation KL in 2D or 3D. These are
+algorithm-step trajectories, not physical timing measurements or loss landscapes.
+Exact resume retains the recorded step clock and continues its step indices;
+weight restart creates a new session.
+
+New checkpoints retain current-training-partition text and complete-record hashes.
+Teacher matches against student validation/final-test documents block training
+under `teacher:heldout_training_overlap`. An intentional contamination control
+can use the existing `research_overrides` entry with that exact `check_id`, a
+nonempty `reason` and `approved_by`; the finding remains recorded and execution
+qualification is `research_only`. Legacy complete-row hashes can establish exact
+record matches, but cannot detect unchanged text after metadata changes. Inline
+record IDs alone never establish a cross-corpus match. Missing matches do not
+prove clean teacher weights or inherited tokenizer history: coverage remains
+`unknown` and the exposure report remains `unverified`.
+
+Checkpoint, downloadable training manifest and qualification output retain the
+teacher identity, unchanged state hashes, tokenizer identity/size, actual forward
+counts and separate exposure report. Existing held-out flags explicitly concern
+`current_student_optimizer_only`. Exact distillation resume also pins teacher
+hash, temperature, alpha and loss semantics; older checkpoints lacking the new
+loss contract require a restart from weights rather than a claimed exact resume.
+Software qualification does not establish that a distilled student outperforms
+its teacher or baseline. This path accepts TinyStudio language checkpoints;
+other teacher formats require their own trainer adapter and qualification.
+
 ## Pretrained objectives and weight updates
 
 `learning.pretrained` uses the existing TRL/PEFT trainer with two independent

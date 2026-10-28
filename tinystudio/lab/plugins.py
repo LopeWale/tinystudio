@@ -182,6 +182,10 @@ def manifest_for(row: dict) -> dict:
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
             "Independent parameter-count/update checks, held-out exclusion, transported checkpoint reload and inference artifacts.",
             "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_distillation_workflow.py", evidence_required=[
+            "Actual retained-teacher to smaller cross-family student execution with byte, BPE and engineering tokenizers.",
+            "Teacher immutability, student parameter updates, held-out exposure findings and independent transported-student inference.",
+            "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.pretrained":
         fixtures.append(FixtureRequirement(path="tests/test_lab_qlora.py", evidence_required=[
             "Real SFT, raw causal LM and DPO adapter optimization on the pinned Linux ARM64 CPU NF4 stack.",

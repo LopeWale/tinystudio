@@ -86,12 +86,17 @@ def inherited_configuration(learning, params, architecture, tokenizer, tokenizer
             explicit[key] = params[key]
     if any(key not in architecture or value != architecture[key] for key, value in explicit.items()):
         raise ValueError("requested architecture does not match checkpoint architecture")
+    inherited_representation(learning, params, tokenizer, tokenizer_configuration)
+
+
+def inherited_representation(learning, params, tokenizer, tokenizer_configuration=None):
+    """Validate a frozen vocabulary independently from model dimensions/family."""
     representation = learning.get("representation")
     options = representation if isinstance(representation, dict) else {}
     if set(options) - {"kind", "vocab_size", "vocabulary"}:
         raise ValueError("unsupported representation options")
     if representation is not None:
-        kind = options.get("kind", "byte") if options else representation
+        kind = options.get("kind", tokenizer.kind) if isinstance(representation, dict) else representation
         if not isinstance(kind, str) or REPRESENTATION_ALIASES.get(kind, kind) != tokenizer.kind:
             raise ValueError("requested representation does not match checkpoint tokenizer")
     for key in ("vocab_size", "vocabulary"):
