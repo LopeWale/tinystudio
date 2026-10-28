@@ -5,6 +5,14 @@
 
 # Changelog
 
+## 2026-10-28 — D pretrained objectives and weight updates
+
+- Extended the existing TRL/PEFT trainer and actual Lab form with independent SFT, raw-text continued pretraining and DPO objectives versus full/LoRA/QLoRA updates. Preserved legacy DPO configuration semantics and canonicalized both axes when editing older definitions. Added explicit full-model versus adapter output identities and backward-compatible reload.
+- Added exact raw-text preparation receipts, strict preference-pair validation, observed model/batch placement, frozen DPO-reference checks, serialized trainer process-state ownership and cancellation before model publication. Per-run device and dtype selections remain independent; unsupported combinations fail without hidden fallback. QLoRA checks the selected CUDA target, not merely host GPU availability; CPU/Apple QLoRA remains unqualified.
+- Checks: **112 backend tests**, **55 Lab frontend tests**, TypeScript/production build, plus **8 legacy-service tests** in a fresh disposable database passed. The reused shared test database initially failed migration replay because a trigger function survived table cleanup; an initial namespace override targeted the wrong loaded conftest module. Corrected only the temporary test harness, reran unchanged services in a new database, and removed that owned database. No production schema change or test assertion weakening.
+- Authenticated packaged-app controls completed two-step continued-pretraining and full-DPO runs through the outbound native runner. Retrieved manifests passed checksum verification; final-test rows stayed excluded; raw Unicode/whitespace hashes matched; full DPO retained an unchanged separate reference outside its optimizer. These are disposable software fixtures, not user research or a quality claim. Review exposed legacy-selector and selected-target defects; regression checks now exercise both.
+- A local Linux NF4 probe failed while downloading bitsandbytes before execution; it provides no QLoRA qualification. D remains open, including retrieval composition, additional model families, distillation and both RL tracks. No E work, production restart, push or deployment in this slice; accepted C remains the release boundary.
+
 ## 2026-10-28 — D scratch family/representation qualification
 
 - The initialization/authoring slice was committed as `07ef0a06b6fb8349b77c09bdaa243b2f235c5430`; its production release remains part of full D acceptance. Added a six-combination Transformer/GRU × byte/BPE/engineering fixture using authenticated application routes, owned PostgreSQL/Redis and real native children. Saved tensors independently prove updates to embeddings, core and output layers; no-op and frozen-core counterexamples fail the update oracle. Parameter counts use the actual PyTorch layer dimensions rather than trusting the executor's metric.

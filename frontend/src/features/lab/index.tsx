@@ -33,6 +33,7 @@ import "./lab.css";
 import { InputArtifacts, LabChoice as Choice } from "./inputs";
 import { DataPreparation } from "./data-preparation";
 import { LanguageLearning } from "./language-learning";
+import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { DefinitionGraph } from "./graph";
 import { ReplayViews } from "./replay";
 import { dataArtifacts } from "./evidence";
@@ -740,31 +741,61 @@ function LabWorkspace() {
                       >
                         <div className="lab-fields">
                           {definition?.engine === "learning.pretrained" && (
-                            <Choice
-                              label="Training method"
-                              value={String(
-                                definition.learning?.objective === "dpo"
-                                  ? "dpo"
-                                  : (definition.learning?.update_strategy ??
-                                      "full"),
-                              )}
-                              options={["full", "lora", "qlora", "dpo"].map(
-                                (id) => ({
-                                  id,
-                                  name: id,
-                                }),
-                              )}
-                              onChange={(method) =>
-                                change({
-                                  learning: {
-                                    ...definition!.learning,
-                                    initialization: "pretrained",
-                                    update_strategy: method,
-                                    objective: method === "dpo" ? "dpo" : "sft",
+                            <>
+                              <Choice
+                                label="Learning objective"
+                                value={pretrainedAxes(definition).objective}
+                                options={[
+                                  {
+                                    id: "sft",
+                                    name: "Supervised conversations",
                                   },
-                                })
-                              }
-                            />
+                                  {
+                                    id: "causal_lm",
+                                    name: "Continued pretraining · raw text",
+                                  },
+                                  {
+                                    id: "dpo",
+                                    name: "Preference learning · DPO",
+                                  },
+                                ]}
+                                onChange={(objective) =>
+                                  change(
+                                    editPretrainedAxes(definition, {
+                                      objective,
+                                    }),
+                                  )
+                                }
+                              />
+                              <Choice
+                                label="Weight updates"
+                                value={
+                                  pretrainedAxes(definition).update_strategy
+                                }
+                                options={["full", "lora", "qlora"].map(
+                                  (id) => ({ id, name: id }),
+                                )}
+                                onChange={(update_strategy) =>
+                                  change(
+                                    editPretrainedAxes(definition, {
+                                      update_strategy,
+                                    }),
+                                  )
+                                }
+                              />
+                              <p className="text-text-secondary">
+                                {pretrainedAxes(definition).objective ===
+                                "causal_lm"
+                                  ? "Snapshot rows use exact text strings. Tokenization appends EOS if absent, then truncates on the right; no chat template is applied."
+                                  : pretrainedAxes(definition).objective ===
+                                      "dpo"
+                                    ? "Every row needs a prompt, a final assistant answer and a distinct rejected answer. Full updates use a separate frozen reference model."
+                                    : "Snapshot rows use conversational messages. The retained model tokenizer supplies the chat template."}
+                                {
+                                  " QLoRA currently requires a compatible CUDA execution target."
+                                }
+                              </p>
+                            </>
                           )}
                           {[
                             "learning.language_rl",

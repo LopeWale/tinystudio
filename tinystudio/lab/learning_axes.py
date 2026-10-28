@@ -19,6 +19,24 @@ def selector(value, name):
     return value
 
 
+def selected_axis(learning, parameters, name):
+    values = [selector(container[name], name) for container in (learning, parameters) if name in container]
+    if len(set(values)) > 1:
+        raise ValueError(f"conflicting learning.{name} and parameters.{name}")
+    return values[0] if values else None
+
+
+def pretrained_method(learning, parameters):
+    from tinystudio.training.methods import resolve_method
+    method = resolve_method(training_type=selector(parameters["training_type"], "training_type") if "training_type" in parameters else None,
+        objective=selected_axis(learning, parameters, "objective"),
+        update_strategy=selected_axis(learning, parameters, "update_strategy"),
+        data_format=parameters.get("data_format"), default_update="full")
+    if method.data_format == "raw_text" and parameters.get("assistant_only_loss"):
+        raise ValueError("assistant_only_loss is incompatible with raw_text causal LM training")
+    return method
+
+
 def architecture(learning, parameters, fields):
     requested = learning.get("architecture", {})
     if requested is None:

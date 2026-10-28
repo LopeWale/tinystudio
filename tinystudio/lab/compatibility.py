@@ -165,7 +165,7 @@ def resolve_role(spec: dict, role: str, *, directory: bool = False, required: bo
     return binding
 
 
-def _rows(binding: dict, minimum: int = 3, forced_partition: str | None = None) -> list[dict]:
+def _rows(binding: dict, minimum: int = 3, forced_partition: str | None = None, *, data_format="conversational") -> list[dict]:
     path = Path(binding["path"])
     data = path.read_bytes()
     if hashlib.sha256(data).hexdigest() != binding["sha256"]:
@@ -198,9 +198,13 @@ def _rows(binding: dict, minimum: int = 3, forced_partition: str | None = None) 
         partition = row.get("partition", row.get("split", row.get("bucket")))
         if row.get("visibility") == "evaluation" and str(partition).lower() not in {"validation", "val", "dev", "eval", "test", "final_test", "final-test"}:
             raise ValueError("evaluation-visible snapshot rows require explicit held-out partitions")
+        if data_format == "raw_text":
+            if not isinstance(row.get("text"), str) or not row["text"] or "messages" in row:
+                raise ValueError("raw_text snapshot rows require exact nonempty text and no messages")
+            continue
         if not isinstance(row.get("messages"), list) or not row["messages"]:
             raise ValueError("snapshot rows must contain conversational messages")
-        if any(message.get("role") not in {"system", "user", "assistant", "tool"} or not isinstance(message.get("content"), str)
+        if any(not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant", "tool"} or not isinstance(message.get("content"), str)
                for message in row["messages"]):
             raise ValueError("snapshot messages require supported roles and string content")
     return rows
@@ -267,7 +271,7 @@ def load_pretrained_output(path: str | Path):
     manifest = json.loads((root / "pretrained.json").read_text())
     target = root / manifest["trained_directory"]
     tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
-    if manifest["training_type"] == "full":
+    if manifest.get("output_kind", "model" if manifest["training_type"] == "full" else "adapter") == "model":
         model = AutoModelForCausalLM.from_pretrained(str(target), local_files_only=True, dtype=torch.float32)
     else:
         from peft import PeftModel
@@ -300,33 +304,29 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     params = dict(definition.get("parameters", {}))
     learning = dict(definition.get("learning") or {})
     # Resolve every independent axis before opening any supplied artifact.
-    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
+    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate, selected_axis, pretrained_method
     from .learning import evaluator_validation_inputs
-    from tinystudio.serving.runner import pick_device, pick_dtype
+    from tinystudio.training.runtime import TrainingPlacement
     if any(key in params for key in {"base_model", "weights", "resume_from", "teacher_checkpoint", "refinetune_from"}):
         raise ValueError("pretrained sources must use immutable input artifact roles")
-    aliases = {"full_parameter": "full", "full_finetune": "full", "sft": "full"}
+    method = pretrained_method(learning, params)
+    requested_dtype = [selector(container[name], name).lower() for container in (learning, params)
+                       for name in ("dtype", "training_dtype") if name in container]
+    normalized_dtype = [{"fp32": "float32", "bf16": "bfloat16", "fp16": "float16"}.get(value, value) for value in requested_dtype]
+    if len(set(normalized_dtype)) > 1:
+        raise ValueError("conflicting requested training dtype axes")
+    runtime = TrainingPlacement.resolve(selected_axis(learning, params, "device"), normalized_dtype[0] if normalized_dtype else None)
+    actual_device, actual_dtype = runtime.device, runtime.dtype_name
     for container in (learning, params):
-        if "update_strategy" in container:
-            chosen = selector(container["update_strategy"], "update_strategy")
-            container["update_strategy"] = aliases.get(chosen, chosen)
-    if "training_type" in params:
-        legacy = selector(params["training_type"], "training_type")
-        legacy = aliases.get(legacy, legacy)
-        if "update_strategy" in params and params["update_strategy"] != legacy:
-            raise ValueError("conflicting training_type and update_strategy")
-        params["update_strategy"] = legacy
-    actual_device = pick_device()
-    actual_dtype = str(pick_dtype(actual_device)).replace("torch.", "")
-    axes = runtime_axes(learning, params, strategies={"full", "lora", "qlora", "dpo"}, default_strategy="full",
+        container["update_strategy"] = method.update_strategy
+        if "device" in container:
+            container["device"] = actual_device
+    axes = runtime_axes(learning, params, strategies={"full", "lora", "qlora"}, default_strategy="full",
         initializations={"pretrained", "from_pretrained"}, default_initialization="pretrained",
         actual_device=actual_device, actual_dtype=actual_dtype)
-    strategy = axes["update_strategy"]
-    objective = selector(learning.get("objective", "dpo" if strategy == "dpo" else "sft"), "objective")
-    if objective not in {"dpo", "sft", "causal_lm", "next_token", "cross_entropy"}:
-        raise ValueError("pretrained compatibility supports SFT or DPO objectives")
-    if (objective == "dpo") != (strategy == "dpo"):
-        raise ValueError("incompatible objective/update_strategy: the existing DPO backend requires objective=dpo and update_strategy=dpo (LoRA preference updates)")
+    strategy, objective = method.update_strategy, method.objective
+    if definition.get("retrieval"):
+        raise ValueError("pretrained training cannot silently consume a retrieval selection; compose a frozen retrieval run explicitly")
     if "family" in learning and selector(learning["family"], "family") not in {"pretrained", "causal_lm"}:
         raise ValueError("pretrained family is selected by its immutable artifact; omit family or use pretrained/causal_lm")
     if "family" in params and selector(params["family"], "family") not in {"pretrained", "causal_lm"}:
@@ -344,6 +344,7 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         raise ValueError("conflicting steps and max_steps")
     settings = {key: value for key, value in params.items() if key in TrainConfig.__dataclass_fields__}
     settings.update(base_model="<immutable pretrained_model input>", training_type=strategy,
+        objective=objective, update_strategy=strategy, data_format=method.data_format, device=actual_device, dtype=actual_dtype,
         seed=int(definition.get("seed", 42)), logging_steps=1, max_length=dimensions["context"], learning_rate=rate)
     settings.setdefault("batch_size", 1)
     settings.setdefault("gradient_accumulation_steps", 1)
@@ -360,7 +361,7 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         raise ValueError(f"configured pretrained device {actual_device} is unavailable")
     if strategy == "qlora":
         from tinystudio.training.train import qlora_support
-        supported, reason = qlora_support()
+        supported, reason = qlora_support(actual_device)
         if not supported:
             raise ValueError(reason)
     if device_kind == "cuda" and actual_dtype == "bfloat16" and not torch.cuda.is_bf16_supported():
@@ -373,13 +374,13 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     if isinstance(capacity, int) and dimensions["context"] > capacity:
         raise ValueError("requested training context exceeds the immutable pretrained model capacity")
     snapshot = resolve_role(spec, "snapshot")
-    rows = _rows(snapshot, minimum=2 if validation_bindings else 3)
+    rows = _rows(snapshot, minimum=2 if validation_bindings else 3, data_format=method.data_format)
     for index, row in enumerate(rows):
         row.setdefault("source_record_id", f"{snapshot['artifact_id']}:{index}")
         if validation_bindings and row.get("partition", row.get("split", row.get("bucket"))) is None:
             row["partition"] = "train"
     for binding in validation_bindings:
-        held_out = _rows(binding, minimum=1, forced_partition="validation")
+        held_out = _rows(binding, minimum=1, forced_partition="validation", data_format=method.data_format)
         for index, row in enumerate(held_out):
             row.setdefault("source_record_id", f"{binding['artifact_id']}:{index}")
             rows.append(row)
@@ -406,6 +407,14 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     split_path.write_text(json.dumps(split, indent=2))
     config.base_model = str(source)
     records = []
+    def cancellation_result():
+        for name in ("model", "adapter", "checkpoints"):
+            shutil.rmtree(output_dir / name, ignore_errors=True)
+        for name in ("pretrained.json", "pretrained-model.tar"):
+            (output_dir / name).unlink(missing_ok=True)
+        return {"records": records, "metrics": {}, "artifacts": [],
+                "qualification": {"status": "cancelled", "trainer": "existing TinyStudio train_experiment",
+                                  "partial_model_published": False}}
     def check_cancel():
         if cancelled():
             raise _Cancelled("pretrained run cancelled at trainer callback boundary")
@@ -416,20 +425,17 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         check_cancel()
         records.append({"type": kind, **row})
         emit({"type": kind, **row})
-    previous_threads = torch.get_num_threads()
     try:
-        torch.set_num_threads(1)
-        with torch.random.fork_rng(devices=[]):
-            result = train_experiment(output_dir, config, [rows[index] for index in train_ids],
-                [rows[index] for index in val_ids], progress=progress, weights=source, on_log=on_log)
+        result = train_experiment(output_dir, config, [rows[index] for index in train_ids],
+            [rows[index] for index in val_ids], progress=progress, weights=source, on_log=on_log,
+            runtime=runtime, check_cancel=check_cancel)
+        check_cancel()
     except _Cancelled:
-        return {"records": records, "metrics": {}, "artifacts": [],
-                "qualification": {"status": "cancelled", "trainer": "existing TinyStudio train_experiment",
-                                  "partial_model_published": False}}
-    finally:
-        torch.set_num_threads(previous_threads)
+        return cancellation_result()
     trained = Path(result["output"])
     manifest = {"format": "tinystudio.pretrained.v1", "training_type": strategy,
+        "objective": objective, "update_strategy": strategy, "output_kind": result["output_kind"],
+        "data_format": method.data_format,
         "axes": {**axes, "objective": objective, "architecture": dimensions, "architecture_source": "immutable pretrained artifact", "tokenizer_source": "immutable pretrained artifact",
                  "context_semantics": "training sequence cap; source positional embeddings are not resized", "source_context_capacity": capacity},
         "validation_inputs": validation_bindings,
@@ -451,7 +457,11 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         raise ValueError("reloaded pretrained model produces non-finite logits")
     del reloaded
     target = output_dir / "pretrained-model.tar"
+    if cancelled():
+        return cancellation_result()
     _bundle(output_dir, [source, trained, manifest_path, split_path], target)
+    if cancelled():
+        return cancellation_result()
     return {"records": records, "metrics": {**result.get("metrics", {}), "steps": result["steps"],
         "trainable_parameters": result["trainable_parameters"], "total_parameters": result["total_parameters"],
         "reload_inference_finite": True, "model_sha256": model_input["sha256"], "snapshot_sha256": snapshot["sha256"]},
@@ -464,6 +474,6 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
             "validation_bindings": "evaluator-only map; never used for tokenizer fitting or optimizer updates",
             "trainer": "existing TinyStudio train_experiment", "saved_model_reloaded": True,
             "resume": "legacy backend saves weights; exact optimizer continuation is not provided",
-            "cancellation": "checked at every progress/training-log callback", "network_downloads": False,
+            "cancellation": "checked at every optimizer step, progress/log callback and before model publication", "network_downloads": False,
             "partition_strategy": split["strategy"], "group_isolation": split["group_isolation"],
             "excluded_final_test_records": len(split["excluded_test"]), "tokenizer_fitted": False}}

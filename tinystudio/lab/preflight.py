@@ -53,6 +53,17 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("model_initialization", True,
                   "Initialization bindings are declared consistently; checkpoint contents, architecture and tokenizer compatibility are verified at execution.")
+    if engine == "learning.pretrained":
+        from .learning_axes import pretrained_method
+        try:
+            method = pretrained_method(definition.learning or {}, definition.parameters)
+            if definition.retrieval:
+                raise ValueError("pretrained training requires explicitly composed frozen retrieval; a retrieval selection cannot be silently ignored")
+        except (ValueError, KeyError, TypeError) as exc:
+            check("learning_method", False, str(exc))
+        else:
+            check("learning_method", True,
+                f"{method.objective}/{method.update_strategy} uses {method.data_format} data; source contents, device placement and optional dependencies are checked at execution.")
     if engine == "data.pipeline" and definition.mode == "online":
         from .data import online_plan
         try:

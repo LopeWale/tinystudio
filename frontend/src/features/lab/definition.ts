@@ -200,7 +200,7 @@ export const templates: Template[] = [
       ),
       input(
         "snapshot",
-        "Conversation JSON/JSONL; DPO requires preference rows",
+        "JSON/JSONL or Parquet: exact text for continued pretraining; messages for SFT; chosen/rejected responses for DPO",
       ),
     ],
     hint: "Full, LoRA, QLoRA and DPO use this same engine. Hardware and optional trainer dependencies are checked on the selected target.",

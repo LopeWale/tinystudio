@@ -85,6 +85,128 @@ def test_real_existing_trainer_from_immutable_local_model(tmp_path, local_pretra
         assert result["metrics"]["trainable_parameters"] < result["metrics"]["total_parameters"]
 
 
+@pytest.mark.parametrize("objective", ["sft", "causal_lm", "dpo"])
+@pytest.mark.parametrize("strategy", ["full", "lora"])
+def test_independent_objective_update_placement_and_reload(tmp_path, local_pretrained_spec, monkeypatch, objective, strategy):
+    from trl import DPOTrainer, SFTTrainer
+    experiment = local_pretrained_spec
+    experiment["definition"]["learning"].update(objective=objective, update_strategy=strategy, device="cpu", dtype="float32")
+    # A per-run CPU selection must override defaults without changing the environment.
+    monkeypatch.setenv("TINYSTUDIO_DEVICE", "cuda:7")
+    monkeypatch.setenv("TINYSTUDIO_DTYPE", "bf16")
+    snapshot = Path(experiment["input_paths"]["snapshot-1"])
+    texts = ["  pressure -1.25 V\nμA\t", "sensor ready 0.5 A", "pressure high", "pressure low", "FINAL_TEST_ONLY"]
+    rows = [json.loads(line) for line in snapshot.read_text().splitlines()]
+    for index, row in enumerate(rows):
+        row.update(partition="train" if index < 3 else "validation" if index == 3 else "test", source_record_id=f"record:{index}")
+        if objective == "causal_lm":
+            row.pop("messages")
+            row["text"] = texts[index]
+    snapshot.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    experiment["definition"]["inputs"][1]["sha256"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    observed = {}
+    trainer_type = DPOTrainer if objective == "dpo" else SFTTrainer
+    original = trainer_type.train
+
+    def observe_training(trainer, *args, **kwargs):
+        before = {name: parameter.detach().clone() for name, parameter in trainer.model.named_parameters()}
+        trainable = {name for name, parameter in trainer.model.named_parameters() if parameter.requires_grad}
+        assert trainable
+        assert all("lora_" in name for name in trainable) if strategy == "lora" else all("lora_" not in name for name in trainable)
+        reference_before, ref_logps_before = {}, None
+        if objective == "dpo":
+            reference = trainer.ref_model if trainer.ref_model is not None else trainer.model
+            reference_before = {name: parameter.detach().clone() for name, parameter in reference.named_parameters() if "lora_" not in name}
+            batch = trainer._prepare_inputs(next(iter(trainer.get_train_dataloader())))
+            if trainer.ref_model is not None:
+                assert trainer.ref_model is not trainer.model
+                assert not any(parameter.requires_grad for parameter in trainer.ref_model.parameters())
+            ref_logps_before = tuple(value.detach().clone() for value in trainer.compute_ref_log_probs(reference, batch))
+        result = original(trainer, *args, **kwargs)
+        changed = {name for name, parameter in trainer.model.named_parameters() if not torch.equal(before[name], parameter)}
+        assert changed and changed <= trainable
+        optimizer = {id(parameter) for group in trainer.optimizer.param_groups for parameter in group["params"]}
+        assert optimizer == {id(parameter) for parameter in trainer.model.parameters() if parameter.requires_grad}
+        if objective == "dpo":
+            assert all(torch.equal(reference_before[name], parameter) for name, parameter in reference.named_parameters() if name in reference_before)
+            after = trainer.compute_ref_log_probs(reference, batch)
+            assert all(torch.equal(left, right) for left, right in zip(ref_logps_before, after))
+            if trainer.ref_model is not None:
+                assert optimizer.isdisjoint({id(parameter) for parameter in trainer.ref_model.parameters()})
+        observed.update(changed=sorted(changed), trainable=sorted(trainable))
+        return result
+
+    monkeypatch.setattr(trainer_type, "train", observe_training)
+    result = execute_pretrained(experiment, tmp_path / "independent", lambda row: None, lambda: False)
+    model, tokenizer, manifest = load_pretrained_output(tmp_path / "independent")
+    assert manifest["objective"] == objective and manifest["update_strategy"] == strategy
+    assert manifest["output_kind"] == ("model" if strategy == "full" else "adapter")
+    placement = manifest["metrics"]["placement"]
+    assert placement["model_devices"] == ["cpu"] and placement["batch_devices"] == ["cpu"]
+    assert placement["model_dtypes"] == ["float32"] and placement["prepared_batches"] > 0
+    assert result["qualification"]["excluded_final_test_records"] == 1
+    assert observed["changed"]
+    if objective == "causal_lm":
+        contract = manifest["metrics"]["data_contract"]
+        assert contract["chat_template_applied"] is False
+        assert contract["train"][0]["text_sha256"] == hashlib.sha256(texts[0].encode()).hexdigest()
+        assert [row["source_record_id"] for row in contract["train"]] == ["record:0", "record:1", "record:2"]
+    probe = tokenizer("pressure high", return_tensors="pt")
+    with torch.no_grad():
+        expected = model(**probe).logits.clone()
+    del model
+    restored, _, _ = load_pretrained_output(tmp_path / "independent")
+    with torch.no_grad():
+        assert torch.equal(expected, restored(**probe).logits)
+    import os
+    assert os.environ["TINYSTUDIO_DEVICE"] == "cuda:7" and os.environ["TINYSTUDIO_DTYPE"] == "bf16"
+
+
+@pytest.mark.parametrize("boundary", ["step", "saved", "bundled"])
+def test_cancellation_never_publishes_partial_pretrained_model(tmp_path, local_pretrained_spec, monkeypatch, boundary):
+    import tinystudio.lab.compatibility as compatibility
+    experiment = local_pretrained_spec
+    output = tmp_path / boundary
+    state = {"cancel": False}
+    original_train = compatibility.execute_pretrained.__globals__["load_pretrained_output"]
+    original_bundle = compatibility._bundle
+    def emit(row):
+        if boundary == "step" and row.get("step") == 1:
+            state["cancel"] = True
+    def load(path):
+        result = original_train(path)
+        if boundary == "saved":
+            state["cancel"] = True
+        return result
+    def bundle(*args):
+        original_bundle(*args)
+        if boundary == "bundled":
+            state["cancel"] = True
+    monkeypatch.setattr(compatibility, "load_pretrained_output", load)
+    monkeypatch.setattr(compatibility, "_bundle", bundle)
+    result = execute_pretrained(experiment, output, emit, lambda: state["cancel"])
+    assert state["cancel"]
+    assert result["qualification"]["status"] == "cancelled" and not result["artifacts"]
+    assert result["qualification"]["partial_model_published"] is False
+    assert not any((output / name).exists() for name in ("pretrained.json", "pretrained-model.tar", "model", "adapter", "checkpoints"))
+
+
+def test_malformed_dpo_pair_is_not_silently_dropped(tmp_path, local_pretrained_spec):
+    from tinystudio.core.project import ProjectError
+    experiment = local_pretrained_spec
+    experiment["definition"]["learning"].update(objective="dpo", update_strategy="full")
+    source = Path(experiment["input_paths"]["snapshot-1"])
+    rows = [json.loads(line) for line in source.read_text().splitlines()]
+    for index, row in enumerate(rows):
+        row["partition"] = "train" if index < 3 else "validation"
+    rows[1].pop("rejected")
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    experiment["definition"]["inputs"][1]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+    with pytest.raises(ProjectError, match="DPO row 1"):
+        execute_pretrained(experiment, tmp_path / "invalid-pair", lambda row: None, lambda: False)
+    assert not (tmp_path / "invalid-pair/pretrained.json").exists()
+
+
 def test_directory_binding_rejects_source_mutation(tmp_path, local_pretrained_spec):
     archive = Path(local_pretrained_spec["input_paths"]["model-1"]["path"])
     archive.write_bytes(b"altered archive")
@@ -104,6 +226,14 @@ def test_authored_model_path_cannot_bypass_artifact_binding(tmp_path, local_pret
     local_pretrained_spec["definition"]["parameters"]["base_model"] = "/arbitrary/model"
     with pytest.raises(ValueError, match="immutable input"):
         execute_pretrained(local_pretrained_spec, tmp_path / "out", lambda row: None, lambda: False)
+
+
+def test_cpu_qlora_is_rejected_before_artifact_access_on_cuda_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    experiment = {"definition": {"learning": {"update_strategy": "qlora", "device": "cpu", "dtype": "float32"}}}
+    with pytest.raises(ValueError, match="requires a CUDA target"):
+        execute_pretrained(experiment, tmp_path / "must-stay-absent", lambda row: None, lambda: False)
+    assert not (tmp_path / "must-stay-absent").exists()
 
 
 @pytest.mark.parametrize("format", ["tar", "zip"])
@@ -239,7 +369,7 @@ def test_real_pretrained_wrapper_honors_imported_snapshot_partitions(tmp_path, l
 
 @pytest.mark.parametrize("learning,parameters,match", [
     ({"initialization": "scratch"}, {}, "unsupported initialization"),
-    ({"update_strategy": "lora", "objective": "dpo"}, {}, "incompatible objective"),
+    ({"update_strategy": "lora", "objective": "unknown"}, {}, "unsupported objective"),
     ({"update_strategy": "dpo", "objective": "sft"}, {}, "incompatible objective"),
     ({"update_strategy": "sgd"}, {}, "unsupported update_strategy"),
     ({"architecture": {"hidden_size": 32}}, {}, "unsupported architecture"),

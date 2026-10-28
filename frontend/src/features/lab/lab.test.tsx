@@ -1915,18 +1915,92 @@ describe("laboratory capability and evidence contracts", () => {
     const { studio } = fixture();
     mount(studio);
     await choose("Experiment engine", "Pretrained full / LoRA / QLoRA / DPO");
-    await choose("Training method", "qlora");
+    await choose("Weight updates", "qlora");
     let definition = readJSON();
     expect(definition.engine).toBe("learning.pretrained");
     expect(definition.learning.update_strategy).toBe("qlora");
-    await choose("Training method", "dpo");
+    await choose("Learning objective", "Preference learning · DPO");
     definition = readJSON();
     expect(definition.learning.objective).toBe("dpo");
+    expect(definition.learning.update_strategy).toBe("qlora");
+    await choose("Weight updates", "full");
+    definition = readJSON();
+    expect(definition.learning.objective).toBe("dpo");
+    expect(definition.learning.update_strategy).toBe("full");
+    await choose("Learning objective", "Continued pretraining · raw text");
+    definition = readJSON();
+    expect(definition.learning.objective).toBe("causal_lm");
+    expect(definition.learning.update_strategy).toBe("full");
+    expect(definition.parameters.data_format).toBe("raw_text");
+    expect(screen.getByText(/Tokenization appends EOS/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Inputs" }));
     expect(
       screen.getByText(/Local model\/tokenizer archive/),
     ).toBeInTheDocument();
   });
+  it.each([
+    ["learning", "updates"],
+    ["parameters", "updates"],
+    ["training_type", "updates"],
+    ["learning", "objective"],
+    ["parameters", "objective"],
+    ["training_type", "objective"],
+  ])(
+    "preserves legacy DPO intent from %s while editing %s",
+    async (location, edited) => {
+      const { studio, api, row } = fixture();
+      const retained = makeDefinition("learning.pretrained");
+      retained.name = "legacy preference";
+      retained.learning = {
+        initialization: "pretrained",
+        architecture: { context: 32 },
+      };
+      if (location === "learning")
+        retained.learning.update_strategy = { kind: "dpo" };
+      else
+        retained.parameters[
+          location === "training_type" ? "training_type" : "update_strategy"
+        ] = "dpo";
+      row.definition = retained;
+      row.name = retained.name;
+      const baseGet = api.get.getMockImplementation()!;
+      api.get.mockImplementation((path, signal) =>
+        path === "/api/lab/definitions"
+          ? Promise.resolve([row])
+          : baseGet(path, signal),
+      );
+      mount(studio);
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: /Saved experiment/ }),
+      );
+      await user.click(
+        await screen.findByRole("option", { name: "legacy preference · r1" }),
+      );
+      await choose(
+        edited === "updates" ? "Weight updates" : "Learning objective",
+        edited === "updates" ? "full" : "Supervised conversations",
+      );
+      const result = readJSON();
+      expect(result.learning.objective).toBe(
+        edited === "updates" ? "dpo" : "sft",
+      );
+      expect(result.learning.update_strategy).toBe(
+        edited === "updates" ? "full" : "lora",
+      );
+      expect(result.parameters.training_type).toBeUndefined();
+      expect(result.parameters.update_strategy).toBeUndefined();
+      expect(result.learning.architecture).toEqual({ context: 32 });
+      fireEvent.click(screen.getByRole("button", { name: "Save revision" }));
+      await waitFor(() =>
+        expect(api.put).toHaveBeenCalledWith(
+          "/api/lab/definitions/definition-1",
+          expect.objectContaining({ definition: result }),
+          expect.any(AbortSignal),
+        ),
+      );
+    },
+  );
   it("supports keyboard graph wiring and prevents a generic graph from impersonating another adapter", async () => {
     const { studio } = fixture();
     mount(studio);

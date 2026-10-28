@@ -8,6 +8,20 @@ def body(**changes):
     return ExperimentDefinition(name="fixture", engine="synthetic.signal", execution={"profile": "trusted_native"}, **changes)
 
 
+@pytest.mark.parametrize("objective,strategy,parameters,passed", [
+    ("dpo", "full", {}, True), ("dpo", "lora", {}, True), ("causal_lm", "qlora", {}, True),
+    ("sft", "dpo", {}, False), ("causal_lm", "full", {"assistant_only_loss": True}, False),
+    ("causal_lm", "full", {"data_format": "conversational"}, False),
+])
+def test_pretrained_preflight_preserves_independent_intent(objective, strategy, parameters, passed):
+    definition = ExperimentDefinition(name="pretrained", engine="learning.pretrained", execution={"profile": "trusted_native"},
+        learning={"objective": objective, "update_strategy": strategy}, parameters=parameters)
+    checks = {item["code"]: item for item in execution_checks(definition, {})}
+    assert checks["learning_method"]["passed"] is passed
+    if passed:
+        assert "checked at execution" in checks["learning_method"]["message"]
+
+
 @pytest.mark.parametrize("initialization,roles,passed", [
     ("scratch", [], True),
     ("weights", ["initial_weights"], True),

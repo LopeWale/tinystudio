@@ -348,6 +348,53 @@ or switching representations with retained vocabulary settings, requires an
 explicit conflict resolution. Advanced fields and immutable bindings remain in
 the same versioned definition used by the code view.
 
+## Pretrained objectives and weight updates
+
+`learning.pretrained` uses the existing TRL/PEFT trainer with two independent
+axes: `learning.objective` selects `sft`, `causal_lm` or `dpo`;
+`learning.update_strategy` selects `full`, `lora` or `qlora`. Legacy
+`parameters.training_type: "dpo"` and `update_strategy: "dpo"` retain LoRA DPO
+semantics. Conflicting explicit aliases fail. Editing either selector in the
+actual Lab form canonicalizes both axes and preserves the other selection.
+
+SFT uses `messages`. Continued pretraining uses `text` strings, including their
+original whitespace and Unicode, with `parameters.data_format: "raw_text"`
+(inferred from `causal_lm` when omitted). It tokenizes without chat templates or
+automatic special tokens, appends EOS if absent, then truncates on the right at
+the selected context length. Raw UTF-8 hashes, token hashes, EOS insertion and
+truncation counts appear in the manifest. Assistant-only loss is incompatible
+with this format. The original snapshot remains retained; final-test rows are
+excluded from optimization and validation. DPO validates every pair: a prompt,
+a final assistant response and a distinct nonempty `rejected` string are required.
+Malformed pairs fail instead of being dropped.
+
+Full DPO loads a separate, frozen reference from the same immutable model.
+LoRA DPO uses the starting model with adapters disabled as its reference; an
+already adapter-bearing starting model requires an explicitly retained merged
+model first. The executor checks unchanged reference parameters and optimizer
+separation, then records the reference hashes. The output manifest identifies
+`objective`, `update_strategy` and `output_kind` independently so full DPO reloads
+as a full model. Existing v1 manifests and legacy Job/Experiment configuration
+remain readable.
+
+Device and dtype are selected independently. Explicit run fields override their
+respective machine defaults; an omitted dtype still inherits the configured
+dtype. For example, a CPU run on a machine configured for bf16 must explicitly
+select float32 rather than receiving a hidden precision fallback. The trainer
+checks actual policy/reference and prepared-batch placement and records observed
+dtypes. The current QLoRA implementation requires a selected CUDA target plus
+bitsandbytes; CPU/Apple execution remains unqualified. A library's published
+platform support does not qualify this trainer. Retrieval composition is still
+an outstanding D task; unsupported retrieval selections fail visibly.
+
+Native runners execute these operations in child processes. In-process trainer
+calls are serialized while they own PyTorch thread and RNG state, which is
+restored on normal and exceptional exits. Cancellation is checked at optimizer
+steps, progress/log callbacks, before saving and before/after bundle publication;
+cancelled results expose no partial model artifacts. Pretrained output currently
+supports weight restart, not exact optimizer continuation. These local software
+fixtures establish execution behavior, not model quality or hardware portability.
+
 Omitted model dimensions in checkpoint modes are displayed as inherited rather
 than filled with scratch defaults. Only explicit dimensions participate in
 cross-field checks before checkpoint resolution. Retained inputs identify their

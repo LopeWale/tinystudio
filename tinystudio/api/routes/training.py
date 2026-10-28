@@ -36,7 +36,12 @@ class JobBody(BaseModel):
 
 class ExperimentSpec(BaseModel):
     base_model: str
-    training_type: str = "lora"
+    training_type: str | None = None
+    objective: str | None = None
+    update_strategy: str | None = None
+    data_format: str | None = None
+    device: str | None = None
+    dtype: str | None = None
     epochs: float = Field(3, ge=0.1, le=50)
     learning_rate: float = Field(2e-4, gt=0, le=1)
     batch_size: int = Field(8, ge=1, le=64)
@@ -134,11 +139,11 @@ def add_experiments(job: str, body: ExperimentsBody, project: Project = Depends(
         raise HTTPException(status_code=400, detail="add at least one experiment")
     numbers = []
     for spec in body.experiments:
-        if spec.training_type == "qlora":
-            ok, reason = qlora_support()
+        cfg = wrap(lambda spec=spec: TrainConfig(**spec.model_dump()))
+        if cfg.update_strategy == "qlora":
+            ok, reason = qlora_support(cfg.device)
             if not ok:
                 raise HTTPException(status_code=400, detail=reason)
-        cfg = wrap(lambda spec=spec: TrainConfig(**spec.model_dump()))
         numbers.append(wrap(lambda cfg=cfg: jobs_svc.add_experiment(db, project, job, cfg)).number)
     return {"job": job, "experiments": numbers}
 

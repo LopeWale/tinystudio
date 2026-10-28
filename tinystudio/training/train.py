@@ -18,6 +18,8 @@ from typing import Any
 
 from tinystudio.core.project import ProjectError, now, read_json
 from tinystudio.training.recommend import LORA_TARGETS, catalog_entry
+from tinystudio.training.methods import resolve_method
+from tinystudio.training.runtime import CheckedPlacementMixin, TrainingPlacement, training_session
 
 ALIAS = re.compile(r"^ft-(?P<job>[A-Za-z0-9][A-Za-z0-9._-]{0,63})-(?P<number>\d+)$")
 
@@ -25,7 +27,12 @@ ALIAS = re.compile(r"^ft-(?P<job>[A-Za-z0-9][A-Za-z0-9._-]{0,63})-(?P<number>\d+
 @dataclass
 class TrainConfig:
     base_model: str
-    training_type: str = "lora"  # "lora" | "full" | "qlora" | "dpo"
+    training_type: str | None = None  # legacy alias; omitted defaults to LoRA
+    objective: str | None = None
+    update_strategy: str | None = None
+    data_format: str | None = None
+    device: str | None = None
+    dtype: str | None = None
     epochs: float = 3
     learning_rate: float = 2e-4
     batch_size: int = 8
@@ -47,8 +54,15 @@ class TrainConfig:
     keep_checkpoints: int = 0  # 0 keeps every checkpoint
 
     def __post_init__(self) -> None:
-        if self.training_type not in ("lora", "full", "qlora", "dpo"):
-            raise ProjectError("training_type must be 'lora', 'full', 'qlora', or 'dpo'")
+        try:
+            method = resolve_method(training_type=self.training_type, objective=self.objective,
+                                    update_strategy=self.update_strategy, data_format=self.data_format)
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from exc
+        self.training_type = self.training_type or method.update_strategy
+        self.objective, self.update_strategy, self.data_format = method.objective, method.update_strategy, method.data_format
+        if self.data_format == "raw_text" and self.assistant_only_loss:
+            raise ProjectError("assistant_only_loss is incompatible with raw_text causal LM training")
         if not self.lora_targets:
             entry = catalog_entry(self.base_model)
             self.lora_targets = LORA_TARGETS.get(entry.family, []) if entry else []
@@ -82,19 +96,30 @@ def parse_experiment_ref(reference: str) -> tuple[str, int]:
     return job, int(number)
 
 
-def train_experiment(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any = print, weights: Path | None = None, on_log: Any = None) -> dict[str, Any]:
+def train_experiment(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any = print, weights: Path | None = None, on_log: Any = None, *, runtime: TrainingPlacement | None = None, check_cancel: Any = None) -> dict[str, Any]:
     """Train into ``exp_dir`` (adapter/ or model/, checkpoints/). ``on_log(kind, row)`` receives loss points and checkpoint records."""
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    return _train(exp_dir, config, train_rows, val_rows, progress, weights, on_log or (lambda kind, row: None))
+    with training_session():
+        placement = runtime or TrainingPlacement.resolve(config.device, config.dtype)
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        return _train(exp_dir, config, train_rows, val_rows, progress, weights,
+                      on_log or (lambda kind, row: None), placement, check_cancel or (lambda: None))
 
 
-def preference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def preference_rows(rows: list[dict[str, Any]], *, strict: bool = False) -> list[dict[str, Any]]:
     """Datapoints with a `rejected` answer, in TRL's conversational preference format (prompt / chosen / rejected)."""
     pairs = []
-    for row in rows:
+    for index, row in enumerate(rows):
+        messages = row.get("messages")
+        valid = (isinstance(messages, list) and len(messages) >= 2
+                 and all(isinstance(message, dict) and message.get("role") in {"system", "user", "assistant", "tool"}
+                         and isinstance(message.get("content"), str) for message in messages)
+                 and messages[-1]["role"] == "assistant")
         rejected = row.get("rejected")
-        chosen = row["messages"][-1]["content"]
-        if isinstance(rejected, str) and rejected.strip() and rejected.strip() != chosen.strip():
+        chosen = messages[-1]["content"] if valid else None
+        valid = valid and isinstance(rejected, str) and bool(rejected.strip()) and bool(chosen.strip()) and rejected != chosen
+        if strict and not valid:
+            raise ProjectError(f"DPO row {index} requires a prompt, a final assistant response, and a distinct nonempty rejected response")
+        if valid:
             pairs.append({"prompt": row["messages"][:-1], "chosen": [row["messages"][-1]], "rejected": [{"role": "assistant", "content": rejected}]})
     return pairs
 
@@ -122,28 +147,32 @@ def _checkpoint_args(config: "TrainConfig") -> dict[str, Any]:
     return {"save_strategy": "no"}
 
 
-def qlora_support() -> tuple[bool, str]:
+def qlora_support(device: str | None = None) -> tuple[bool, str]:
     """Whether 4-bit QLoRA can run here: it needs a CUDA GPU and the bitsandbytes package."""
     import importlib.util
 
     import torch
 
-    if not torch.cuda.is_available():
-        return False, "QLoRA needs a CUDA GPU (bitsandbytes has no Apple GPU or CPU backend); use lora or full here, or run tinystudio on a CUDA machine"
+    try:
+        selected_cuda = device is None or torch.device(device).type == "cuda"
+    except (RuntimeError, TypeError, ValueError):
+        return False, f"Invalid training device {device!r}; select cpu, mps or cuda[:index] on a compatible target"
+    if not selected_cuda or not torch.cuda.is_available():
+        return False, "TinyStudio's current QLoRA trainer requires a CUDA target and bitsandbytes; CPU/Apple execution of this path is unqualified. Select lora/full or a compatible CUDA target."
     if importlib.util.find_spec("bitsandbytes") is None:
         return False, "QLoRA needs the bitsandbytes package: pip install bitsandbytes"
     return True, "ok"
 
 
-def _load_4bit(source: str, device: str, progress: Any) -> Any:
-    ok, reason = qlora_support()
+def _load_4bit(source: str, device: str, progress: Any, dtype=None) -> Any:
+    ok, reason = qlora_support(device)
     if not ok:
         raise ProjectError(reason)
     import torch
     from peft import prepare_model_for_kbit_training
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
-    quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
+    quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=dtype or torch.bfloat16)
     progress("loading the base model in 4-bit NF4 (QLoRA)")
     model = AutoModelForCausalLM.from_pretrained(source, quantization_config=quant, device_map={"": device})
     return prepare_model_for_kbit_training(model)
@@ -170,8 +199,65 @@ def _loss_logger(exp_dir: Path, progress: Any, on_log: Any) -> Any:
     return LossLog()
 
 
-def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any) -> dict[str, Any]:
-    """Direct Preference Optimization with LoRA adapters; the adapter-free base acts as the reference model."""
+def _cancellation_callback(check_cancel):
+    from transformers import TrainerCallback
+
+    class CancellationCheck(TrainerCallback):
+        def on_step_begin(self, *args, **kwargs):
+            check_cancel()
+
+        def on_step_end(self, *args, **kwargs):
+            check_cancel()
+
+    return CancellationCheck()
+
+
+def _parameter_digest(model, *, base_only=False):
+    import hashlib
+    import torch
+    digest = hashlib.sha256()
+    for name, parameter in model.named_parameters():
+        if base_only and "lora_" in name:
+            continue
+        digest.update(name.encode())
+        digest.update(str((tuple(parameter.shape), parameter.dtype)).encode())
+        digest.update(parameter.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+def raw_sequence_rows(rows, tokenizer, max_length):
+    """Tokenize exact text, append one EOS if absent, then truncate on the right.
+
+    Pretokenized input prevents TRL from applying chat templates or text cleanup.
+    Raw UTF-8 identities and truncation are recorded separately from token IDs.
+    """
+    import hashlib
+    prepared, receipts = [], []
+    for index, row in enumerate(rows):
+        text = row.get("text")
+        if not isinstance(text, str) or not text or "messages" in row:
+            raise ProjectError(f"raw_text row {index} requires an exact nonempty text string and no messages")
+        ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+        eos = tokenizer.eos_token_id
+        if eos is None:
+            raise ProjectError("raw_text training requires a tokenizer EOS token")
+        appended = not ids or ids[-1] != eos
+        if appended:
+            ids = [*ids, eos]
+        total = len(ids)
+        ids = ids[:max_length]
+        if len(ids) < 2:
+            raise ProjectError(f"raw_text row {index} has fewer than two learning tokens")
+        prepared.append({"input_ids": ids, "attention_mask": [1] * len(ids)})
+        receipts.append({"source_record_id": row.get("source_record_id"),
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "tokens_before_truncation": total, "tokens": len(ids), "truncated_tokens": total - len(ids),
+            "eos_appended": appended, "token_ids_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest()})
+    return prepared, receipts
+
+
+def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any, runtime: TrainingPlacement, check_cancel) -> dict[str, Any]:
+    """DPO objective with independently selected full or adapter updates."""
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     import torch
@@ -180,26 +266,31 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
     from transformers import AutoModelForCausalLM, AutoTokenizer, PrinterCallback
     from trl import DPOConfig, DPOTrainer
 
-    from tinystudio.serving.runner import pick_device, pick_dtype
-
-    train_pairs, val_pairs = preference_rows(train_rows), preference_rows(val_rows)
+    train_pairs, val_pairs = preference_rows(train_rows, strict=True), preference_rows(val_rows, strict=True)
     if len(train_pairs) < 2:
         raise ProjectError(
             f"DPO needs training datapoints with a 'rejected' answer; this snapshot has {len(train_pairs)}. "
             "Correct traces and run `tinystudio trace promote DATASET --preference`, or add datapoints with a `rejected` field."
         )
-    device = pick_device()
-    dtype = pick_dtype(device)
+    device, dtype = runtime.device, runtime.dtype
     source = str(weights) if weights else config.base_model
     progress(f"device={device} dtype={str(dtype).replace('torch.', '')} base_model={config.base_model} weights={source} type=dpo pairs train={len(train_pairs)} val={len(val_pairs)} beta={config.dpo_beta}")
 
     tokenizer = AutoTokenizer.from_pretrained(source)
-    model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype)
+    if (Path(source) / "adapter_config.json").exists():
+        raise ProjectError("DPO requires a complete immutable starting model; merge and retain any existing adapter first")
+    model = (_load_4bit(source, device, progress, dtype) if config.update_strategy == "qlora" else
+             AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device))
+    reference = None
+    if config.update_strategy == "full":
+        reference = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
+        reference.requires_grad_(False).eval()
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     train_ds = Dataset.from_list(train_pairs)
     eval_ds = Dataset.from_list(val_pairs) if val_pairs else None
-    peft_config = LoraConfig(r=config.lora_r, lora_alpha=config.lora_alpha, lora_dropout=config.lora_dropout, target_modules=config.lora_targets or "all-linear", task_type="CAUSAL_LM")
+    peft_config = (LoraConfig(r=config.lora_r, lora_alpha=config.lora_alpha, lora_dropout=config.lora_dropout,
+        target_modules=config.lora_targets or "all-linear", task_type="CAUSAL_LM") if config.update_strategy != "full" else None)
     args = DPOConfig(
         output_dir=str(exp_dir / "checkpoints"),
         num_train_epochs=config.epochs,
@@ -215,6 +306,7 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
         optim="adamw_torch_fused" if device.startswith("cuda") else "adamw_torch",
         bf16=dtype == torch.bfloat16,
         fp16=False,
+        use_cpu=device == "cpu",
         logging_steps=config.logging_steps,
         logging_first_step=True,
         eval_strategy=("steps" if config.eval_steps else "epoch") if eval_ds is not None else "no",
@@ -225,20 +317,46 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
         disable_tqdm=True,
         **_checkpoint_args(config),
     )
-    trainer = DPOTrainer(model=model, ref_model=None, args=args, train_dataset=train_ds, eval_dataset=eval_ds, processing_class=tokenizer, peft_config=peft_config, callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log)])
+    class PlacedDPOTrainer(CheckedPlacementMixin, DPOTrainer):
+        pass
+    trainer = PlacedDPOTrainer(model=model, ref_model=reference, args=args, train_dataset=train_ds, eval_dataset=eval_ds, processing_class=tokenizer, peft_config=peft_config, callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log), _cancellation_callback(check_cancel)])
+    trainer.tinystudio_placement = runtime
+    runtime.check_device(trainer.args.device)
+    runtime.check_model(trainer.model)
+    reference_model = trainer.ref_model if trainer.ref_model is not None else trainer.model
+    base_only = trainer.ref_model is None
+    reference_before = _parameter_digest(reference_model, base_only=base_only)
+    if trainer.ref_model is not None:
+        runtime.check_model(trainer.ref_model)
+        if any(parameter.requires_grad for parameter in trainer.ref_model.parameters()):
+            raise ProjectError("DPO reference parameters must be frozen")
     trainer.remove_callback(PrinterCallback)
     trainable, total = _count_parameters(trainer.model)
     progress(f"trainable parameters: {trainable:,} of {total:,} ({trainable / total:.2%})")
     train_output = trainer.train()
+    runtime.check_model(trainer.model)
+    reference_after = _parameter_digest(reference_model, base_only=base_only)
+    if reference_after != reference_before:
+        raise ProjectError("DPO reference weights changed during policy optimization")
+    optimizer_ids = {id(parameter) for group in trainer.optimizer.param_groups for parameter in group["params"]}
+    if trainer.ref_model is not None and any(id(parameter) in optimizer_ids for parameter in trainer.ref_model.parameters()):
+        raise ProjectError("DPO reference parameters entered the policy optimizer")
     final_eval: dict[str, float] = {}
     if eval_ds is not None:
         final_eval = {k: float(v) for k, v in trainer.evaluate().items() if isinstance(v, (int, float))}
-    out = exp_dir / "adapter"
+    check_cancel()
+    out = exp_dir / ("model" if config.update_strategy == "full" else "adapter")
     trainer.model.save_pretrained(str(out))
     tokenizer.save_pretrained(str(out))
     return {
         "output": str(out),
         "device": device,
+        "objective": config.objective, "update_strategy": config.update_strategy,
+        "output_kind": "model" if config.update_strategy == "full" else "adapter",
+        "placement": runtime.report(),
+        "reference": {"kind": "separate_frozen_model" if reference is not None else "adapter_disabled_starting_model",
+            "sha256_before": reference_before, "sha256_after": reference_after, "unchanged": True,
+            "optimizer_disjoint": True},
         "trainable_parameters": trainable,
         "total_parameters": total,
         "steps": int(train_output.global_step),
@@ -248,9 +366,14 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
     }
 
 
-def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any) -> dict[str, Any]:
-    if config.training_type == "dpo":
-        return _train_dpo(exp_dir, config, train_rows, val_rows, progress, weights, on_log)
+def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any, runtime: TrainingPlacement, check_cancel) -> dict[str, Any]:
+    check_cancel()
+    if config.update_strategy == "qlora":
+        supported, reason = qlora_support(runtime.device)
+        if not supported:
+            raise ProjectError(reason)
+    if config.objective == "dpo":
+        return _train_dpo(exp_dir, config, train_rows, val_rows, progress, weights, on_log, runtime, check_cancel)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     import torch
@@ -258,26 +381,32 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
     from transformers import AutoModelForCausalLM, AutoTokenizer, PrinterCallback
     from trl import SFTConfig, SFTTrainer
 
-    from tinystudio.serving.runner import pick_device, pick_dtype
-
-    device = pick_device()
-    dtype = pick_dtype(device)
+    device, dtype = runtime.device, runtime.dtype
     source = str(weights) if weights else config.base_model
     progress(f"device={device} dtype={str(dtype).replace('torch.', '')} base_model={config.base_model} weights={source} type={config.training_type} train={len(train_rows)} val={len(val_rows)}")
 
     tokenizer = AutoTokenizer.from_pretrained(source)
-    if config.training_type == "qlora":
-        model = _load_4bit(source, device, progress)
+    if config.update_strategy == "qlora":
+        model = _load_4bit(source, device, progress, dtype)
     else:
-        model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype)
+        model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_ds = Dataset.from_list([{"messages": row["messages"]} for row in train_rows])
-    eval_ds = Dataset.from_list([{"messages": row["messages"]} for row in val_rows]) if val_rows else None
+    data_contract = {"format": config.data_format, "objective": config.objective}
+    if config.data_format == "raw_text":
+        train_data, train_receipts = raw_sequence_rows(train_rows, tokenizer, config.max_length)
+        val_data, val_receipts = raw_sequence_rows(val_rows, tokenizer, config.max_length)
+        data_contract.update(train=train_receipts, validation=val_receipts, special_tokens="append EOS only if absent",
+                             truncation="right", chat_template_applied=False)
+    else:
+        train_data = [{"messages": row["messages"]} for row in train_rows]
+        val_data = [{"messages": row["messages"]} for row in val_rows]
+    train_ds = Dataset.from_list(train_data)
+    eval_ds = Dataset.from_list(val_data) if val_data else None
 
     peft_config = None
-    if config.training_type in ("lora", "qlora"):
+    if config.update_strategy in ("lora", "qlora"):
         from peft import LoraConfig
 
         peft_config = LoraConfig(
@@ -308,6 +437,8 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         optim="adamw_torch_fused" if device.startswith("cuda") else "adamw_torch",  # the fused optimizer is CUDA-only
         bf16=dtype == torch.bfloat16,
         fp16=False,
+        use_cpu=device == "cpu",
+        dataset_kwargs={"skip_prepare_dataset": True} if config.data_format == "raw_text" else None,
         logging_steps=config.logging_steps,
         logging_first_step=True,
         eval_strategy=("steps" if config.eval_steps else "epoch") if eval_ds is not None else "no",
@@ -319,15 +450,20 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         **_checkpoint_args(config),
     )
 
-    trainer = SFTTrainer(
+    class PlacedSFTTrainer(CheckedPlacementMixin, SFTTrainer):
+        pass
+    trainer = PlacedSFTTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         processing_class=tokenizer,
         peft_config=peft_config,
-        callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log)],
+        callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log), _cancellation_callback(check_cancel)],
     )
+    trainer.tinystudio_placement = runtime
+    runtime.check_device(trainer.args.device)
+    runtime.check_model(trainer.model)
     trainer.remove_callback(PrinterCallback)  # the loss log above replaces the default stdout dump
     trainable, total = _count_parameters(trainer.model)
     progress(f"trainable parameters: {trainable:,} of {total:,} ({trainable / total:.2%})")
@@ -338,13 +474,18 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
     if eval_ds is not None:
         final_eval = {k: float(v) for k, v in trainer.evaluate().items() if isinstance(v, (int, float))}
 
-    out = exp_dir / ("adapter" if config.training_type in ("lora", "qlora") else "model")
+    runtime.check_model(trainer.model)
+    check_cancel()
+    out = exp_dir / ("adapter" if config.update_strategy in ("lora", "qlora") else "model")
     trainer.model.save_pretrained(str(out))
     tokenizer.save_pretrained(str(out))
 
     return {
         "output": str(out),
         "device": device,
+        "objective": config.objective, "update_strategy": config.update_strategy,
+        "output_kind": "model" if config.update_strategy == "full" else "adapter",
+        "placement": runtime.report(), "data_contract": data_contract,
         "trainable_parameters": trainable,
         "total_parameters": total,
         "steps": int(train_output.global_step),
