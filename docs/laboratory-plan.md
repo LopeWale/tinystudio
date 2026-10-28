@@ -58,7 +58,7 @@
 
 ## D. Learning methods and retrieval
 
-- [ ] Integrate scratch Transformer and recurrent models with byte, subword and engineering-vocabulary tokenizers.
+- [x] Integrate scratch Transformer and recurrent models with byte, subword and engineering-vocabulary tokenizers.
 - [ ] Support independent architecture, initialization, representation, objective, update strategy, retrieval and environment selections with compatibility checks.
 - [ ] Integrate continued pretraining, supervised full/LoRA/QLoRA training, DPO and distillation.
 - [ ] Integrate language/tool PPO/GRPO methods with recorded actual tool interactions and independent evaluation.

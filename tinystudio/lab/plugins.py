@@ -173,6 +173,15 @@ def manifest_for(row: dict) -> dict:
     if row.get("requires_operator_binding") or executable:
         target_notes.append("Exact operator grants/bindings and provisioned dependencies are required; definitions cannot grant authority.")
     ports = input_contracts(id_)
+    fixtures = [FixtureRequirement(path=f"tests/test_lab_{fixture}.py", evidence_required=[
+        "Exact plugin source hash, input hashes and dependency/target versions.",
+        "Actual execution of the selected operation on the compatible target; skipped/mocked execution remains unqualified.",
+        "Independent outcome checks, cancellation and retained output manifest."])] if implemented else []
+    if implemented and id_ == "learning.language":
+        fixtures.append(FixtureRequirement(path="tests/test_lab_scratch_qualification.py", evidence_required=[
+            "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
+            "Independent parameter-count/update checks, held-out exclusion, transported checkpoint reload and inference artifacts.",
+            "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
     manifest = PluginManifest(id=id_, kinds=kinds, implemented=implemented,
         implementation_version=version if implemented else None, inputs=ports,
         outputs=[PortContract(name="artifacts", media_types=["application/json"], units="artifact_defined",
@@ -184,10 +193,7 @@ def manifest_for(row: dict) -> dict:
         targets=TargetContract(operating_systems=["Linux"] if id_ in {"network.mininet", "network.ns3"} else ["Darwin", "Linux"],
                                hardware=["host_cpu"], additional_requirements=target_notes),
         lifecycle=LifecycleContract(continuation="checkpoint_specific" if id_.startswith("learning.") else "new_attempt") if implemented else None,
-        fixtures=[FixtureRequirement(path=f"tests/test_lab_{fixture}.py", evidence_required=[
-            "Exact plugin source hash, input hashes and dependency/target versions.",
-            "Actual execution of the selected operation on the compatible target; skipped/mocked execution remains unqualified.",
-            "Independent outcome checks, cancellation and retained output manifest."])] if implemented else [])
+        fixtures=fixtures)
     return manifest.model_dump()
 
 

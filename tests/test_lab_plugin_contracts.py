@@ -138,6 +138,14 @@ def test_language_initialization_and_teacher_ports_remain_distinct():
     assert ports["validation"].visibility == ["evaluation"]
 
 
+def test_language_qualification_declares_the_full_scratch_matrix_without_inventing_support():
+    portfolio = catalog()
+    language = next(row for row in portfolio["methods"] if row["id"] == "learning.language")
+    assert "tests/test_lab_scratch_qualification.py" in {row["path"] for row in language["manifest"]["fixtures"]}
+    pending = next(row for row in portfolio["qualification_matrix"] if row["plugin_id"] == "learning.language")
+    assert pending["qualification"] == "unqualified"  # Catalog presence is not a target receipt.
+
+
 @pytest.mark.parametrize("first", ["tinystudio.db.models", "tinystudio.lab.models"])
 def test_fresh_import_orders_register_all_laboratory_tables(first):
     import subprocess

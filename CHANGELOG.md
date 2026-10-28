@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-28 — D scratch family/representation qualification
+
+- The initialization/authoring slice was committed as `07ef0a06b6fb8349b77c09bdaa243b2f235c5430`; its production release remains part of full D acceptance. Added a six-combination Transformer/GRU × byte/BPE/engineering fixture using authenticated application routes, owned PostgreSQL/Redis and real native children. Saved tensors independently prove updates to embeddings, core and output layers; no-op and frozen-core counterexamples fail the update oracle. Parameter counts use the actual PyTorch layer dimensions rather than trusting the executor's metric.
+- All six native combinations passed, including exact signed-value tokenization, UTF-8 round trips, held-out exclusion, checkpoint transport/reload and checkpoint-bound generation. A catalog check exposed an omitted qualification disclaimer in the additional fixture declaration; restored the required skipped/mocked-execution boundary without weakening the check, then passed all 18 catalog checks. Qualification remains specific to macOS ARM64 CPU float32 / PyTorch 2.14.1. Independent review returned **PASS** and supports checking off only D's first scratch/tokenizer task; full D remains unaccepted and undeployed.
+
 ## 2026-10-28 — Increment D: explicit language initialization (in progress)
 
 - Added an immutable `initial_weights` mode to the existing local Transformer/GRU trainer: new-corpus sequence pretraining retains the parent weights and tokenizer while starting a fresh optimizer and sampler. Exact resume restores the saved tokenizer before windowing and preserves original weight-parent lineage. Contradictory checkpoint/teacher bindings, invalid metadata and attempted input overwrite fail explicitly; reports identify actual initialization rather than always claiming scratch training.

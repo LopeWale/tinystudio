@@ -356,6 +356,16 @@ be distinguished before attaching them; later definition edits do not relabel
 their origin. Evaluation visibility restrictions apply to inline text/message
 documents and imported records alike.
 
+`tests/test_lab_scratch_qualification.py` exercises the complete Transformer/GRU
+× byte/BPE/engineering matrix through authenticated application routes and real
+native child processes. Its CPU float32 checks independently count parameters,
+detect unchanged embeddings/core/output weights, exclude held-out data from
+tokenizer fitting, and reload transported checkpoints after the child exits.
+Generation artifacts remain bound to the checkpoint checksum. This qualifies
+the tested small macOS ARM64/PyTorch 2.14.1 combinations; it establishes no model
+usefulness, accelerator compatibility or qualification of an unexecuted target.
+Catalog entries continue to require an actual target receipt.
+
 ## Qualification boundaries
 
 A/B source, PostgreSQL/RQ, legacy regression, package and authenticated workflow evidence are recorded separately in the changelog. B is accepted for native macOS and an independently installed Linux ARM runner inside Docker Desktop's [Linux VM](https://docs.docker.com/desktop/features/networking/), sharing the physical Mac with the native Darwin origin. Execution uses public Cloudflare HTTPS, scoped target and origin-bound Access credentials, frozen source/runtime receipts and API-only artifact transfer. The runner receives its scoped credential rather than a host checkout, Docker socket or store credentials. Independent source and acceptance reviews inspected the implementation, tests and documented boundaries; execution receipts were parent-supplied. Separate-computer restore/resume belongs to G; E's execution-isolation qualification remains open.
