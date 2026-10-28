@@ -184,13 +184,20 @@ describe("actual shell in the local illustrative preview", () => {
       await screen.findByRole("table", { name: "Activation captures" }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("table", { name: "Model comparisons" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("table", { name: "Model comparisons" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "Capture a model on a dataset to begin exploring its neurons.",
       ),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Comparisons" }));
+    expect(
+      await screen.findByRole("table", { name: "Model comparisons" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "Activation captures" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Try this page again" }),
     ).not.toBeInTheDocument();

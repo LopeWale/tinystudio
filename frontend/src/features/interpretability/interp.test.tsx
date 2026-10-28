@@ -436,11 +436,54 @@ describe("interpretability artifact collections", () => {
       expect(api.post).toHaveBeenCalledWith("/api/interp/diffs", {
         experiment: "job/1",
         dataset: "commands",
-        layers: "all",
+        layers: [],
         base: null,
       }),
     );
     expect(studio.trackTask).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Compare models" }));
+    const explicitBaseDialog = screen.getByRole("dialog", {
+      name: "Compare base and experiment",
+    });
+    await waitFor(() =>
+      expect(
+        within(explicitBaseDialog).getByRole("button", { name: "Compare" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.change(
+      within(explicitBaseDialog).getByLabelText("Compare against"),
+      {
+        target: { value: "alternate/base" },
+      },
+    );
+    fireEvent.change(within(explicitBaseDialog).getByLabelText("Layers"), {
+      target: { value: "-1" },
+    });
+    fireEvent.click(
+      within(explicitBaseDialog).getByRole("button", { name: "Compare" }),
+    );
+    expect(
+      await within(explicitBaseDialog).findByRole("alert"),
+    ).toHaveTextContent(
+      "Use comma-separated non-negative layer numbers, or all.",
+    );
+    expect(api.post).toHaveBeenCalledTimes(2);
+    fireEvent.change(within(explicitBaseDialog).getByLabelText("Layers"), {
+      target: { value: "all" },
+    });
+    fireEvent.click(
+      within(explicitBaseDialog).getByRole("button", { name: "Compare" }),
+    );
+    await waitFor(() =>
+      expect(api.post).toHaveBeenLastCalledWith("/api/interp/diffs", {
+        experiment: "job/1",
+        dataset: "commands",
+        layers: [],
+        base: "alternate/base",
+      }),
+    );
+    expect(studio.trackTask).toHaveBeenCalledTimes(3);
   });
 
   it("sorts numeric datapoints while retaining artifact links, evidence identity and deletion", async () => {

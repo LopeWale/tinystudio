@@ -43,6 +43,7 @@ import {
   AnalysisTemplate,
 } from "../../components/studio/templates";
 import { LabelBars, NeuronMap } from "./plots";
+import "../data/affect-data.css";
 import "./interp.css";
 
 function useReadEvidence(path: string | null, data: unknown, ready: boolean) {

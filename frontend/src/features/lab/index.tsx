@@ -10,6 +10,7 @@ import {
   Badge,
   EmptyState,
   Evidence,
+  Modal,
 } from "../../components/studio/primitives";
 import { SettingsSection } from "../../components/studio/settings-section";
 import { SetupTemplate, RunTemplate } from "../../components/studio/templates";
@@ -89,6 +90,8 @@ function LabWorkspace() {
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [savedText, setSavedText] = useState("");
   const [area, setArea] = useState("experiment");
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferView, setTransferView] = useState("import");
   const [view, setView] = useState("parameters");
   const [graphVisited, setGraphVisited] = useState(false);
   const [target, setTarget] = useState("local");
@@ -109,6 +112,11 @@ function LabWorkspace() {
   } | null>(null);
   const lifetime = useRef<AbortController | null>(null);
   const historyPoll = useRef<AbortController | null>(null);
+  const transferDismissal = useRef(0);
+  const dismissTransfer = () => {
+    transferDismissal.current += 1;
+    setTransferOpen(false);
+  };
   useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
@@ -254,29 +262,331 @@ function LabWorkspace() {
       className="lab-page"
       description="Author portable experiments, execute a saved revision, and inspect retained evidence."
       actions={
-        <Button
-          onClick={() => {
-            catalog.reload();
-            definitions.reload();
-            runs.reload();
-            targets.reload();
-            operations.reload();
-          }}
-        >
-          Refresh laboratory
-        </Button>
+        <>
+          <Button onClick={() => setTransferOpen(true)}>Import / export</Button>
+          <Button
+            onClick={() => {
+              catalog.reload();
+              definitions.reload();
+              runs.reload();
+              targets.reload();
+              operations.reload();
+            }}
+          >
+            Refresh laboratory
+          </Button>
+        </>
       }
     >
       <Fault
         error={
-          error ||
+          (!transferOpen && error) ||
           catalog.error ||
           definitions.error ||
           runs.error ||
           targets.error ||
-          operations.error
+          (!transferOpen && operations.error)
         }
       />
+      <Modal
+        open={transferOpen}
+        title="Import / export"
+        onClose={dismissTransfer}
+        className="lab-transfer-dialog"
+      >
+        <SegmentedControl
+          kind="tabs"
+          variant="underline"
+          size="sm"
+          aria-label="Bundle transfer task"
+          value={transferView}
+          onChange={setTransferView}
+          options={[
+            {
+              value: "import",
+              label: "Import",
+              controls: "lab-transfer-import",
+            },
+            {
+              value: "history",
+              label: "History",
+              controls: "lab-transfer-history",
+            },
+          ]}
+        />
+        <Fault error={error || operations.error} />
+        <div className="lab-transfer-viewport" key={transferView}>
+          <div
+            className="lab-transfer-scroll"
+            onScroll={(event) => {
+              event.currentTarget.parentElement?.style.setProperty(
+                "--lab-transfer-fade",
+                String(Math.min(event.currentTarget.scrollTop / 24, 1)),
+              );
+            }}
+          >
+            <div className="lab-transfer-layout">
+              <section
+                id="lab-transfer-import"
+                role="tabpanel"
+                aria-label="Import"
+                hidden={transferView !== "import"}
+              >
+                <Panel title="Import bundle" className="lab-bundle-panel">
+                  <FileUploadField
+                    label="Portable laboratory bundle"
+                    presentation="compact"
+                    accept=".zip"
+                    files={bundleFiles}
+                    onChange={setBundleFiles}
+                    disabled={busy}
+                  />
+                  <Button
+                    disabled={busy || !bundleFiles.length}
+                    onClick={() =>
+                      action(async (signal) => {
+                        const dismissal = transferDismissal.current;
+                        setImportOperation(null);
+                        const form = new FormData();
+                        form.append("file", bundleFiles[0]);
+                        const artifact = await studio.api.upload<{
+                          id: string;
+                        }>("/api/lab/inputs", form, { signal });
+                        if (signal.aborted) return;
+                        if (
+                          !artifact ||
+                          typeof artifact.id !== "string" ||
+                          !artifact.id
+                        )
+                          throw new Error(
+                            "Upload did not return a retained artifact. Try uploading the complete bundle again.",
+                          );
+                        const submitted = await studio.api.post<LabOperation>(
+                          "/api/lab/bundle-imports",
+                          {
+                            artifact_id: artifact.id,
+                            idempotency_key: crypto.randomUUID(),
+                          },
+                          signal,
+                        );
+                        operations.reload();
+                        let operation: LabOperation;
+                        try {
+                          operation = await waitForOperation(
+                            studio.api,
+                            submitted,
+                            signal,
+                            setImportOperation,
+                          );
+                        } finally {
+                          if (!signal.aborted) operations.reload();
+                        }
+                        if (signal.aborted) return;
+                        const result = operation.result as {
+                          definition: SavedDefinition;
+                        };
+                        definitions.reload();
+                        setBundleFiles([]);
+                        if (dismissal !== transferDismissal.current) {
+                          studio.toast(
+                            "Import completed. Load the experiment from Import / export → History.",
+                          );
+                          return;
+                        }
+                        load(result.definition);
+                        setTransferOpen(false);
+                        selectRun(null);
+                        studio.toast("Imported portable experiment");
+                      })
+                    }
+                  >
+                    Import portable bundle
+                  </Button>
+                  <p>
+                    Queued imports continue on the server if you leave this
+                    page.
+                  </p>
+                  <div className="lab-export-guide">
+                    <h3>Export a run</h3>
+                    <p>
+                      Portable exports include a run and its retained evidence.
+                    </p>
+                    <Button
+                      onClick={() => {
+                        dismissTransfer();
+                        setArea("runs");
+                      }}
+                    >
+                      Choose run to export
+                    </Button>
+                  </div>
+                  {importOperation && (
+                    <Evidence
+                      label="Laboratory bundle import"
+                      data={importOperation}
+                    >
+                      <p role="status">Import: {importOperation.state}</p>
+                      <p>Operation: {importOperation.id}</p>
+                      {importOperation.result != null && (
+                        <details>
+                          <summary>
+                            Imported evidence and artifact mapping
+                          </summary>
+                          <pre>{json(importOperation.result)}</pre>
+                        </details>
+                      )}
+                    </Evidence>
+                  )}
+                </Panel>
+              </section>
+              <section
+                id="lab-transfer-history"
+                role="tabpanel"
+                aria-label="History"
+                hidden={transferView !== "history"}
+              >
+                <Panel
+                  title="Operation history"
+                  className="lab-operation-history"
+                  actions={
+                    <Button onClick={operations.reload}>
+                      Refresh operations
+                    </Button>
+                  }
+                >
+                  {operations.loading && (
+                    <p role="status">Loading operations…</p>
+                  )}
+                  {(Array.isArray(operations.data) ? operations.data : []).map(
+                    (operation) => (
+                      <div className="lab-input-row" key={operation.id}>
+                        <p>
+                          {operation.kind} · {operation.id} ·{" "}
+                          <Badge>{operation.state}</Badge>
+                        </p>
+                        <div className="lab-actions">
+                          <Button
+                            disabled={busy}
+                            onClick={() =>
+                              action(async (signal) => {
+                                const full = await studio.api.get<LabOperation>(
+                                  `/api/lab/operations/${enc(operation.id)}`,
+                                  signal,
+                                );
+                                observeHistory(full, signal);
+                              })
+                            }
+                          >
+                            Inspect {operation.id}
+                          </Button>
+                          <Button
+                            disabled={
+                              historyBusy ||
+                              isOperationTerminal(operation.state)
+                            }
+                            onClick={() => historyCommand(operation, "cancel")}
+                          >
+                            Cancel {operation.id}
+                          </Button>
+                          <Button
+                            disabled={
+                              historyBusy ||
+                              !["failed", "lost", "cancelled"].includes(
+                                operation.state,
+                              )
+                            }
+                            onClick={() => historyCommand(operation, "retry")}
+                          >
+                            Retry {operation.id}
+                          </Button>
+                          {operation.kind === "export" &&
+                            operation.state === "succeeded" && (
+                              <Button
+                                disabled={busy}
+                                onClick={() =>
+                                  action((signal) =>
+                                    downloadOperation(
+                                      studio.api,
+                                      operation.id,
+                                      signal,
+                                      `laboratory-${operation.id}.zip`,
+                                    ),
+                                  )
+                                }
+                              >
+                                Download {operation.id}
+                              </Button>
+                            )}
+                          {operation.kind === "import" &&
+                            operation.state === "succeeded" && (
+                              <Button
+                                disabled={busy}
+                                onClick={() =>
+                                  action(async (signal) => {
+                                    const dismissal = transferDismissal.current;
+                                    const full =
+                                      await studio.api.get<LabOperation>(
+                                        `/api/lab/operations/${enc(operation.id)}`,
+                                        signal,
+                                      );
+                                    if (signal.aborted) return;
+                                    setInspectedOperation(full);
+                                    const result = full.result as
+                                      | { definition?: SavedDefinition }
+                                      | undefined;
+                                    if (
+                                      full.state !== "succeeded" ||
+                                      !result?.definition
+                                    )
+                                      throw new Error(
+                                        "This import has no completed saved definition.",
+                                      );
+                                    if (dismissal !== transferDismissal.current)
+                                      return;
+                                    load(result.definition);
+                                    setTransferOpen(false);
+                                    definitions.reload();
+                                  })
+                                }
+                              >
+                                Load imported definition {operation.id}
+                              </Button>
+                            )}
+                        </div>
+                      </div>
+                    ),
+                  )}
+                  {!operations.loading && !operations.data?.length && (
+                    <EmptyState>
+                      No durable operations in this project.
+                    </EmptyState>
+                  )}
+                  {inspectedOperation && (
+                    <Evidence
+                      label="Laboratory operation history"
+                      data={inspectedOperation}
+                    >
+                      <p role="status">
+                        Operation {inspectedOperation.id}:{" "}
+                        {inspectedOperation.state}
+                      </p>
+                      <details open>
+                        <summary>Retained operation evidence</summary>
+                        <pre>{json(inspectedOperation)}</pre>
+                      </details>
+                    </Evidence>
+                  )}
+                </Panel>
+              </section>
+            </div>
+          </div>
+          <div className="lab-transfer-fade" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </div>
+        </div>
+      </Modal>
       <SetupTemplate
         label="Laboratory workspace"
         className="lab-template"
@@ -300,244 +610,11 @@ function LabWorkspace() {
                 label: "Capabilities",
                 controls: "lab-area-capabilities",
               },
-              {
-                value: "transfer",
-                label: "Import / export",
-                controls: "lab-area-transfer",
-              },
             ]}
           />
         }
       >
         <div className="lab-main">
-          <section
-            id="lab-area-transfer"
-            role="tabpanel"
-            aria-label="Import / export"
-            hidden={area !== "transfer"}
-          >
-            <div className="lab-transfer-layout">
-              <Panel title="Import bundle" className="lab-bundle-panel">
-                <FileUploadField
-                  label="Portable laboratory bundle"
-                  presentation="compact"
-                  accept=".zip"
-                  files={bundleFiles}
-                  onChange={setBundleFiles}
-                  disabled={busy}
-                />
-                <Button
-                  disabled={busy || !bundleFiles.length}
-                  onClick={() =>
-                    action(async (signal) => {
-                      setImportOperation(null);
-                      const form = new FormData();
-                      form.append("file", bundleFiles[0]);
-                      const artifact = await studio.api.upload<{ id: string }>(
-                        "/api/lab/inputs",
-                        form,
-                        { signal },
-                      );
-                      if (signal.aborted) return;
-                      if (
-                        !artifact ||
-                        typeof artifact.id !== "string" ||
-                        !artifact.id
-                      )
-                        throw new Error(
-                          "Upload did not return a retained artifact. Try uploading the complete bundle again.",
-                        );
-                      const submitted = await studio.api.post<LabOperation>(
-                        "/api/lab/bundle-imports",
-                        {
-                          artifact_id: artifact.id,
-                          idempotency_key: crypto.randomUUID(),
-                        },
-                        signal,
-                      );
-                      operations.reload();
-                      let operation: LabOperation;
-                      try {
-                        operation = await waitForOperation(
-                          studio.api,
-                          submitted,
-                          signal,
-                          setImportOperation,
-                        );
-                      } finally {
-                        if (!signal.aborted) operations.reload();
-                      }
-                      if (signal.aborted) return;
-                      const result = operation.result as {
-                        definition: SavedDefinition;
-                      };
-                      load(result.definition);
-                      definitions.reload();
-                      setBundleFiles([]);
-                      selectRun(null);
-                      studio.toast("Imported portable experiment");
-                    })
-                  }
-                >
-                  Import portable bundle
-                </Button>
-                <p>
-                  Queued imports continue on the server if you leave this page.
-                </p>
-                <div className="lab-export-guide">
-                  <h3>Export a run</h3>
-                  <p>
-                    Portable exports include a run and its retained evidence.
-                  </p>
-                  <Button onClick={() => setArea("runs")}>
-                    Choose run to export
-                  </Button>
-                </div>
-                {importOperation && (
-                  <Evidence
-                    label="Laboratory bundle import"
-                    data={importOperation}
-                  >
-                    <p role="status">Import: {importOperation.state}</p>
-                    <p>Operation: {importOperation.id}</p>
-                    {importOperation.result != null && (
-                      <details>
-                        <summary>
-                          Imported evidence and artifact mapping
-                        </summary>
-                        <pre>{json(importOperation.result)}</pre>
-                      </details>
-                    )}
-                  </Evidence>
-                )}
-              </Panel>
-              <Panel
-                title="Operation history"
-                className="lab-operation-history"
-                actions={
-                  <Button onClick={operations.reload}>
-                    Refresh operations
-                  </Button>
-                }
-              >
-                {operations.loading && <p role="status">Loading operations…</p>}
-                {(Array.isArray(operations.data) ? operations.data : []).map(
-                  (operation) => (
-                    <div className="lab-input-row" key={operation.id}>
-                      <p>
-                        {operation.kind} · {operation.id} ·{" "}
-                        <Badge>{operation.state}</Badge>
-                      </p>
-                      <div className="lab-actions">
-                        <Button
-                          disabled={busy}
-                          onClick={() =>
-                            action(async (signal) => {
-                              const full = await studio.api.get<LabOperation>(
-                                `/api/lab/operations/${enc(operation.id)}`,
-                                signal,
-                              );
-                              observeHistory(full, signal);
-                            })
-                          }
-                        >
-                          Inspect {operation.id}
-                        </Button>
-                        <Button
-                          disabled={
-                            historyBusy || isOperationTerminal(operation.state)
-                          }
-                          onClick={() => historyCommand(operation, "cancel")}
-                        >
-                          Cancel {operation.id}
-                        </Button>
-                        <Button
-                          disabled={
-                            historyBusy ||
-                            !["failed", "lost", "cancelled"].includes(
-                              operation.state,
-                            )
-                          }
-                          onClick={() => historyCommand(operation, "retry")}
-                        >
-                          Retry {operation.id}
-                        </Button>
-                        {operation.kind === "export" &&
-                          operation.state === "succeeded" && (
-                            <Button
-                              disabled={busy}
-                              onClick={() =>
-                                action((signal) =>
-                                  downloadOperation(
-                                    studio.api,
-                                    operation.id,
-                                    signal,
-                                    `laboratory-${operation.id}.zip`,
-                                  ),
-                                )
-                              }
-                            >
-                              Download {operation.id}
-                            </Button>
-                          )}
-                        {operation.kind === "import" &&
-                          operation.state === "succeeded" && (
-                            <Button
-                              disabled={busy}
-                              onClick={() =>
-                                action(async (signal) => {
-                                  const full =
-                                    await studio.api.get<LabOperation>(
-                                      `/api/lab/operations/${enc(operation.id)}`,
-                                      signal,
-                                    );
-                                  if (signal.aborted) return;
-                                  setInspectedOperation(full);
-                                  const result = full.result as
-                                    | { definition?: SavedDefinition }
-                                    | undefined;
-                                  if (
-                                    full.state !== "succeeded" ||
-                                    !result?.definition
-                                  )
-                                    throw new Error(
-                                      "This import has no completed saved definition.",
-                                    );
-                                  load(result.definition);
-                                  definitions.reload();
-                                })
-                              }
-                            >
-                              Load imported definition {operation.id}
-                            </Button>
-                          )}
-                      </div>
-                    </div>
-                  ),
-                )}
-                {!operations.loading && !operations.data?.length && (
-                  <EmptyState>
-                    No durable operations in this project.
-                  </EmptyState>
-                )}
-                {inspectedOperation && (
-                  <Evidence
-                    label="Laboratory operation history"
-                    data={inspectedOperation}
-                  >
-                    <p role="status">
-                      Operation {inspectedOperation.id}:{" "}
-                      {inspectedOperation.state}
-                    </p>
-                    <details open>
-                      <summary>Retained operation evidence</summary>
-                      <pre>{json(inspectedOperation)}</pre>
-                    </details>
-                  </Evidence>
-                )}
-              </Panel>
-            </div>
-          </section>
           <section
             id="lab-area-experiment"
             role="tabpanel"
@@ -704,7 +781,7 @@ function LabWorkspace() {
                         title="Identity"
                         description="Name and reproducibility settings for the saved definition."
                       >
-                        <div className="lab-fields">
+                        <div className="lab-fields lab-identity-fields">
                           <Input
                             label="Experiment name"
                             value={definition.name}

@@ -167,7 +167,8 @@ it("retains the imported-definition recovery action while operation inventory re
   });
   mount(studio);
   const user = userEvent.setup();
-  fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+  fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+  fireEvent.click(screen.getByRole("tab", { name: "History" }));
   await user.click(
     await screen.findByRole("button", { name: "Inspect completed-export" }),
   );

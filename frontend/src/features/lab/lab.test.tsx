@@ -119,7 +119,7 @@ async function findRetainedRun(state: string) {
   return findRunByName(`recovery-run · ${state}`);
 }
 describe("laboratory authoring and execution", () => {
-  it("keeps experiment controls local and gives transfers and capabilities the full workspace", async () => {
+  it("opens transfers as a focused task and returns to the preserved workspace", async () => {
     const { studio, api } = runFixture("succeeded");
     const { container } = mount(studio);
     expect(
@@ -131,16 +131,24 @@ describe("laboratory authoring and execution", () => {
     fireEvent.change(screen.getByLabelText("Experiment name"), {
       target: { value: "Retained draft" },
     });
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     expect(
-      screen.getByRole("heading", { name: "Operation history" }),
+      screen.getByRole("dialog", { name: "Import / export" }),
     ).toBeVisible();
+    expect(
+      screen.queryByRole("tab", { name: "Import / export" }),
+    ).not.toBeInTheDocument();
     expect(container.querySelector(".studio-template__inspector")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "New experiment" }),
     ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Choose run to export" }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
     fireEvent.click(await findRetainedRun("succeeded"));
     await waitFor(() =>
@@ -292,7 +300,7 @@ describe("laboratory authoring and execution", () => {
     expect(
       screen.queryByRole("button", { name: "Import portable bundle" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     expect(
       screen.getByRole("button", { name: "Import portable bundle" }),
     ).toBeVisible();
@@ -332,6 +340,37 @@ describe("laboratory authoring and execution", () => {
     expect(
       screen.getByRole("button", { name: "Run saved revision" }),
     ).toBeDisabled();
+  });
+  it("closes on Escape, restores the trigger, and retains the experiment and bundle drafts", async () => {
+    const { studio, api } = fixture();
+    mount(studio);
+    const user = userEvent.setup();
+    fireEvent.change(screen.getByLabelText("Experiment name"), {
+      target: { value: "Kept experiment" },
+    });
+    const trigger = screen.getByRole("button", { name: "Import / export" });
+    await user.click(trigger);
+    const file = new File(["bundle"], "kept.zip", { type: "application/zip" });
+    fireEvent.change(
+      screen.getByLabelText("Portable laboratory bundle", {
+        selector: "input",
+      }),
+      { target: { files: [file] } },
+    );
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByLabelText("Experiment name")).toHaveValue(
+      "Kept experiment",
+    );
+    await user.click(trigger);
+    expect(
+      screen.getByRole("button", { name: "Remove kept.zip" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Import portable bundle" }),
+    ).toBeEnabled();
+    expect(api.upload).not.toHaveBeenCalled();
   });
   it("opens an existing retained run and keeps its selection when returning", async () => {
     const { studio, api } = runFixture("succeeded");
@@ -385,7 +424,7 @@ describe("laboratory authoring and execution", () => {
         : baseGet(path, signal),
     );
     mount(studio);
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     const file = new File(["portable-bundle"], "experiment.zip", {
       type: "application/zip",
     });
@@ -420,8 +459,14 @@ describe("laboratory authoring and execution", () => {
         ),
       { timeout: 2500 },
     );
-    expect(screen.getByText("Import: succeeded")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Experiment" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByRole("button", { name: "Save revision" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+    expect(screen.getByText("Import: succeeded")).toBeInTheDocument();
     expect(studio.evidence.snapshot()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -436,6 +481,126 @@ describe("laboratory authoring and execution", () => {
       ]),
     );
   });
+  it.each(["import", "history"])(
+    "preserves newer drafts and run selection when a dismissed %s completes, then allows explicit recovery",
+    async (source) => {
+      const { api, studio, row } = runFixture("succeeded");
+      const imported = {
+        ...row,
+        name: "Deferred import",
+        definition: { ...row.definition, name: "Deferred import" },
+      };
+      const completed = {
+        id: "late-import",
+        kind: "import",
+        state: "succeeded",
+        result: { definition: imported },
+      };
+      let finish!: (value: typeof completed) => void;
+      const pending = new Promise<typeof completed>((resolve) => {
+        finish = resolve;
+      });
+      let recovered = false;
+      const baseGet = api.get.getMockImplementation()!;
+      api.get.mockImplementation(async (path, signal) => {
+        if (path === "/api/lab/operations")
+          return source === "history" || recovered ? [completed] : [];
+        if (path === "/api/lab/operations/late-import")
+          return recovered ? completed : pending;
+        return baseGet(path, signal);
+      });
+      if (source === "import") api.post.mockImplementationOnce(() => pending);
+      mount(studio);
+      fireEvent.click(await findRetainedRun("succeeded"));
+      await screen.findByRole("button", { name: "Export manifest bundle" });
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+      if (source === "import") {
+        fireEvent.change(
+          screen.getByLabelText("Portable laboratory bundle", {
+            selector: "input",
+          }),
+          { target: { files: [new File(["bundle"], "late.zip")] } },
+        );
+        fireEvent.click(
+          screen.getByRole("button", { name: "Import portable bundle" }),
+        );
+        await waitFor(() =>
+          expect(api.post).toHaveBeenCalledWith(
+            "/api/lab/bundle-imports",
+            expect.any(Object),
+            expect.any(AbortSignal),
+          ),
+        );
+      } else {
+        fireEvent.click(screen.getByRole("tab", { name: "History" }));
+        fireEvent.click(
+          await screen.findByRole("button", {
+            name: "Load imported definition late-import",
+          }),
+        );
+        await waitFor(() =>
+          expect(api.get).toHaveBeenCalledWith(
+            "/api/lab/operations/late-import",
+            expect.any(AbortSignal),
+          ),
+        );
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+      fireEvent.change(screen.getByLabelText("Experiment name"), {
+        target: { value: "Newer experiment" },
+      });
+      fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+      // Reopening must not restore the dismissed action's right to replace context.
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+      await act(async () => {
+        recovered = true;
+        finish(completed);
+        await pending;
+      });
+      expect(
+        screen.getByRole("dialog", { name: "Import / export" }),
+      ).toBeVisible();
+      if (source === "import")
+        expect(studio.toast).toHaveBeenCalledWith(
+          "Import completed. Load the experiment from Import / export → History.",
+        );
+      fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+      expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(
+        screen.getByRole("button", {
+          name: /recovery-run · succeeded Retained run/,
+        }),
+      ).toBeVisible();
+      fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+      expect(screen.getByLabelText("Experiment name")).toHaveValue(
+        "Newer experiment",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("tab", { name: "History" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Refresh operations" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Load imported definition late-import",
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByRole("tab", { name: "Experiment" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(screen.getByLabelText("Experiment name")).toHaveValue(
+        "Deferred import",
+      );
+    },
+  );
   it.each(["failed", "partial"])(
     "does not submit a bundle import after a %s upload",
     async (failure) => {
@@ -444,7 +609,7 @@ describe("laboratory authoring and execution", () => {
         api.upload.mockRejectedValueOnce(new Error("Upload interrupted"));
       else api.upload.mockResolvedValueOnce({} as any);
       mount(studio);
-      fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       fireEvent.change(
         screen.getByLabelText("Portable laboratory bundle", {
           selector: "input",
@@ -454,7 +619,12 @@ describe("laboratory authoring and execution", () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Import portable bundle" }),
       );
-      await screen.findByRole("alert");
+      const dialog = screen.getByRole("dialog", { name: "Import / export" });
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+        failure === "failed"
+          ? "Upload interrupted"
+          : "Upload did not return a retained artifact",
+      );
       expect(api.post).not.toHaveBeenCalled();
       expect(
         screen.getByRole("button", { name: "Import portable bundle" }),
@@ -469,7 +639,7 @@ describe("laboratory authoring and execution", () => {
       state: "queued",
     });
     const view = mount(studio);
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     fireEvent.change(
       screen.getByLabelText("Portable laboratory bundle", {
         selector: "input",
@@ -535,12 +705,14 @@ describe("laboratory authoring and execution", () => {
       return baseGet(path, signal);
     });
     const first = mount(studio);
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
     await screen.findByRole("button", { name: "Inspect queued-export" });
     expect(api.post).not.toHaveBeenCalled();
     first.unmount();
     const second = mount(studio);
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
     fireEvent.click(
       await screen.findByRole("button", { name: "Inspect queued-export" }),
     );
@@ -567,6 +739,7 @@ describe("laboratory authoring and execution", () => {
         "Recovered import",
       ),
     );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(api.get).toHaveBeenCalledWith(
       "/api/lab/operations/done-import",
       expect.any(AbortSignal),
@@ -586,7 +759,8 @@ describe("laboratory authoring and execution", () => {
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
     try {
-      fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("tab", { name: "History" }));
       fireEvent.click(
         screen.getByRole("button", { name: "Download done-export" }),
       );
@@ -615,7 +789,8 @@ describe("laboratory authoring and execution", () => {
       return baseGet(path, signal);
     });
     const view = mount(studio);
-    fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
     const inspect = await screen.findByRole("button", {
       name: "Inspect old-op",
     });
@@ -665,7 +840,8 @@ describe("laboratory authoring and execution", () => {
         state: after,
       });
       mount(studio);
-      fireEvent.click(screen.getByRole("tab", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
+      fireEvent.click(screen.getByRole("tab", { name: "History" }));
       const control = await screen.findByRole("button", {
         name: `${command === "cancel" ? "Cancel" : "Retry"} retained-op`,
       });
