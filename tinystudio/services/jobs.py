@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tinystudio.config import config
-from tinystudio.storage import project_key, storage
+from tinystudio.storage import ArtifactNotFound, project_key, storage
 from tinystudio.core.project import ProjectError, check_name, iso
 from tinystudio.db import session
 from tinystudio.db.models import Analysis, Experiment, ExperimentLog, Job, Project
@@ -33,16 +34,18 @@ def ensure_experiment_artifacts(exp: Experiment, step: str = "") -> Path:
     """Restore published weights into this worker's local cache when absent."""
     path = exp_path(exp)
     status = exp.status or {}
+    if exp.state == "succeeded" and storage().remote and not status.get("artifact_prefix"):
+        raise ProjectError("This experiment has no published R2 artifacts; import its model artifacts before using it on this host")
     if step:
         target = path / "checkpoints" / f"checkpoint-{step}"
         record = next((c for c in status.get("artifact_checkpoints", []) if str(c["step"]) == step), None)
         if record:
             storage().hydrate_directory(record["prefix"], target)
-        elif status.get("artifact_prefix"):
-            storage().hydrate_directory(status["artifact_prefix"], path)
-    elif status.get("artifact_prefix"):
+        elif status.get("artifact_prefix") or status.get("artifact_diagnostics_prefix"):
+            storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path)
+    elif status.get("artifact_prefix") or status.get("artifact_diagnostics_prefix"):
         # The manifest verifies every required file even after a partial cache loss.
-        storage().hydrate_directory(status["artifact_prefix"], path)
+        storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path)
     return path
 
 
@@ -159,7 +162,7 @@ def _merged_cache_paths(exp: Experiment) -> tuple[Path, ...]:
     path = exp_path(exp)
     # Include the previous number-keyed layout so deleting experiments made by
     # an earlier deployment cannot leave a cache that a reused number could trust.
-    return path / "merged", path.parent / f"{exp.id}-merged", path.parent / f"{path.name}-merged"
+    return path / "merged", path.parent / f"{exp.id}-merged", path.parent / f"{path.name}-merged", path.parent / f"{exp.id}-base"
 
 
 def parent_weights(db: Session, project: Project, reference: str) -> Path:
@@ -175,12 +178,87 @@ def parent_weights(db: Session, project: Project, reference: str) -> Path:
         raise ProjectError("Quantized policy refinement through a merged float base is not qualified; use its retained laboratory bundle")
     if (path / "model").exists():
         return path / "model"
-    merged = path.parent / f"{parent.id}-merged" if (parent.status or {}).get("artifact_prefix") else path / "merged"
+    backend = storage()
+    merged = path.parent / f"{parent.id}-merged" if backend.remote or (parent.status or {}).get("artifact_prefix") else path / "merged"
+    prefix = project_key(project.id, "models", parent.id) + "/merged"
+    if backend.remote:
+        try:
+            backend.hydrate_directory(prefix, merged)
+            return merged
+        except ArtifactNotFound:
+            pass  # Reconstruct an unpublished merge from retained ancestry.
     if not (merged / "config.json").exists():
-        ancestor = parent.config.get("refinetune_from")
-        source = str(parent_weights(db, project, ancestor)) if ancestor else (parent.status or {}).get("weights_source")
-        export_merged(path, merged, parent.config["base_model"], source)
+        source = resolved_weights_source(db, project, parent)
+        merged.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".merge-", dir=merged.parent) as temporary:
+            staging = Path(temporary) / "model"
+            export_merged(path, staging, parent.config["base_model"], source)
+            if backend.remote:
+                backend.publish_directory(staging, prefix)
+            if merged.exists():
+                shutil.rmtree(merged)
+            shutil.move(str(staging), merged)
+    elif backend.remote:
+        backend.publish_directory(merged, prefix)
     return merged
+
+
+def resolved_weights_source(db: Session, project: Project, exp: Experiment) -> str:
+    """Resolve configured ancestry on this host; old absolute status paths are stale."""
+    prefix = (exp.status or {}).get("artifact_base_prefix")
+    if prefix:
+        target = exp_path(exp).parent / f"{exp.id}-base"
+        storage().hydrate_directory(prefix, target)
+        return str(target)
+    ancestor = exp.config.get("refinetune_from")
+    return str(parent_weights(db, project, ancestor)) if ancestor else exp.config["base_model"]
+
+
+def portable_experiment_status(status: dict[str, Any], cfg: dict[str, Any], directory: Path) -> dict[str, Any]:
+    """Persist logical model references; host paths belong only to the cache."""
+    result = {**status, "weights_source": cfg["base_model"]}
+    if result.get("output"):
+        output = Path(result["output"])
+        if output.is_absolute():
+            try:
+                result["output"] = output.relative_to(directory).as_posix()
+            except ValueError:
+                # A legacy project may already have moved before import.
+                result["output"] = "model" if cfg.get("update_strategy") == "full" else "adapter"
+    return result
+
+
+def publish_existing_experiment(exp: Experiment, source: Path) -> dict[str, Any]:
+    """Publish imported artifacts; caller commits metadata on success."""
+    backend = storage()
+    if not backend.remote:
+        return dict(exp.status or {})
+    if Path(exp.config["base_model"]).is_absolute() and not (source / "model").is_dir():
+        raise ProjectError("R2 adapter import requires a portable Hub base model ID; import a standalone merged model for a local base")
+    status = portable_experiment_status(exp.status or {}, exp.config, source)
+    for key in ("artifact_prefix", "artifact_diagnostics_prefix", "artifact_checkpoints"):
+        status.pop(key, None)
+    prefix = project_key(exp.job.project_id, "models", exp.id)
+    if status.get("artifact_base_prefix") != prefix + "/base":
+        status.pop("artifact_base_prefix", None)
+    weights = (exp.status or {}).get("weights_source")
+    if exp.config.get("refinetune_from") and not (source / "model").is_dir() and not status.get("artifact_base_prefix"):
+        if not weights or not Path(weights).is_absolute() or not (Path(weights) / "config.json").is_file():
+            raise ProjectError("Refined adapter import requires its standalone base weights; retain the original weights_source directory when importing")
+        backend.publish_directory(Path(weights), prefix + "/base")
+        status["artifact_base_prefix"] = prefix + "/base"
+    checkpoints = []
+    for row in checkpoints_on_disk(source):
+        checkpoint_prefix = prefix + f"/checkpoints/{row['step']}"
+        backend.publish_directory(Path(row["path"]), checkpoint_prefix)
+        checkpoints.append({**{k: v for k, v in row.items() if k != "path"}, "prefix": checkpoint_prefix})
+    backend.publish_directory(source, prefix + ("/final" if exp.state == "succeeded" else "/diagnostics"))
+    key = "artifact_prefix" if exp.state == "succeeded" else "artifact_diagnostics_prefix"
+    status[key] = prefix + ("/final" if exp.state == "succeeded" else "/diagnostics")
+    status["artifact_checkpoints"] = checkpoints
+    if (source / "merged" / "config.json").is_file():
+        backend.publish_directory(source / "merged", prefix + "/merged")
+    return status
 
 
 def _set_state(experiment_id: str, state: str, **extra: Any) -> dict[str, Any]:
@@ -203,14 +281,18 @@ def run_experiment(experiment_id: str, progress: Any = print, task_id: str | Non
         project = db.get(Project, exp.job.project_id)
         assert project is not None
         cfg = TrainConfig.from_dict(exp.config)
+        if storage().remote and Path(cfg.base_model).is_absolute():
+            raise ProjectError("R2 training requires a portable Hub base model ID; import local model weights as a retained model before training")
         train_rows, val_rows = snapshots_svc.load_snapshot(db, project, exp.job.snapshot_name)
         weights = parent_weights(db, project, cfg.refinetune_from) if cfg.refinetune_from else None
         if task_id:
             exp.task_id = task_id
         out_dir = exp_path(exp)
         artifact_prefix = project_key(project.id, "models", exp.id)
+    backend = storage()
     started = time.perf_counter()
-    _set_state(experiment_id, "running", started_at=iso(datetime.now(timezone.utc)), weights_source=str(weights) if weights else cfg.base_model,
+    _set_state(experiment_id, "running", started_at=iso(datetime.now(timezone.utc)), weights_source=cfg.base_model if backend.remote else str(weights) if weights else cfg.base_model,
+        **({"artifact_prefix": None, "artifact_diagnostics_prefix": None, "artifact_retention_error": None, "output": None} if backend.remote else {}),
         **({"quantization_format": cfg.as_dict()["quantization_format"]} if cfg.update_strategy == "qlora" else {}))
 
     def on_log(kind: str, row: dict[str, Any]) -> None:
@@ -233,17 +315,31 @@ def run_experiment(experiment_id: str, progress: Any = print, task_id: str | Non
                     entries = entries[-cfg.keep_checkpoints:]
                 current.status = {**(current.status or {}), "artifact_checkpoints": entries}
 
+    def failed(error: str, **detail: Any) -> dict[str, Any]:
+        # Retain available resume/diagnostic files without declaring partial
+        # output to be a successfully published final model.
+        if backend.remote and out_dir.is_dir():
+            try:
+                prefix = artifact_prefix + "/diagnostics"
+                backend.publish_directory(out_dir, prefix)
+                detail["artifact_diagnostics_prefix"] = prefix
+            except Exception as cause:  # noqa: BLE001 - retain the original failure too
+                detail["artifact_retention_error"] = f"{type(cause).__name__}: {cause}"
+        return _set_state(experiment_id, "failed", error=error, seconds=round(time.perf_counter() - started, 1), **detail)
+
     try:
-        backend = storage()
+        if backend.remote and weights is not None:
+            backend.publish_directory(weights, artifact_prefix + "/base")
+            _set_state(experiment_id, "running", artifact_base_prefix=artifact_prefix + "/base")
         result = train_experiment(out_dir, cfg, train_rows, val_rows, progress, weights, on_log)
         if backend.remote:
             backend.publish_directory(out_dir, artifact_prefix + "/final")
-            result = {**result, "artifact_prefix": artifact_prefix + "/final"}
+            result = {**portable_experiment_status(result, cfg.as_dict(), out_dir), "artifact_prefix": artifact_prefix + "/final"}
         return _set_state(experiment_id, "succeeded", seconds=round(time.perf_counter() - started, 1), **result)
     except KeyboardInterrupt:
-        return _set_state(experiment_id, "failed", error="interrupted", seconds=round(time.perf_counter() - started, 1))
+        return failed("interrupted")
     except Exception as cause:  # noqa: BLE001 - the row must record any failure reason
-        return _set_state(experiment_id, "failed", error=f"{type(cause).__name__}: {cause}", traceback=traceback.format_exc()[-4000:], seconds=round(time.perf_counter() - started, 1))
+        return failed(f"{type(cause).__name__}: {cause}", traceback=traceback.format_exc()[-4000:])
 
 
 def run_pending(job_id: str, progress: Any = print, task_id: str | None = None) -> list[dict[str, Any]]:
@@ -265,6 +361,13 @@ def mark_stopped(experiment_ids: list[str]) -> None:
     """A task was stopped: running experiments it owned become failed."""
     for exp_id in experiment_ids:
         _set_state(exp_id, "failed", error="stopped")
+        with session() as db:
+            exp = db.get(Experiment, exp_id)
+            if exp is not None and exp_path(exp).is_dir():
+                try:
+                    exp.status = publish_existing_experiment(exp, exp_path(exp))
+                except Exception as cause:  # noqa: BLE001 - stopped remains failed
+                    exp.status = {**(exp.status or {}), "artifact_retention_error": f"{type(cause).__name__}: {cause}"}
 
 
 def analysis_dict(row: Analysis | None) -> dict[str, Any] | None:

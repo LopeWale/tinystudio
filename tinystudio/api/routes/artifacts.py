@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from tinystudio.api.deps import get_db, project_dep, wrap
 from tinystudio.db.models import Project
@@ -43,6 +45,26 @@ def upload_key(project: Project, key: str) -> str:
 @router.get("/artifacts/config")
 def artifact_config(project: Project = Depends(project_dep)) -> dict[str, bool]:
     return {"direct_upload": storage().remote}
+
+
+@router.get("/artifacts/sources/{digest}/{filename}")
+def download_source(digest: str, filename: str, project: Project = Depends(project_dep)) -> Any:
+    """Retrieve an original retained input from any API host."""
+    if not re.fullmatch(r"[a-f0-9]{64}", digest) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", filename) or filename in {".", ".."}:
+        raise HTTPException(400, "invalid retained source")
+    store = storage()
+    key = project_key(project.id, "sources", digest, filename)
+    if not store.exists(key):
+        raise HTTPException(404, "retained source not found")
+    if store.remote:
+        return RedirectResponse(store.presign(key))
+    temporary = tempfile.TemporaryDirectory(prefix="tinystudio-source-download-")
+    try:
+        path = store.download_file(key, Path(temporary.name) / filename)
+    except BaseException:
+        temporary.cleanup()
+        raise
+    return FileResponse(path, filename=filename, background=BackgroundTask(temporary.cleanup))
 
 
 @router.post("/artifacts/uploads")

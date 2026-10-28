@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import uuid
+import tempfile
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
@@ -162,14 +162,16 @@ async def repository_add_files(name: str, request: Request, project: Project = D
     """Multipart upload of documents (files[]) plus optional urls and paths (one per line); indexing runs as a task."""
     repo = wrap(lambda: repositories_svc.get_repository(db, project, name))
     form = await request.form()
-    uploads = config().uploads_dir
-    uploads.mkdir(parents=True, exist_ok=True)
-    paths: list[str] = []
-    for item in form.getlist("files"):
-        if hasattr(item, "filename") and hasattr(item, "read") and getattr(item, "filename", None):
-            target = uploads / f"{uuid.uuid4().hex[:8]}-{Path(item.filename).name}"
-            target.write_bytes(await item.read())
-            paths.append(str(target))
+    from tinystudio.services.source_artifacts import SourceArtifacts
+    store = SourceArtifacts(project.id)
+    paths: list[Any] = []
+    with tempfile.TemporaryDirectory(prefix="tinystudio-documents-") as temporary:
+        for index, item in enumerate(form.getlist("files")):
+            if hasattr(item, "filename") and hasattr(item, "read") and getattr(item, "filename", None):
+                target = Path(temporary) / str(index) / Path(item.filename).name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(await item.read())
+                paths.append(wrap(lambda: store.retain(target, item.filename)))
     paths += [p.strip() for p in str(form.get("paths") or "").splitlines() if p.strip()]
     urls = [u.strip() for u in str(form.get("urls") or "").splitlines() if u.strip()]
     if not paths and not urls:

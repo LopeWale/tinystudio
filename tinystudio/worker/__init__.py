@@ -2,7 +2,7 @@
 
 - ``enqueue`` creates a ``tasks`` row and an RQ job whose id is the task id.
 - ``run_task`` is the RQ job function: it executes the handler for the task's kind and records the outcome.
-- Progress lines go to a log file under the data directory, to the Redis channel ``task:<id>`` (the API relays it as
+- Progress lines go to durable configured task-log storage, to the Redis channel ``task:<id>`` (the API relays it as
   server-sent events), and, in batches, to the row's ``log_tail``.
 - ``stop`` cancels a queued job or kills the running work horse, then marks the task and its experiment stopped.
 """
@@ -29,6 +29,7 @@ from tinystudio.core.project import ProjectError
 from tinystudio.db import dispose_after_fork, session
 from tinystudio.db.models import Experiment, Project, Task, User
 from tinystudio.services import tasks as tasks_svc
+from tinystudio.services.task_logs import TaskLogStorage
 
 QUEUE_NAME = "tinystudio"
 JOB_TIMEOUT = int(timedelta(days=7).total_seconds())
@@ -73,6 +74,9 @@ def enqueue(db: Session, kind: str, args: dict[str, Any], project: Project | Non
 
     if kind not in HANDLERS:
         raise ProjectError(f"unknown task kind {kind!r}")
+    from tinystudio.services.source_artifacts import prepare_task_sources
+
+    args = prepare_task_sources(project.id if project else None, kind, args)
     task = tasks_svc.create_task(db, kind, args, project, user)
     try:
         job = queue().enqueue(run_task, task.id, job_id=task.id, job_timeout=JOB_TIMEOUT, result_ttl=RESULT_TTL, failure_ttl=FAILURE_TTL, description=f"{kind} {task.id}")
@@ -134,14 +138,12 @@ def subscribe(task_id: str, timeout: float = 20.0) -> Iterator[str | None]:
 
 
 class TaskLog:
-    """Progress sink for one task: file, Redis channel, and the row's tail (flushed every two seconds)."""
+    """Progress sink: durable storage, Redis, and the row tail every two seconds."""
 
     def __init__(self, task_id: str, echo: Any = None) -> None:
         self.task_id = task_id
         self.echo = echo
-        self.path = config().task_log(task_id)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("a", encoding="utf-8")
+        self.writer = TaskLogStorage().writer(task_id)
         self.tail: list[str] = []
         self.dirty = False
         self.last_flush = time.monotonic()
@@ -150,8 +152,7 @@ class TaskLog:
         text = str(line).rstrip()
         if not text or "redirects.py" in text:
             return
-        self.handle.write(text + "\n")
-        self.handle.flush()
+        self.writer.write(text + "\n")
         if self.echo is not None:
             self.echo(text)
         publish(self.task_id, text)
@@ -161,14 +162,17 @@ class TaskLog:
             self.flush()
 
     def flush(self) -> None:
+        self.writer.flush()
         if self.dirty:
             with session() as db:
                 tasks_svc.set_tail(db, self.task_id, self.tail)
             self.dirty, self.last_flush = False, time.monotonic()
 
     def close(self) -> None:
-        self.flush()
-        self.handle.close()
+        try:
+            self.flush()
+        finally:
+            self.writer.close()
 
 
 def run_task(task_id: str, echo: Any = None) -> dict[str, Any] | None:
@@ -177,34 +181,63 @@ def run_task(task_id: str, echo: Any = None) -> dict[str, Any] | None:
     from tinystudio.worker.handlers import HANDLERS, Context
 
     dispose_after_fork()
-    log = TaskLog(task_id, echo)
     worker_name = f"{platform.node()}:{sys.argv[0].rsplit('/', 1)[-1]}"
     with session() as db:
+        # Serialize duplicate deliveries across hosts before either can open a
+        # log writer. A deliberate retry must first requeue the task row.
+        task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+        if task is None:
+            raise ProjectError(f"task {task_id!r} not found")
+        if task.state != "queued":
+            return None
         task = tasks_svc.mark_running(db, task_id, worker_name)
         kind, args, project_id, user_id = task.kind, dict(task.args), task.project_id, task.user_id
-        settings_svc.apply(db)
-    log(f"[task {task_id}] {kind} started on {worker_name}")
+    log = None
     try:
+        # Configuration and storage initialization failures belong to the task
+        # outcome too, rather than leaving a running row behind.
+        with session() as db:
+            settings_svc.apply(db)
+        log = TaskLog(task_id, echo)
+        log(f"[task {task_id}] {kind} started on {worker_name}")
+        log.flush()
         result = HANDLERS[kind](Context(task_id, project_id, user_id, args, log))
         log(f"[task {task_id}] succeeded")
+        log.close()
+        log = None
         with session() as db:
-            # The quality page consumes the complete profile from this durable result.
-            tasks_svc.mark_finished(db, task_id, "succeeded", result=_jsonable(result, truncate=kind != "dataset.profile"))
+            # Success becomes visible only after all log bytes are durable.
+            task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+            if task is not None and task.state == "running":
+                tasks_svc.mark_finished(db, task_id, "succeeded", result=_jsonable(result, truncate=kind != "dataset.profile"))
         return result
     except KeyboardInterrupt:
+        error = "interrupted"
+        if log is not None:
+            try:
+                log.close()
+            except Exception as cause:  # noqa: BLE001
+                error += f"; task log publication failed: {type(cause).__name__}: {cause}"
         with session() as db:
-            tasks_svc.mark_finished(db, task_id, "stopped", error="interrupted")
+            tasks_svc.mark_finished(db, task_id, "stopped", error=error)
         raise
     except Exception as cause:  # noqa: BLE001 - the row records every failure
         import traceback
 
-        log(f"[task {task_id}] failed: {type(cause).__name__}: {cause}")
-        log(traceback.format_exc()[-3000:])
+        error = f"{type(cause).__name__}: {cause}"
+        if log is not None:
+            try:
+                log(f"[task {task_id}] failed: {error}")
+                log(traceback.format_exc()[-3000:])
+            except Exception as log_error:  # noqa: BLE001
+                error += f"; task log diagnostics failed: {type(log_error).__name__}: {log_error}"
+            try:
+                log.close()
+            except Exception as log_error:  # noqa: BLE001 - never mask publication failure
+                error += f"; task log publication failed: {type(log_error).__name__}: {log_error}"
         with session() as db:
-            tasks_svc.mark_finished(db, task_id, "failed", error=f"{type(cause).__name__}: {cause}")
+            tasks_svc.mark_finished(db, task_id, "failed", error=error)
         return None
-    finally:
-        log.close()
 
 
 def _jsonable(value: Any, *, truncate: bool = True) -> dict[str, Any] | None:
@@ -224,6 +257,9 @@ def _jsonable(value: Any, *, truncate: bool = True) -> dict[str, Any] | None:
 
 def run_inline(kind: str, args: dict[str, Any], project: Project | None = None, user: User | None = None, echo: Any = print) -> dict[str, Any]:
     """Create a task row and execute it in this process (the CLI on a machine without a worker). Returns the task."""
+    from tinystudio.services.source_artifacts import prepare_task_sources
+
+    args = prepare_task_sources(project.id if project else None, kind, args)
     with session() as db:
         task = tasks_svc.create_task(db, kind, args, project, user)
         task_id = task.id

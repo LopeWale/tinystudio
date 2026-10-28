@@ -48,6 +48,12 @@ def load_dotenv(paths: list[Path] | None = None) -> list[Path]:
     return loaded
 
 
+def _deployment() -> Any:
+    from tinystudio.config import config
+
+    return config()
+
+
 @dataclass(frozen=True)
 class Settings:
     """Effective configuration, read from the environment after .env loading."""
@@ -56,7 +62,9 @@ class Settings:
     database_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_DATABASE_URL", "postgresql+psycopg://tinystudio:tinystudio@127.0.0.1:5432/tinystudio"))
     redis_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_REDIS_URL", "redis://127.0.0.1:6379/0"))
     qdrant_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_QDRANT_URL", "http://127.0.0.1:6333"))
-    data_dir: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_DATA_DIR", str(Path.home() / ".tinystudio" / "data")))
+    data_dir: str = field(default_factory=lambda: str(_deployment().data_dir))
+    storage_backend: str = field(default_factory=lambda: _deployment().storage_backend)
+    artifact_location: str = field(default_factory=lambda: _deployment().artifact_location)
     inference_url: str | None = field(default_factory=lambda: os.environ.get("TINYSTUDIO_INFERENCE_URL") or None)
     host: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(os.environ.get("TINYSTUDIO_PORT", "8000")))

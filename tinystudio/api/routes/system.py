@@ -22,6 +22,7 @@ from tinystudio.integrations import hub
 from tinystudio.services import projects as projects_svc
 from tinystudio.services import settings as settings_svc
 from tinystudio.services import tasks as tasks_svc
+from tinystudio.services.task_logs import TaskLogStorage
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -85,7 +86,7 @@ def show_config(_: Principal = Depends(current_user)) -> dict[str, Any]:
 
     eng = engine()
     inference = {"mode": "remote" if cfg.inference_url else "in-process", "url": cfg.inference_url, "reachable": eng.ping() if hasattr(eng, "ping") else True}
-    return {"database_url": redacted(cfg.database_url), "redis_url": redacted(cfg.redis_url), "qdrant_url": cfg.qdrant_url, "data_dir": str(cfg.data_dir), "host": cfg.host, "port": cfg.port, "device": cfg.device, "dtype": cfg.dtype, "inference": inference, "database_version": db_mod.database_version()}
+    return {"database_url": redacted(cfg.database_url), "redis_url": redacted(cfg.redis_url), "qdrant_url": cfg.qdrant_url, "data_dir": str(cfg.data_dir), "storage": {"backend": cfg.storage_backend, "bucket": cfg.r2_bucket if cfg.storage_backend == "r2" else None, "cache_directory": str(cfg.cache_dir) if cfg.storage_backend == "r2" else None}, "host": cfg.host, "port": cfg.port, "device": cfg.device, "dtype": cfg.dtype, "inference": inference, "database_version": db_mod.database_version()}
 
 
 @router.get("/settings")
@@ -167,9 +168,11 @@ def get_task(task_id: str, db: Session = Depends(get_db), _: Principal = Depends
 @router.get("/tasks/{task_id}/log")
 def task_log(task_id: str, tail: int = 500, db: Session = Depends(get_db), _: Principal = Depends(current_user)) -> dict[str, Any]:
     task = wrap(lambda: tasks_svc.get_task(db, task_id))
-    path = config().task_log(task.id)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else list(task.log_tail or [])
-    return {"id": task.id, "state": task.state, "lines": lines[-tail:]}
+    def read() -> list[str]:
+        store = TaskLogStorage()
+        return store.read(task.id, tail, fallback=list(task.log_tail or []), missing_ok=task.state == "queued")
+
+    return {"id": task.id, "state": task.state, "lines": wrap(read)}
 
 
 @router.get("/tasks/{task_id}/events")

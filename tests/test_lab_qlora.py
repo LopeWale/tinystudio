@@ -4,6 +4,7 @@ Run ``python -m unittest tests.test_lab_qlora -v`` in the pinned optional pack.
 An unavailable pack is explicitly skipped, never recorded as qualification.
 """
 import gc
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -212,6 +213,7 @@ class QLoRAQualification(unittest.TestCase):
         for encoded, expected in live:
             with torch.no_grad():
                 self.assertTrue(torch.equal(expected, restored(**encoded).logits[0, -1]))
+        self.qualify_serving(output, live)
         # A quantization-state mutation must fail the frozen-base identity oracle.
         old = state_digest(restored, base_only=True)
         module = next(child for child in restored.modules() if isinstance(child, Linear4bit))
@@ -239,6 +241,57 @@ class QLoRAQualification(unittest.TestCase):
         weights.write_bytes(weights.read_bytes() + b"corrupt")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             load_pretrained_output(extracted)
+
+    def qualify_serving(self, output, live):
+        """Real NF4 policy through the same retained source and chat runner as the API."""
+        import torch
+        from bitsandbytes.nn import Linear4bit
+        from tinystudio.serving.retained import RetainedModelSource
+        from tinystudio.serving.runner import ModelRunner, ResolvedModel
+        from tinystudio.storage import ArtifactStorage, project_key
+        from tinystudio.core.project import ProjectError
+
+        bundle = output / "pretrained-model.tar"
+        sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        key = project_key("a" * 32, "lab", sha[:2], sha)
+        store = ArtifactStorage(root=self.root / "serving-objects")
+        store.upload_file(bundle, key)
+        source = RetainedModelSource("a" * 32, "b" * 32, sha, bundle.stat().st_size, key)
+        resolved = ResolvedModel("lab:" + "b" * 32, "never-the-float-base", None, None, "retained", source)
+        opened = []
+        original = RetainedModelSource.open
+
+        @contextmanager
+        def observe(binding):
+            with original(binding) as root:
+                opened.append(root)
+                yield root
+
+        with patch("tinystudio.serving.retained.storage", return_value=store), patch.object(
+                RetainedModelSource, "open", observe), patch.dict("os.environ", {
+                    "TINYSTUDIO_DEVICE": "cpu", "TINYSTUDIO_DTYPE": "float32"}):
+            runner = ModelRunner(resolved)
+            self.assertTrue(opened and all(not path.exists() for path in opened))
+            modules = [module for module in runner.model.modules() if isinstance(module, Linear4bit)]
+            self.assertEqual(len(modules), 7)
+            self.assertTrue(all(module.weight.dtype == torch.uint8 and module.weight.quant_state.nested for module in modules))
+            for encoded, expected in live:
+                with torch.no_grad():
+                    self.assertTrue(torch.equal(expected, runner.model(**encoded).logits[0, -1]))
+            messages = [{"role": "user", "content": "pressure high"}]
+            generated = runner.generate(messages, max_new_tokens=3, temperature=0)
+            streamed = "".join(runner.stream(messages, max_new_tokens=3, temperature=0))
+            self.assertEqual(streamed.strip(), generated["content"])
+            prompt, completion = runner.count_tokens(messages, generated["content"])
+            self.assertEqual(prompt, generated["prompt_tokens"])
+            self.assertGreaterEqual(completion, 0)
+            runner.unload()
+            with self.assertRaisesRegex(ProjectError, "unloaded"):
+                runner.generate(messages, max_new_tokens=3)
+            reloaded = ModelRunner(resolved)
+            self.assertEqual(reloaded.generate(messages, max_new_tokens=3)["content"], generated["content"])
+            self.assertTrue(all(not path.exists() for path in opened))
+            reloaded.unload()
 
     def test_sft_qlora(self):
         self.qualify("sft")

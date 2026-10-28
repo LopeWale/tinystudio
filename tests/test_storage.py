@@ -413,7 +413,7 @@ def test_capture_reader_lock_prevents_losing_appended_sidecars(backend, tmp_path
     old = {'layer': 0, 'neuron': 0, 'explanation': 'old'}
     new = {'layer': 0, 'neuron': 1, 'explanation': 'new'}
     (source / 'explanations.jsonl').write_text(json.dumps(old) + '\n')
-    prefix = 'captures/p/capture/run'
+    prefix = 'retained-captures/p/capture/run'
     backend.publish_directory(source, prefix)
     row = SimpleNamespace(name='run', meta={'name': 'run', 'model_id': 'base', 'storage_prefix': prefix})
     @contextmanager
@@ -422,6 +422,9 @@ def test_capture_reader_lock_prevents_losing_appended_sidecars(backend, tmp_path
     monkeypatch.setattr(interp, 'session', session)
     monkeypatch.setattr(interp, 'storage', lambda: backend)
     monkeypatch.setattr(interp, 'config', lambda: SimpleNamespace(data_dir=root, project_dir=lambda p: root / 'projects' / p))
+    # These tests isolate local cache locking; PostgreSQL ownership is covered
+    # independently by test_capture_cross_host.py.
+    monkeypatch.setattr(interp.ProjectStore, '_distributed_artifact_lock', lambda *args: nullcontext())
     writer, reader = interp.ProjectStore('p'), interp.ProjectStore('p')
     writer.artifact_directory('capture', 'run')
     if bypass_reader_lock:
@@ -457,6 +460,7 @@ def test_capture_reader_lock_prevents_losing_appended_sidecars(backend, tmp_path
 
 
 def test_capture_delete_waits_for_append_publication_and_preserves_lock_inode(backend, tmp_path, monkeypatch):
+    from contextlib import nullcontext
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     from tinystudio.services import interp
@@ -465,7 +469,7 @@ def test_capture_delete_waits_for_append_publication_and_preserves_lock_inode(ba
     source = tmp_path / 'source'
     source.mkdir()
     (source / 'meta.json').write_text('{"name":"run","model_id":"base"}')
-    prefix = 'captures/p/capture/run'
+    prefix = 'retained-captures/p/capture/run'
     backend.publish_directory(source, prefix)
     row = SimpleNamespace(name='run', meta={'name': 'run', 'model_id': 'base', 'storage_prefix': prefix})
     deleted = []
@@ -475,6 +479,7 @@ def test_capture_delete_waits_for_append_publication_and_preserves_lock_inode(ba
     monkeypatch.setattr(interp, 'session', session)
     monkeypatch.setattr(interp, 'storage', lambda: backend)
     monkeypatch.setattr(interp, 'config', lambda: SimpleNamespace(data_dir=root, project_dir=lambda p: root / 'projects' / p))
+    monkeypatch.setattr(interp.ProjectStore, '_distributed_artifact_lock', lambda *args: nullcontext())
     writer, deleter = interp.ProjectStore('p'), interp.ProjectStore('p')
     writer.artifact_directory('capture', 'run')
     lock_path = Path(writer._artifact_lock('capture', 'run').lock_file)

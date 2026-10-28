@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from tinystudio.config import config
 from tinystudio.core.project import ProjectError, check_name, iso, slugify
-from tinystudio.db.models import Dataset, Evaluation, Job, Metric, Project, Repository, Snapshot, User
+from tinystudio.db.models import Dataset, Evaluation, Job, Metric, Project, Repository, Snapshot, Task, User
 
 
 def project_dict(project: Project) -> dict[str, Any]:
@@ -65,8 +65,10 @@ def delete_project(db: Session, project: Project) -> None:
     from tinystudio.storage import project_key, storage
     backend = storage()
     if backend.remote:
-        for category in ("snapshots", "models", "captures", "uploads"):
+        for category in ("snapshots", "models", "captures", "retained-captures", "sources", "uploads", "lab"):
             backend.delete_prefix(project_key(project.id, category))
+        for task_id in db.scalars(select(Task.id).where(Task.project_id == project.id)):
+            backend.delete_prefix(f"tasks/{task_id}")
     artifact_dir = config().project_dir(project.id)
     db.delete(project)
     db.flush()

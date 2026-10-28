@@ -499,11 +499,15 @@ def finetune(snapshot: str, job: Annotated[str, typer.Option()], model: Annotate
 @app.command()
 def export(model: Annotated[str, typer.Argument(help="job/number")], destination: Path, ollama: bool = False, system: Annotated[str | None, typer.Option()] = None, project: ProjectOpt = None) -> None:
     """Merge a LoRA experiment into a standalone model directory (optionally with an Ollama Modelfile)."""
-    from tinystudio.services.jobs import exp_path, find_experiment
+    from tinystudio.services.jobs import ensure_experiment_artifacts, find_experiment, resolved_weights_source
     from tinystudio.training.train import export_merged, write_ollama_modelfile
 
-    exp = with_project(project, lambda db, p: find_experiment(db, p, model))
-    out = run(lambda: export_merged(exp_path(exp), destination, exp.config["base_model"], (exp.status or {}).get("weights_source")))
+    def retained(db: Any, p: Any) -> tuple[Any, Path, str]:
+        exp = find_experiment(db, p, model)
+        return exp, ensure_experiment_artifacts(exp), resolved_weights_source(db, p, exp)
+
+    exp, directory, weights = with_project(project, retained)
+    out = run(lambda: export_merged(directory, destination, exp.config["base_model"], weights))
     if ollama:
         write_ollama_modelfile(out, out / "Modelfile", system)
     console.print(f"exported to {out}")

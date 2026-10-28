@@ -1,7 +1,8 @@
 """The engine the inference routes drive: loads models by id, generates, streams, and logs traces.
 
 Model ids: ``<project-slug>/<job>/<number>[@step]``, ``<project-slug>/ft-<job>-<number>``, a Hub id, or a model
-directory. Bare ``job/number`` works when a project is given (the web interface always sends one).
+directory. ``lab:<artifact-id>`` identifies a retained laboratory model within an explicit project.
+Bare ``job/number`` works when a project is given (the web interface always sends one).
 """
 
 from __future__ import annotations
@@ -27,62 +28,160 @@ from tinystudio.services import traces as traces_svc
 
 
 def split_model_id(model_id: str, project_slug: str | None) -> tuple[str | None, str]:
-    """(project slug, local id). Three segments ending in digits (or a ``ft-`` alias after a slug) name a project."""
+    """Resolve explicit project identities without overriding the request's scope."""
+    from tinystudio.serving.retained import parse_laboratory_id
+
     parts = model_id.split("/")
-    if len(parts) == 3 and parts[2].partition("@")[0].isdigit():
-        return parts[0], f"{parts[1]}/{parts[2]}"
-    if len(parts) == 2 and parts[1].startswith("ft-"):
-        return parts[0], parts[1]
+    if len(parts) == 2 and parts[1].startswith("lab:"):
+        parse_laboratory_id(parts[1])
+        if project_slug != parts[0]:
+            raise ProjectError("a qualified laboratory model requires its matching request project")
+        return project_slug, parts[1]
+    if parse_laboratory_id(model_id) is not None:
+        if not project_slug:
+            raise ProjectError("a laboratory model requires a project")
+        return project_slug, model_id
+    if (len(parts) == 3 and parts[2].partition("@")[0].isdigit()) or (len(parts) == 2 and parts[1].startswith("ft-")):
+        if project_slug is not None and project_slug != parts[0]:
+            raise ProjectError("model project does not match the request project")
+        return parts[0], "/".join(parts[1:])
     return project_slug, model_id
 
 
+class _ModelIdentity:
+    """Own one cached runner and fence requests across unload, including queued loads."""
+
+    def __init__(self, key: str, slug: str | None, local: str, scoped: bool) -> None:
+        self.key = key
+        self.slug = slug
+        self.local = local
+        self.scoped = scoped
+        self.laboratory = local.startswith("lab:")
+        self.operation_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._epoch = 0
+        self._runner: ModelRunner | None = None
+
+    def capture(self) -> int:
+        with self._state_lock:
+            return self._epoch
+
+    def runner(self, epoch: int | None = None) -> ModelRunner | None:
+        with self._state_lock:
+            if epoch is not None and epoch != self._epoch:
+                raise ProjectError("model load was cancelled by unload or a changed binding; retry the request")
+            return self._runner
+
+    def publish(self, epoch: int, runner: ModelRunner) -> None:
+        with self._state_lock:
+            if epoch != self._epoch:
+                raise ProjectError("model load was cancelled by unload or a changed binding; retry the request")
+            self._runner = runner
+
+    def retire(self) -> None:
+        with self._state_lock:
+            self._epoch += 1
+            runner, self._runner = self._runner, None
+        # A runner may wait for active generation; never hold dictionary/state locks here.
+        if runner is not None:
+            runner.unload()
+
+
 class LocalEngine:
-    """Models loaded in this process."""
+    """Models loaded in this process, serialized and fenced per model identity."""
 
     def __init__(self) -> None:
-        self.loaded: dict[str, ModelRunner] = {}
+        self._identities: dict[str, _ModelIdentity] = {}
         self.lock = threading.Lock()
         self.recent: list[dict[str, Any]] = []
+
+    @property
+    def loaded(self) -> dict[str, ModelRunner]:
+        """An inspection snapshot; lifecycle mutations go through load/unload."""
+        with self.lock:
+            identities = list(self._identities.values())
+        return {identity.key: runner for identity in identities if (runner := identity.runner()) is not None}
 
     def _project(self, db: Any, slug: str | None) -> Project | None:
         return projects_svc.get_project(db, slug) if slug else None
 
     def key(self, project_slug: str | None, model_id: str) -> str:
         slug, local = split_model_id(model_id, project_slug)
-        return f"{slug}/{local}" if slug and (local.partition("/")[2].partition("@")[0].isdigit() or local.startswith("ft-")) else local
+        scoped = local.startswith(("ft-", "lab:")) or local.partition("/")[2].partition("@")[0].isdigit()
+        return f"{slug}/{local}" if slug and scoped else local
 
-    def load(self, model_id: str, project_slug: str | None = None) -> ModelRunner:
+    def _identity(self, model_id: str, project_slug: str | None) -> _ModelIdentity:
         slug, local = split_model_id(model_id, project_slug)
         key = self.key(project_slug, model_id)
         with self.lock:
-            if key in self.loaded:
-                return self.loaded[key]
+            if key not in self._identities:
+                self._identities[key] = _ModelIdentity(key, slug, local, key != local)
+            return self._identities[key]
+
+    def _resolve(self, identity: _ModelIdentity) -> Any:
         with session() as db:
-            resolved = models_svc.resolve(db, self._project(db, slug), local)
+            resolved = models_svc.resolve(db, self._project(db, identity.slug), identity.local)
+        if identity.laboratory and resolved.retained_source is None:
+            raise ProjectError("laboratory model has no accepted retained source")
+        return resolved
+
+    def _validate_binding(self, identity: _ModelIdentity, resolved: Any) -> None:
         try:
-            runner = ModelRunner(resolved)
-        except OSError as cause:
-            raise ProjectError(f"model {model_id!r} could not be loaded: {cause}") from cause
-        with self.lock:
-            self.loaded[key] = runner
-        return runner
+            current = self._resolve(identity)
+            if current.retained_source != resolved.retained_source:
+                raise ProjectError("laboratory model binding changed; load the model again")
+        except ProjectError:
+            identity.retire()
+            raise
+
+    def load(self, model_id: str, project_slug: str | None = None) -> ModelRunner:
+        identity = self._identity(model_id, project_slug)
+        epoch = identity.capture()  # Capture before waiting: unload also fences queued requests.
+        with identity.operation_lock:
+            cached = identity.runner(epoch)
+            if cached is not None:
+                if identity.laboratory:
+                    self._validate_binding(identity, cached.resolved)
+                return identity.runner(epoch)
+            resolved = self._resolve(identity)
+            identity.runner(epoch)
+            try:
+                runner = ModelRunner(resolved)
+            except OSError as cause:
+                raise ProjectError(f"model {model_id!r} could not be loaded: {cause}") from cause
+            try:
+                if identity.laboratory:
+                    self._validate_binding(identity, resolved)
+                identity.publish(epoch, runner)
+            except BaseException:
+                runner.unload()
+                raise
+            return runner
 
     def unload(self, model_id: str, project_slug: str | None = None) -> dict[str, Any]:
-        key = self.key(project_slug, model_id)
-        with self.lock:
-            runner = self.loaded.pop(key, None)
-        if runner is not None:
-            runner.unload()
+        self._identity(model_id, project_slug).retire()
         return {"id": model_id, "status": "down"}
 
     def loaded_ids(self, project_slug: str | None = None) -> set[str]:
-        """Ids as the project sees them (``job/number`` within the project; full keys otherwise)."""
+        """Project-local cached ids plus globally shared Hub/directory ids."""
+        with self.lock:
+            identities = list(self._identities.values())
         out = set()
-        for key in list(self.loaded):
-            if project_slug and key.startswith(project_slug + "/"):
-                out.add(key[len(project_slug) + 1 :])
-            elif "/" not in key or not key.rpartition("/")[2].partition("@")[0].isdigit():
-                out.add(key)
+        for identity in identities:
+            if identity.scoped and identity.slug != project_slug:
+                continue
+            with identity.operation_lock:
+                epoch = identity.capture()
+                try:
+                    runner = identity.runner(epoch)
+                    if runner is None:
+                        continue
+                    if identity.laboratory:
+                        self._validate_binding(identity, runner.resolved)
+                    identity.runner(epoch)
+                except ProjectError:
+                    continue
+                out.add(identity.local)
         return out
 
     def models(self, project_slug: str | None, base_models: list[str]) -> list[dict[str, Any]]:

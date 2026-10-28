@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -119,10 +119,9 @@ class PromoteBody(BaseModel):
     preference: bool = False
 
 
-def _save_upload(upload: UploadFile, content: bytes) -> Path:
-    folder = config().uploads_dir
+def _save_upload(upload: UploadFile, content: bytes, folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{uuid.uuid4().hex[:8]}-{Path(upload.filename or 'upload').name}"
+    target = folder / Path(upload.filename or 'upload').name
     target.write_bytes(content)
     return target
 
@@ -135,8 +134,9 @@ def datasets(project: Project = Depends(project_dep), db: Session = Depends(get_
 
 @router.post("/datasets/upload")
 async def upload_dataset(name: str = Form(...), file: UploadFile = File(...), project: Project = Depends(project_dep), db: Session = Depends(get_db)) -> dict[str, Any]:
-    target = _save_upload(file, await file.read())
-    return wrap(lambda: datasets_svc.create_from_jsonl(db, project, name, target, file.filename))
+    with tempfile.TemporaryDirectory(prefix="tinystudio-dataset-") as temporary:
+        target = _save_upload(file, await file.read(), Path(temporary))
+        return wrap(lambda: datasets_svc.create_from_jsonl(db, project, name, target, file.filename))
 
 
 @router.post("/datasets/from-path")
@@ -157,7 +157,14 @@ async def synthetic_dataset(name: str = Form(...), pairs_per_source: int = Form(
     url_list = [u.strip() for u in urls.splitlines() if u.strip()]
     if not files and not url_list:
         raise HTTPException(status_code=400, detail="add at least one file or web page URL")
-    paths = [str(_save_upload(upload, await upload.read())) for upload in files if upload.filename]
+    from tinystudio.services.source_artifacts import SourceArtifacts
+    store = SourceArtifacts(project.id)
+    paths = []
+    with tempfile.TemporaryDirectory(prefix="tinystudio-synthetic-") as temporary:
+        for index, upload in enumerate(files):
+            if upload.filename:
+                path = _save_upload(upload, await upload.read(), Path(temporary) / str(index))
+                paths.append(wrap(lambda: store.retain(path, upload.filename)))
     lines = lambda text: [line.strip() for line in text.splitlines() if line.strip()]  # noqa: E731
     args = {"name": name, "files": paths, "urls": url_list, "pairs_per_source": max(1, min(500, pairs_per_source)), "temperature": max(0.0, min(1.0, temperature)), "goal": goal or project.goal, "rules": lines(rules), "question_format": question_format, "answer_format": answer_format, "example_questions": lines(example_questions), "example_answers": lines(example_answers), "system_prompt": system_prompt or None, "curate_threshold": max(0.0, min(10.0, curate_threshold))}
     return wrap(lambda: worker.enqueue(db, "dataset.synthetic", args, project, principal.user))

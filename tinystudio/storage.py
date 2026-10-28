@@ -36,7 +36,7 @@ def _key(value: str) -> str:
 
 def project_key(project_id: str, category: str, *parts: str) -> str:
     """Build a project-isolated object key; parts are individual path segments."""
-    if category not in {'captures', 'snapshots', 'models', 'uploads', 'lab'}:
+    if category not in {'captures', 'retained-captures', 'snapshots', 'models', 'uploads', 'sources', 'lab'}:
         raise StorageError('invalid artifact category')
     for part in (project_id, *parts):
         if '/' in part or not part:

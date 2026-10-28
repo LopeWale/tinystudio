@@ -17,7 +17,10 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .retained import RetainedModelSource
 
 TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
@@ -65,7 +68,38 @@ class ResolvedModel:
     base_model: str
     adapter_dir: Path | None
     model_dir: Path | None
-    kind: str  # "base" | "lora" | "full"
+    kind: str  # "base" | "lora" | "full" | "retained"
+    retained_source: RetainedModelSource | None = None
+
+
+def _retained_device(manifest: dict, device: str | None) -> str:
+    """Automatic serving adopts the frozen NF4 contract; explicit choices constrain it."""
+    from tinystudio.training.runtime import TrainingPlacement
+
+    receipt = manifest.get("quantization")
+    runtime = receipt.get("runtime") if isinstance(receipt, dict) else None
+    if not isinstance(runtime, dict):
+        raise ProjectError("retained quantized policy has no runtime contract")
+    selected = device if device is not None else os.environ.get("TINYSTUDIO_DEVICE", "auto")
+    selected = selected.split("#", 1)[0].strip() if isinstance(selected, str) else selected
+    automatic = not selected or selected.lower() == "auto"
+    dtype = os.environ.get("TINYSTUDIO_DTYPE", "auto").split("#", 1)[0].strip().lower()
+    aliases = {"fp32": "float32", "bf16": "bfloat16", "fp16": "float16"}
+    dtype = aliases.get(dtype, dtype)
+    retained_dtype = runtime.get("dtype")
+    if (not isinstance(runtime.get("device"), str) or runtime["device"] in {"", "auto"}
+        or retained_dtype not in {"float32", "bfloat16"}):
+        raise ProjectError("retained quantized policy must declare its concrete device and precision")
+    if dtype not in {"", "auto", "float32", "bfloat16", "float16"}:
+        raise ProjectError("invalid serving dtype; select auto or the retained policy's precision")
+    if dtype not in {"", "auto", retained_dtype}:
+        raise ProjectError(f"serving dtype {dtype} conflicts with retained policy precision {retained_dtype}; "
+                           "select auto or a compatible retained policy")
+    placement = TrainingPlacement.resolve(runtime.get("device") if automatic else selected, retained_dtype)
+    if placement.device != runtime.get("device"):
+        raise ProjectError("serving device conflicts with the retained quantized policy; "
+                           "select auto or a compatible serving host and policy")
+    return placement.device
 
 
 class ModelRunner:
@@ -78,6 +112,10 @@ class ModelRunner:
         self.resolved = resolved
         self.device = device or pick_device()
         self.lock = threading.Lock()
+        self.model = None
+        if resolved.retained_source is not None:
+            self._load_retained(resolved.retained_source, device)
+            return
         source = str(resolved.model_dir) if resolved.model_dir else resolved.base_model
         self.tokenizer = AutoTokenizer.from_pretrained(source)
         model = AutoModelForCausalLM.from_pretrained(source, dtype=pick_dtype(self.device))
@@ -90,6 +128,35 @@ class ModelRunner:
         self.model = model.to(self.device)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def _load_retained(self, source: RetainedModelSource, device: str | None) -> None:
+        from tinystudio.lab.compatibility import load_pretrained_output
+
+        model = None
+        try:
+            with source.open() as root:
+                manifest = json.loads((root / "pretrained.json").read_text())
+                quantized = manifest.get("format") == "tinystudio.pretrained.v2"
+                if quantized:
+                    self.device = _retained_device(manifest, device)
+                model, tokenizer, _ = load_pretrained_output(root, device=self.device)
+                try:
+                    template = tokenizer.get_chat_template()
+                    if not isinstance(template, str) or not template.strip():
+                        raise ValueError("empty chat template")
+                except ValueError:
+                    raise ProjectError("This retained tokenizer has no usable chat template. "
+                                       "Use raw-text inference in Laboratory or retain an explicitly authored chat template.") from None
+                if not quantized:
+                    model = model.to(device=self.device, dtype=pick_dtype(self.device))
+                model.eval()
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            self.tokenizer, self.model = tokenizer, model
+        finally:
+            # Drop this loader's ownership on exceptional constructor paths.
+            # The source context separately owns removal of extracted files.
+            model = None
 
     def _encode(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> Any:
         kwargs: dict[str, Any] = {"add_generation_prompt": True, "return_tensors": "pt", "return_dict": True}
@@ -122,6 +189,7 @@ class ModelRunner:
         import torch
 
         with self.lock:
+            self._ensure_loaded()
             inputs = self._encode(messages, tools)
             prompt_tokens = int(inputs["input_ids"].shape[1])
             started = time.perf_counter()
@@ -151,6 +219,7 @@ class ModelRunner:
         from transformers import TextIteratorStreamer
 
         with self.lock:
+            self._ensure_loaded()
             inputs = self._encode(messages)
             streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=STREAM_TIMEOUT_SECONDS)
             kwargs = {**inputs, **self._generation_kwargs(max_new_tokens, temperature, top_p), "streamer": streamer}
@@ -203,10 +272,15 @@ class ModelRunner:
 
         import torch
 
-        del self.model
+        with self.lock:
+            self.model = None
         gc.collect()
         if self.device == "mps":
             torch.mps.empty_cache()
+
+    def _ensure_loaded(self) -> None:
+        if self.model is None:
+            raise ProjectError("model was unloaded before generation; load it again to retry")
 
 
 def _with_system_suffix(messages: list[dict[str, Any]], suffix: str) -> list[dict[str, Any]]:

@@ -12,7 +12,7 @@ from tinystudio.core.project import SAFE_NAME, ProjectError
 from tinystudio.db import session
 from tinystudio.db.models import Experiment, Job, Project
 from tinystudio.serving.runner import ModelRunner, ResolvedModel
-from tinystudio.services.jobs import ensure_experiment_artifacts, parent_weights
+from tinystudio.services.jobs import ensure_experiment_artifacts, resolved_weights_source
 from tinystudio.training.train import parse_alias
 from tinystudio.training.recommend import catalog_as_dicts
 from tinystudio.training.quantization import is_retained_quantized, has_quantized_marker
@@ -20,6 +20,11 @@ from tinystudio.training.quantization import is_retained_quantized, has_quantize
 
 def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedModel:
     """A model directory, ``job/number[@step]`` or ``ft-job-number`` inside the project, or a Hub id."""
+    from tinystudio.serving.retained import parse_laboratory_id
+    if parse_laboratory_id(model_id) is not None:
+        from . import laboratory_models
+        source = laboratory_models.source(db, project, model_id)
+        return ResolvedModel(model_id, model_id, None, None, "retained", source)
     local = Path(model_id).expanduser()
     if local.is_dir() and (local / "config.json").exists():
         return ResolvedModel(model_id, str(local), None, local, "full")
@@ -33,8 +38,7 @@ def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedMode
             if exp is not None:
                 if is_retained_quantized(exp.config, exp.status or {}):
                     raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
-                parent = exp.config.get("refinetune_from")
-                source = str(parent_weights(db, project, parent)) if parent else None
+                source = resolved_weights_source(db, project, exp)
                 return _resolve_experiment(exp, model_id, step, source)
             if alias is not None:
                 raise ProjectError(f"experiment {model_id} does not exist")
@@ -67,15 +71,18 @@ def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_sourc
 
 
 def deployable_ids(db: Session, project: Project) -> list[str]:
-    return [f"{exp.job.name}/{exp.number}" for exp in db.scalars(select(Experiment).join(Job).where(Job.project_id == project.id, Experiment.state == "succeeded").order_by(Job.created, Experiment.number))]
+    from . import laboratory_models
+    return [f"{exp.job.name}/{exp.number}" for exp in db.scalars(select(Experiment).join(Job).where(Job.project_id == project.id, Experiment.state == "succeeded").order_by(Job.created, Experiment.number))] + [row["id"] for row in laboratory_models.rows(db, project, set())]
 
 
 def model_rows(db: Session, project: Project, loaded: set[str]) -> list[dict[str, Any]]:
+    from . import laboratory_models
     rows: list[dict[str, Any]] = []
     for exp in db.scalars(select(Experiment).join(Job).where(Job.project_id == project.id, Experiment.state == "succeeded").order_by(Job.created, Experiment.number)):
         model_id = f"{exp.job.name}/{exp.number}"
         status = exp.status or {}
         rows.append({"id": model_id, "alias": exp.alias, "kind": "fine-tuned", "base_model": exp.config["base_model"], "training_type": exp.config["training_type"], "parameters": status.get("total_parameters"), "created": status.get("created"), "status": "up" if (model_id in loaded or exp.alias in loaded) else "down"})
+    rows.extend(laboratory_models.rows(db, project, loaded))
     for entry in catalog_as_dicts():
         rows.append({"id": entry["id"], "alias": entry["id"], "kind": "base", "base_model": entry["id"], "training_type": None, "parameters": int(entry["params_b"] * 1e9), "created": None, "status": "up" if entry["id"] in loaded else "down", "license": entry["license"], "notes": entry["notes"]})
     return rows

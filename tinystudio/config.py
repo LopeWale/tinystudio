@@ -8,6 +8,8 @@ Settings page instead and is stored in the database (see :mod:`tinystudio.servic
 from __future__ import annotations
 
 import os
+import hashlib
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -54,6 +56,15 @@ class Config:
     sync_row_limit: int = 100_000  # dataset-wide operations above this many rows run as worker tasks, not inside the request
 
     @property
+    def cache_dir(self) -> Path:
+        """Disposable runtime files; remote artifacts are authoritative in R2 mode."""
+        return self.data_dir
+
+    @property
+    def artifact_location(self) -> str:
+        return f"r2://{self.r2_bucket}" if self.storage_backend == "r2" else str(self.data_dir / "artifacts")
+
+    @property
     def inference_in_process(self) -> bool:
         """No separate inference service configured: the API loads models itself (single-machine use)."""
         return not self.inference_url
@@ -70,7 +81,17 @@ class Config:
 
 
 def _load() -> Config:
-    data_dir = Path(_env("TINYSTUDIO_DATA_DIR") or Path.home() / ".tinystudio" / "data").expanduser().resolve()
+    backend = _env("TINYSTUDIO_STORAGE_BACKEND", "local")
+    if backend not in {"local", "r2"}:
+        raise ValueError("TINYSTUDIO_STORAGE_BACKEND must be local or r2")
+    if backend == "r2":
+        namespace = hashlib.sha256(f"{_env('R2_ENDPOINT_URL')}/{_env('R2_BUCKET_NAME')}".encode()).hexdigest()[:20]
+        # No durable state is rooted in a user's home directory in R2 mode.
+        # This stable, host-local workspace can be discarded and reconstructed.
+        scratch = Path(tempfile.gettempdir()) / f"tinystudio-{os.getuid()}" / namespace
+        data_dir = Path(_env("TINYSTUDIO_CACHE_DIR") or scratch).expanduser().resolve()
+    else:
+        data_dir = Path(_env("TINYSTUDIO_DATA_DIR") or Path.home() / ".tinystudio" / "data").expanduser().resolve()
     return Config(
         database_url=_env("TINYSTUDIO_DATABASE_URL", DEFAULT_DATABASE_URL),
         redis_url=_env("TINYSTUDIO_REDIS_URL", DEFAULT_REDIS_URL),
@@ -88,7 +109,7 @@ def _load() -> Config:
         dtype=_env("TINYSTUDIO_DTYPE", "auto") or "auto",
         secure_cookies=_env("TINYSTUDIO_SECURE_COOKIES", "0").lower() in ("1", "true", "yes"),
         session_days=int(_env("TINYSTUDIO_SESSION_DAYS", "14")),
-        storage_backend=_env("TINYSTUDIO_STORAGE_BACKEND", "local"),
+        storage_backend=backend,
         r2_endpoint_url=_env("R2_ENDPOINT_URL"),
         r2_bucket=_env("R2_BUCKET_NAME"),
         r2_access_key_id=_env("R2_ACCESS_KEY_ID"),

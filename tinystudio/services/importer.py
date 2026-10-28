@@ -155,9 +155,11 @@ def import_directory(root: Path, name: str | None = None, link: bool = True, pro
                     db.add(ExperimentLog(experiment_id=exp_id, kind="loss", step=int(row.get("step", 0)), payload=row, time=_when(row.get("time"))))
                 for row in _jsonl(exp_dir / "checkpoints.jsonl"):
                     db.add(ExperimentLog(experiment_id=exp_id, kind="checkpoint", step=int(row.get("step", 0)), payload=row, time=_when(row.get("time"))))
-            target = config().data_dir / relative
-            _copy_tree(exp_dir, target, link, progress)
-            # weights_source pointed at the old directory; repoint merged parents under the data directory when they moved along
+                target = config().data_dir / relative
+                _copy_tree(exp_dir, target, link, progress)
+                # Publication errors roll back this experiment instead of
+                # committing a row that promises unavailable remote artifacts.
+                exp.status = jobs_svc.publish_existing_experiment(exp, target)
             summary["experiments"] += 1
             progress(f"experiment {child.name}/{number}: {status.get('state')}")
 

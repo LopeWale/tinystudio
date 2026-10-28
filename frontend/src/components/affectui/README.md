@@ -9,6 +9,7 @@ Local adaptations:
 - Button labels and icons stay visible without entrance animations. Native Safari review exposed persistent invisible content while their AX names and click targets remained available; removing the opacity/blur entrances restored the content. Width morph, loading shimmer and spinner remain. This isolates the affected animation path without claiming an exact browser-engine cause.
 - Filter group disclosure and segmented navigation follow computed RTL direction; filter collapsed panels are hidden from assistive technology, empty filter lists cannot crash keyboard navigation, and spacing uses logical properties. Physical measured geometry remains physical.
 - Segmented scrolling accounts for negative RTL scroll offsets; a selected disabled option never becomes the only tab stop.
+- Segmented selection is painted directly from the same option state as ARIA selection. Static option fills and content-width underlines preserve the public source styles while removing dependence on a moving, measured pill or color transitions. Width morph and overflow behavior remain decorative; focus stays separate from selection.
 - `controls.tsx` exposes controlled FilterMenu and SegmentedControl wrappers: feature controllers own values, queries and persistence. Only focus/disclosure/measurement are local; neither wrapper makes API calls.
 - Studio templates compose slots, not domain data or controllers. Their responsive inspector remains in document order at narrow sizes. Public screen previews inform composition only.
 

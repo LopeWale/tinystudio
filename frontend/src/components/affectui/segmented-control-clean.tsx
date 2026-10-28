@@ -4,7 +4,6 @@
 import { cx } from "../boardui/utils/cx";
 
 import {
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -17,8 +16,8 @@ import {
 /*
  * Segmented Control (Clean) – switch between two to six options, in a single self-contained file.
  * Clean style: "buttons" (the default): separate quiet chips with a hairline, the active one filled light gray;
- * "tray": a compact light-gray track with a white raised pill; "underline": text tabs with a sliding line.
- * The indicator slides to the picked option, short and crisp – its leading edge runs a touch ahead.
+ * "tray": a compact light-gray track with a white raised pill; "underline": text tabs with a selected line.
+ * Selection is painted by the selected option itself, independent of animation and measured offsets.
  * Labels keep one weight, so nothing shifts; when a label or count changes the control morphs to its new size.
  * Arrow keys, Home and End move and select; press the pill and drag it across the options to pick as you go.
  * If it doesn't fit (phones), it scrolls sideways with soft edges and keeps the active option in view.
@@ -48,7 +47,7 @@ export type SegmentedControlProps<T extends string = string> = {
   defaultValue?: T;
   onChange?: (value: T) => void;
   size?: "sm" | "md" | "lg";
-  /** "buttons" = separate chips, the active one filled; "tray" = light track with a raised pill; "underline" = text tabs with a sliding line */
+  /** "buttons" = separate chips, the active one filled; "tray" = light track with a raised pill; "underline" = text tabs with a selected line */
   variant?: "buttons" | "tray" | "underline";
   /** Fill the container with equal segments */
   fullWidth?: boolean;
@@ -99,13 +98,10 @@ export function SegmentedControl<T extends string = string>({
   const root = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const track = useRef<HTMLDivElement>(null);
-  const pill = useRef<HTMLSpanElement>(null);
   // Latest value without waiting for a render – dragging picks several options in one frame
   const latest = useRef(current);
   latest.current = current;
-  const gliding = useRef(false);
-  const glideTimer = useRef(0);
-  const placed = useRef<T | undefined>(undefined);
+  const previousSelection = useRef<T | undefined>(undefined);
   const press = useRef<{
     id: number;
     touch: boolean;
@@ -155,41 +151,6 @@ export function SegmentedControl<T extends string = string>({
     } else els.forEach((b, i) => (b.style.width = `${widths[i]}px`));
   };
 
-  /** Moves the pill (or line) under the active option. Without `animate` it follows at once – unless a glide is still running */
-  const place = (animate: boolean) => {
-    const t = track.current;
-    const p = pill.current;
-    if (!t || !p) return;
-    const btn = t.querySelector<HTMLElement>(
-      ":scope > .ui-segc__opt[data-active]",
-    );
-    if (!btn || !btn.offsetWidth) {
-      p.style.opacity = "0";
-      return;
-    }
-    let x = btn.offsetLeft;
-    let w = btn.offsetWidth;
-    // The line sits under the text only, not under the whole button
-    if (variant === "underline") {
-      const content = btn.firstElementChild as HTMLElement;
-      x += content.offsetLeft;
-      w = content.offsetWidth;
-    }
-    const instant = !p.dataset.ready || (!animate && !gliding.current);
-    const prev = parseFloat(p.style.left) || 0;
-    // The edge facing the target leads, the other one trails – the stretch
-    if (!instant && x !== prev) p.dataset.dir = x > prev ? "right" : "left";
-    if (instant) p.style.transition = "none";
-    p.style.opacity = "1";
-    p.style.left = `${x}px`;
-    p.style.right = `${t.clientWidth - x - w}px`;
-    if (instant) {
-      p.dataset.ready = "1";
-      void p.offsetWidth;
-      p.style.transition = "";
-    }
-  };
-
   /** Soft edges only on the sides that can scroll */
   const fades = () => {
     const s = scroller.current;
@@ -234,7 +195,6 @@ export function SegmentedControl<T extends string = string>({
     if (!t || !s) return;
     const sync = () => {
       measure();
-      place(false);
       fades();
     };
     sync();
@@ -261,28 +221,17 @@ export function SegmentedControl<T extends string = string>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.length, fullWidth, variant, size]);
 
-  // A new value: the pill glides there, focus follows if it was inside, and a scrolling control brings it into view
+  // Selection styles are declarative. Only focus and overflow reveal need effects.
   useLayoutEffect(() => {
-    if (placed.current === current) return;
-    const first = placed.current === undefined;
-    placed.current = current;
-    if (!first) {
-      gliding.current = true;
-      clearTimeout(glideTimer.current);
-      glideTimer.current = window.setTimeout(
-        () => (gliding.current = false),
-        240,
-      );
-    }
-    place(!first);
+    if (previousSelection.current === current) return;
+    const first = previousSelection.current === undefined;
+    previousSelection.current = current;
     reveal(!first);
     const t = track.current;
     if (!first && t && t.contains(document.activeElement))
       buttons()[activeIndex]?.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
-
-  useEffect(() => () => clearTimeout(glideTimer.current), []);
 
   /* ---------- Keyboard ---------- */
 
@@ -423,7 +372,6 @@ export function SegmentedControl<T extends string = string>({
           onPointerCancel={endPress}
           onLostPointerCapture={endPress}
         >
-          <span ref={pill} className="ui-segc__pill" aria-hidden="true" />
           {options.map((o, i) => {
             const active = i === activeIndex;
             // Without a label or icon the value names the option; NaN counts show nothing
@@ -591,10 +539,9 @@ const css = /* css */ `
   overflow: clip;
   border-radius: 6px;
   white-space: nowrap;
-  /* Hover washes are short and crisp, in and out */
-  transition: color 90ms ease, background-color 90ms ease;
+  /* Selection and deselection paint immediately, including when motion is suspended. */
 }
-.ui-segc[data-ready]:not([data-full]) .ui-segc__opt { transition: color 90ms ease, background-color 90ms ease, width 200ms var(--ui-segc-ease); }
+.ui-segc[data-ready]:not([data-full]) .ui-segc__opt { transition: width 200ms var(--ui-segc-ease); }
 .ui-segc__opt[data-active] { color: var(--ui-segc-ink); }
 .ui-segc__opt:disabled { opacity: 0.4; cursor: not-allowed; }
 .ui-segc__opt:focus-visible { outline: 2px solid var(--ui-segc-focus); outline-offset: 1px; }
@@ -602,9 +549,9 @@ const css = /* css */ `
   .ui-segc__opt:not([data-active]):not(:disabled):hover { background-color: var(--ui-segc-wash); }
 }
 
-.ui-segc__content { display: inline-flex; flex: none; align-items: center; gap: 6px; }
+.ui-segc__content { position: relative; display: inline-flex; flex: none; height: 100%; align-items: center; gap: 6px; }
 .ui-segc[data-size="sm"] .ui-segc__content { gap: 5px; }
-.ui-segc__icon { display: grid; place-items: center; width: var(--ui-segc-icon); height: var(--ui-segc-icon); color: color-mix(in srgb, var(--color-text-primary) 44.7%, transparent); transition: color 90ms ease; }
+.ui-segc__icon { display: grid; place-items: center; width: var(--ui-segc-icon); height: var(--ui-segc-icon); color: color-mix(in srgb, var(--color-text-primary) 44.7%, transparent); }
 .ui-segc__opt[data-active] .ui-segc__icon { color: var(--ui-segc-ink); }
 .ui-segc__icon svg, .ui-segc__icon img { width: 100%; height: 100%; }
 /* Images fill the tile without leaving it, whatever their shape */
@@ -643,26 +590,19 @@ const css = /* css */ `
 }
 .ui-segc[data-size="sm"] .ui-segc__badge { height: 16px; padding: 0 5px; font-size: 10px; }
 
-/* The indicator: left and right edges slide separately – the one facing the target leads a touch. Short and crisp */
-.ui-segc__pill {
+/* Each selected option owns its decoration. No moving element can point at an old value. */
+.ui-segc__opt[data-active]::before {
+  content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  right: 100%;
-  z-index: 0;
-  border-radius: 6px;
+  inset: 0;
+  border-radius: inherit;
   background: var(--ui-segc-fill);
-  opacity: 0;
   pointer-events: none;
-  transition: left 200ms var(--ui-segc-ease), right 200ms var(--ui-segc-ease), scale 120ms var(--ui-segc-ease), opacity 120ms ease;
 }
-.ui-segc__pill[data-dir="right"] { transition-duration: 220ms, 160ms, 120ms, 120ms; }
-.ui-segc__pill[data-dir="left"] { transition-duration: 160ms, 220ms, 120ms, 120ms; }
-/* Press feedback: the indicator gives a little while held or dragged */
-.ui-segc[data-pressed]:not([data-variant="underline"]) .ui-segc__pill { scale: 0.97; }
+/* Press feedback is decorative; the selected option remains recognizable. */
+.ui-segc[data-pressed]:not([data-variant="underline"]) .ui-segc__opt[data-active]::before { scale: 0.97; }
 
-/* Buttons (default): separate chips with a hairline; the light-gray fill slides to the active one.
+/* Buttons (default): separate chips with a hairline; the active one has a light-gray fill.
    The control reaches a few px past its box so focus rings are never clipped, and still lines up with its neighbours */
 .ui-segc[data-variant="buttons"] { --ui-segc-pad: var(--ui-segc-ring); margin: calc(var(--ui-segc-ring) * -1); max-width: calc(100% + var(--ui-segc-ring) * 2); }
 .ui-segc[data-variant="buttons"][data-full] { width: calc(100% + var(--ui-segc-ring) * 2); }
@@ -672,7 +612,9 @@ const css = /* css */ `
 /* Tray: a compact light-gray track with a white raised pill */
 .ui-segc[data-variant="tray"] { background: var(--ui-segc-track); }
 .ui-segc[data-variant="tray"] .ui-segc__opt { height: calc(var(--ui-segc-h) - var(--ui-segc-pad) * 2); }
-.ui-segc[data-variant="tray"] .ui-segc__pill { background: var(--ui-segc-card); box-shadow: var(--ui-segc-card-shadow); }
+/* The button owns outer elevation; the clipped decoration retains the inset border. */
+.ui-segc[data-variant="tray"] .ui-segc__opt[data-active] { box-shadow: var(--ui-segc-card-shadow); }
+.ui-segc[data-variant="tray"] .ui-segc__opt[data-active]::before { background: var(--ui-segc-card); box-shadow: var(--ui-segc-card-shadow); }
 
 /* Underline: text tabs on a hairline */
 .ui-segc[data-variant="underline"] { --ui-segc-px: 2px; --ui-segc-gap: 20px; border-radius: 0; box-shadow: inset 0 -0.5px 0 var(--ui-segc-line); }
@@ -681,7 +623,8 @@ const css = /* css */ `
 .ui-segc[data-variant="underline"][data-full] { --ui-segc-px: 10px; }
 .ui-segc[data-variant="underline"] .ui-segc__opt { height: calc(var(--ui-segc-h) + 6px); }
 .ui-segc[data-variant="underline"] .ui-segc__opt:focus-visible { outline-offset: -2px; }
-.ui-segc[data-variant="underline"] .ui-segc__pill { top: auto; height: 1.5px; border-radius: 1.5px 1.5px 0 0; background: var(--ui-segc-ink); }
+.ui-segc[data-variant="underline"] .ui-segc__opt[data-active]::before { content: none; }
+.ui-segc[data-variant="underline"] .ui-segc__opt[data-active] .ui-segc__content::after { content: ""; position: absolute; inset-inline: 0; inset-block-end: 0; height: 1.5px; border-radius: 1.5px 1.5px 0 0; background: var(--ui-segc-ink); pointer-events: none; }
 @media (hover: hover) {
   .ui-segc[data-variant="underline"] .ui-segc__opt:not([data-active]):not(:disabled):hover { background-color: transparent; color: var(--ui-segc-hover-text); }
 }

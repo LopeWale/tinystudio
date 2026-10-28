@@ -118,7 +118,15 @@ def create_from_jsonl(db: Session, project: Project, name: str, source: Path, or
     rows = list(read_jsonl(source))
     if not rows:
         raise ProjectError(f"{source} holds no datapoints")
-    return create_dataset(db, project, name, rows, {"kind": "jsonl", "path": origin_path or str(source)})
+    from tinystudio.services.source_artifacts import SourceArtifacts
+    from tinystudio.storage import storage
+
+    backend = storage()
+    origin = {"kind": "jsonl", "path": origin_path or str(source)}
+    if backend.remote:
+        origin = {"kind": "jsonl", "path": Path(origin_path or source.name).name,
+                  "source_artifact": SourceArtifacts(project.id, backend).retain(source, origin_path)}
+    return create_dataset(db, project, name, rows, origin)
 
 
 def count(db: Session, dataset: Dataset) -> int:

@@ -13,6 +13,7 @@ from tinystudio.core.llm import LLMClient
 from tinystudio.core.project import ProjectError
 from tinystudio.db import session
 from tinystudio.db.models import Project
+from tinystudio.services.source_artifacts import materialized_sources
 
 
 @dataclass
@@ -43,15 +44,16 @@ def dataset_synthetic(ctx: Context) -> dict[str, Any]:
     from tinystudio.services import datasets as datasets_svc
 
     a = ctx.args
-    paths, urls = _paths(a.get("files")), list(a.get("urls") or [])
-    if not paths and not urls:
+    urls = list(a.get("urls") or [])
+    if not a.get("files") and not urls:
         raise ProjectError("pass at least one file or URL")
     count = a.get("count")
-    per_source = max(1, math.ceil(int(count) / (len(paths) + len(urls)))) if count else int(a.get("pairs_per_source", 25))
+    per_source = max(1, math.ceil(int(count) / (len(a.get("files") or []) + len(urls)))) if count else int(a.get("pairs_per_source", 25))
     spec = SynthSpec(**{k: v for k, v in a.items() if k in SynthSpec.__dataclass_fields__ and k != "pairs_per_source"}, pairs_per_source=per_source)
-    sources = load_sources(paths, urls)
+    with materialized_sources(ctx.project_id, a.get("files")) as paths:
+        sources = load_sources(paths, urls)
     rows = synthesize(ctx.client(), sources, spec, progress=ctx.progress)
-    origin = {"kind": "synthetic", "documents": [s.name for s in sources], "pairs_per_source": spec.pairs_per_source, "temperature": spec.temperature, "curate_threshold": spec.curate_threshold}
+    origin = {"kind": "synthetic", "documents": [s.name for s in sources], "source_artifacts": a.get("files") or [], "pairs_per_source": spec.pairs_per_source, "temperature": spec.temperature, "curate_threshold": spec.curate_threshold}
     with session() as db:
         project = ctx.project(db)
         try:
@@ -189,7 +191,8 @@ def repo_add(ctx: Context) -> dict[str, Any]:
     from tinystudio.services import repositories as repositories_svc
 
     a = ctx.args
-    return repositories_svc.add_documents(a["repository_id"], _paths(a.get("paths")), list(a.get("urls") or []), int(a.get("max_chars", 1200)), int(a.get("overlap", 150)), ctx.progress)
+    with materialized_sources(ctx.project_id, a.get("paths")) as paths:
+        return repositories_svc.add_documents(a["repository_id"], paths, list(a.get("urls") or []), int(a.get("max_chars", 1200)), int(a.get("overlap", 150)), ctx.progress)
 
 
 # ---------------------------------------------------------------- interpretability
@@ -274,12 +277,12 @@ def hub_upload(ctx: Context) -> dict[str, Any]:
         project = ctx.project(db)
         if kind == "experiment":
             exp = jobs_svc.find_experiment(db, project, name)
-            exp_dir = jobs_svc.exp_path(exp)
+            exp_dir = jobs_svc.ensure_experiment_artifacts(exp)
             source = exp_dir / "adapter" if (exp_dir / "adapter").exists() else exp_dir / "model"
             if a.get("merge") and (exp_dir / "adapter").exists():
                 tmp = Path(tempfile.mkdtemp(prefix="tinystudio-merged-"))
                 ctx.progress(f"merging adapter into the base model at {tmp}")
-                source = export_merged(exp_dir, tmp, exp.config["base_model"], (exp.status or {}).get("weights_source"))
+                source = export_merged(exp_dir, tmp, exp.config["base_model"], jobs_svc.resolved_weights_source(db, project, exp))
             repo_type, message = "model", f"tinystudio experiment {name}"
         elif kind in ("dataset", "snapshot"):
             tmp = Path(tempfile.mkdtemp(prefix=f"tinystudio-{kind}-"))
