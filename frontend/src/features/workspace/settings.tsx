@@ -1,9 +1,14 @@
 import { SettingsTemplate } from "../../components/studio/templates";
 import "./admin-workspace.css";
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { SettingsSection } from "../../components/studio/settings-section";
+import { Input } from "../../components/boardui/base/input/input";
+import { Checkbox } from "../../components/boardui/base/checkbox/checkbox";
+import "./settings.css";
+import "../../components/studio/form-controls.css";
 import { useStudio, useResource } from "../../app/StudioContext";
-import { Page, Panel, Button, Badge } from "../../components/studio/primitives";
-import { Input, Check, ErrorNotice, useAction } from "../data/common";
+import { Page, Button, Badge } from "../../components/studio/primitives";
+import { ErrorNotice, useAction } from "../data/common";
 export interface SettingSpec {
   key: string;
   label: string;
@@ -56,6 +61,15 @@ const groups = [
   ["hub", "Hugging Face", "Token for gated models and uploads.", "hub"],
 ];
 export function SettingsPage() {
+  const s = useStudio();
+  // A settings session owns drafts and requests for exactly one permission scope.
+  return (
+    <SettingsSession
+      key={JSON.stringify([s.scopeKey, s.user?.id, s.user?.role])}
+    />
+  );
+}
+function SettingsSession() {
   const s = useStudio(),
     admin = s.user?.role === "admin",
     r = useResource<any>(admin ? "/api/settings" : null),
@@ -65,14 +79,20 @@ export function SettingsPage() {
     [clear, C] = useState<Record<string, boolean>>({}),
     [testing, T] = useState<Record<string, boolean>>({}),
     [results, R] = useState<Record<string, any>>({}),
-    [active, A] = useState("");
+    [active, A] = useState(""),
+    [saved, setSaved] = useState<any>(),
+    [refreshError, setRefreshError] = useState("");
+  const mounted = useRef(false),
+    revisions = useRef<Record<string, number>>({}),
+    providerGeneration = useRef(0),
+    savePending = useRef(false);
   useLayoutEffect(() => {
-    D({});
-    C({});
-    R({});
-    A("");
-  }, [r.data, s.scopeKey]);
-  const data = r.data,
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const data = saved || r.data,
     cfg = config.data;
   const changes = settingsChanges(data?.settings || [], draft, clear),
     dirty = Object.keys(changes).length;
@@ -82,43 +102,103 @@ export function SettingsPage() {
       data?.settings.some((spec: SettingSpec) => spec.group === group),
     )?.[0] ||
     "anthropic";
+  const choose = (group: string) => {
+    if (group !== selected) {
+      providerGeneration.current++;
+      T({});
+    }
+    A(group);
+    a.clearError();
+  };
+  const edited = (key: string) => {
+    revisions.current[key] = (revisions.current[key] || 0) + 1;
+  };
   const test = async (what: string) => {
+    const generation = providerGeneration.current;
+    const current = () =>
+      mounted.current && generation === providerGeneration.current;
     T((p) => ({ ...p, [what]: true }));
     try {
       const result = await s.api.post("/api/settings/test", { what });
-      R((p) => ({ ...p, [what]: result }));
+      if (current()) R((p) => ({ ...p, [what]: result }));
     } catch (e: any) {
-      if (e.name !== "AbortError")
+      if (current() && e.name !== "AbortError")
         R((p) => ({ ...p, [what]: { ok: false, detail: e.message } }));
     } finally {
-      T((p) => ({ ...p, [what]: false }));
+      if (current()) T((p) => ({ ...p, [what]: false }));
     }
   };
   const testControl = (what: string) => (
-    <div className="data-actions">
+    <div className="settings-connection-controls">
       <Button size="sm" loading={testing[what]} onClick={() => test(what)}>
         Test {what} connection
       </Button>
-      <span role="status">
+      <span role="status" className="text-body-2-regular text-text-secondary">
         {results[what] &&
           `${results[what].ok ? "ok" : "failed"} · ${results[what].detail}`}
       </span>
     </div>
   );
-  const save = () =>
-    a.run(async () => {
-      if (!dirty) return;
-      await s.api.put("/api/settings", { values: changes });
-      D({});
-      C({});
-      s.toast("Settings saved");
-      window.dispatchEvent(
-        new CustomEvent("tinystudio:assistant-models-changed"),
-      );
-      r.reload();
-      config.reload();
-      await s.refreshOverview();
+  const save = () => {
+    if (!dirty || savePending.current) return;
+    const submittedRevisions = { ...revisions.current };
+    const submittedKeys = Object.keys(changes);
+    savePending.current = true;
+    setRefreshError("");
+    return a.run(async () => {
+      try {
+        let response: any;
+        try {
+          response = await s.api.put("/api/settings", { values: changes });
+        } catch (error) {
+          // useAction owns active-session errors; abandoned operations are silent.
+          if (mounted.current) throw error;
+          return;
+        }
+        if (!mounted.current) return;
+        const unchanged = (key: string) =>
+          revisions.current[key] === submittedRevisions[key];
+        // The PUT returns effective values, including environment fallbacks after clearing.
+        if (response?.settings) setSaved(response);
+        D((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).filter(
+              ([key]) => !submittedKeys.includes(key) || !unchanged(key),
+            ),
+          ),
+        );
+        C((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).filter(
+              ([key]) => !submittedKeys.includes(key) || !unchanged(key),
+            ),
+          ),
+        );
+        R({});
+        providerGeneration.current++;
+        T({});
+        s.toast("Settings saved");
+        window.dispatchEvent(
+          new CustomEvent("tinystudio:assistant-models-changed"),
+        );
+        // Refresh if a nonstandard adapter omits the canonical PUT response.
+        if (!response?.settings) {
+          setSaved(undefined);
+          r.reload();
+        }
+        try {
+          await s.refreshOverview();
+        } catch {
+          if (mounted.current)
+            setRefreshError(
+              "Settings were saved, but the workspace summary could not be refreshed.",
+            );
+        }
+      } finally {
+        savePending.current = false;
+      }
     });
+  };
   return (
     <Page
       className="settings-workspace admin-workspace"
@@ -132,58 +212,45 @@ export function SettingsPage() {
       ) : (
         <>
           <ErrorNotice error={r.error || config.error || a.error} />
-          {!data || !cfg ? (
-            <p role="status">
-              {r.error || config.error
-                ? "Settings could not be loaded."
-                : "Loading settings…"}
-            </p>
-          ) : (
-            <SettingsTemplate
-              label="Deployment configuration"
-              summary={
-                <div className="admin-scope">
-                  <Badge>Deployment settings</Badge>
-                  <span>Administrator access</span>
-                  <span>
-                    {data.updated
-                      ? `Last change ${data.updated}`
-                      : "Provider configuration"}
-                  </span>
-                </div>
-              }
-              inspector={
-                <section className="admin-context">
-                  <h2>Saved configuration</h2>
-                  <p>
-                    Saved secrets stay hidden. Type to replace a value, or
-                    select Clear saved value.
-                  </p>
-                  <p>
-                    Provider drafts stay available when you switch sections.
-                    Save changes applies every edited provider.
-                  </p>
-                  <p>
-                    Connection tests use saved settings. Save a draft before
-                    testing its replacement.
-                  </p>
-                </section>
-              }
+          {refreshError && (
+            <p
+              role="status"
+              className="text-body-2-regular text-text-secondary"
             >
-              <div className="admin-settings-layout">
-                <nav
-                  className="admin-section-nav"
-                  aria-label="Settings sections"
+              {refreshError}
+            </p>
+          )}
+          {!data || !cfg ? (
+            <div className="settings-loading">
+              <p role="status">
+                {r.error || config.error
+                  ? "Settings could not be loaded."
+                  : "Loading settings…"}
+              </p>
+              {(r.error || config.error) && (
+                <Button
+                  onClick={() => {
+                    r.reload();
+                    config.reload();
+                  }}
                 >
+                  Retry
+                </Button>
+              )}
+            </div>
+          ) : (
+            <SettingsTemplate label="Deployment configuration">
+              <div className="settings-layout">
+                <nav className="settings-nav" aria-label="Settings sections">
+                  <p className="text-caption-1-semibold text-text-tertiary">
+                    Providers
+                  </p>
                   {groups.map(([group, title]) => (
                     <Button
                       key={group}
                       variant="ghost"
                       aria-pressed={selected === group}
-                      onClick={() => {
-                        A(group);
-                        a.clearError();
-                      }}
+                      onClick={() => choose(group)}
                     >
                       {title}
                       {data.settings.some(
@@ -193,146 +260,203 @@ export function SettingsPage() {
                       ) && <Badge>Edited</Badge>}
                     </Button>
                   ))}
+                  <p className="text-caption-1-semibold text-text-tertiary">
+                    Deployment
+                  </p>
                   <Button
                     variant="ghost"
                     aria-pressed={selected === "infrastructure"}
-                    onClick={() => A("infrastructure")}
+                    onClick={() => choose("infrastructure")}
                   >
                     Infrastructure
                   </Button>
                 </nav>
-                <div className="admin-settings-editor">
+                <div className="settings-editor">
                   {groups
                     .filter(([group]) => group === selected)
                     .map(([group, title, description, what]) => (
-                      <Panel key={group} title={title}>
-                        <p className="data-muted">{description}</p>
-                        <div className="admin-provider-fields">
-                          {data.settings
-                            .filter((spec: SettingSpec) => spec.group === group)
-                            .map((spec: SettingSpec) => (
-                              <div
-                                key={spec.key}
-                                data-sensitive={
-                                  spec.secret ? "true" : undefined
-                                }
-                              >
-                                <Input
-                                  label={spec.label}
-                                  type={spec.secret ? "password" : "text"}
-                                  autoComplete={
-                                    spec.secret ? "new-password" : "off"
+                      <div key={group}>
+                        <header className="settings-editor-heading">
+                          <h2 className="text-headline-medium text-text-primary">
+                            {title}
+                          </h2>
+                          <p className="text-body-2-regular text-text-tertiary">
+                            {description}
+                          </p>
+                        </header>
+                        <div className="settings-form-surface">
+                          <div className="settings-fields">
+                            {data.settings
+                              .filter(
+                                (spec: SettingSpec) => spec.group === group,
+                              )
+                              .map((spec: SettingSpec) => (
+                                <SettingsSection
+                                  key={spec.key}
+                                  title={spec.label}
+                                  description={
+                                    <>
+                                      <p>
+                                        {spec.source} ·{" "}
+                                        {spec.set ? "configured" : "not set"}
+                                      </p>
+                                      {spec.secret && (
+                                        <p>
+                                          Saved secrets stay hidden. Type to
+                                          replace.
+                                        </p>
+                                      )}
+                                    </>
                                   }
-                                  value={
-                                    draft[spec.key] ??
-                                    (spec.secret ? "" : spec.value || "")
-                                  }
-                                  placeholder={
-                                    spec.secret
-                                      ? spec.set
-                                        ? "Saved; type to replace"
-                                        : "not set"
-                                      : "default"
-                                  }
-                                  onChange={(value: string) =>
-                                    D((p) => ({ ...p, [spec.key]: value }))
-                                  }
-                                />
-                                <p className="data-muted">
-                                  {spec.source} ·{" "}
-                                  {spec.set ? "configured" : "not set"}
-                                </p>
-                                {spec.secret && (
-                                  <Check
-                                    label={`Clear saved ${spec.label}`}
-                                    checked={!!clear[spec.key]}
-                                    onChange={(value: boolean) =>
-                                      C((p) => ({ ...p, [spec.key]: value }))
+                                >
+                                  <div
+                                    data-sensitive={
+                                      spec.secret ? "true" : undefined
                                     }
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          {!data.settings.some(
-                            (spec: SettingSpec) => spec.group === group,
-                          ) && (
-                            <p>
-                              No editable settings reported for this provider.
-                            </p>
-                          )}
+                                    className="settings-field-control"
+                                  >
+                                    <Input
+                                      fieldClassName="studio-form-control"
+                                      size="small"
+                                      aria-label={spec.label}
+                                      type={spec.secret ? "password" : "text"}
+                                      autoComplete={
+                                        spec.secret ? "new-password" : "off"
+                                      }
+                                      value={
+                                        draft[spec.key] ??
+                                        (spec.secret ? "" : spec.value || "")
+                                      }
+                                      placeholder={
+                                        spec.secret
+                                          ? spec.set
+                                            ? "Saved; type to replace"
+                                            : "not set"
+                                          : "default"
+                                      }
+                                      onChange={(value: string) => {
+                                        edited(spec.key);
+                                        D((p) => ({ ...p, [spec.key]: value }));
+                                      }}
+                                    />
+                                    {spec.secret && (
+                                      <Checkbox
+                                        isSelected={!!clear[spec.key]}
+                                        onChange={(value: boolean) => {
+                                          edited(spec.key);
+                                          C((p) => ({
+                                            ...p,
+                                            [spec.key]: value,
+                                          }));
+                                        }}
+                                      >
+                                        Clear saved {spec.label}
+                                      </Checkbox>
+                                    )}
+                                  </div>
+                                </SettingsSection>
+                              ))}
+                            {!data.settings.some(
+                              (spec: SettingSpec) => spec.group === group,
+                            ) && (
+                              <p className="settings-empty">
+                                No editable settings reported for this provider.
+                              </p>
+                            )}
+                            {what && (
+                              <SettingsSection
+                                title="Connection"
+                                description="Tests use saved settings. Save your changes before testing a replacement."
+                              >
+                                {testControl(what)}
+                              </SettingsSection>
+                            )}
+                          </div>
+                          <SaveFooter
+                            dirty={dirty}
+                            busy={a.busy}
+                            onReset={() => {
+                              D({});
+                              C({});
+                              a.clearError();
+                            }}
+                            onSave={save}
+                          />
                         </div>
-                        {what && testControl(what)}
-                      </Panel>
+                        <p className="settings-form-help text-body-2-regular text-text-tertiary">
+                          Save changes applies every edited provider. Clearing a
+                          saved override may restore an environment default.
+                        </p>
+                      </div>
                     ))}
                   {selected === "infrastructure" && (
-                    <Panel title="Infrastructure">
-                      <p className="data-muted">
-                        Read-only deployment connections.
-                      </p>
-                      <div className="admin-infrastructure-list">
-                        {[
-                          [
-                            "database",
-                            "PostgreSQL",
-                            `${cfg.database_url} · ${cfg.database_version || "?"}`,
-                          ],
-                          ["redis", "Redis (queue)", cfg.redis_url],
-                          ["qdrant", "Qdrant (vectors)", cfg.qdrant_url],
-                          [
-                            "inference",
-                            "Inference",
-                            cfg.inference.mode === "remote"
-                              ? cfg.inference.url
-                              : "Models load inside the API process",
-                          ],
-                        ].map(([what, title, detail]) => (
-                          <section key={what}>
-                            <h3>{title}</h3>
-                            <pre>{detail}</pre>
-                            {testControl(what)}
-                          </section>
-                        ))}
-                        <section>
-                          <h3>Compute and data</h3>
-                          <p>
-                            Device/dtype are per host (TINYSTUDIO_DEVICE /
-                            TINYSTUDIO_DTYPE). This API host reports{" "}
-                            {cfg.device} / {cfg.dtype}.
-                          </p>
-                          <p>
-                            Artifacts: <code>{cfg.data_dir}</code>
-                          </p>
-                        </section>
+                    <div>
+                      <header className="settings-editor-heading">
+                        <h2 className="text-headline-medium text-text-primary">
+                          Infrastructure
+                        </h2>
+                        <p className="text-body-2-regular text-text-tertiary">
+                          Read-only deployment connections.
+                        </p>
+                      </header>
+                      <div className="settings-form-surface">
+                        <div className="settings-fields">
+                          {[
+                            [
+                              "database",
+                              "PostgreSQL",
+                              `${cfg.database_url} · ${cfg.database_version || "?"}`,
+                            ],
+                            ["redis", "Redis (queue)", cfg.redis_url],
+                            ["qdrant", "Qdrant (vectors)", cfg.qdrant_url],
+                            [
+                              "inference",
+                              "Inference",
+                              cfg.inference?.mode === "remote"
+                                ? cfg.inference.url
+                                : "Models load inside the API process",
+                            ],
+                          ].map(([what, title, detail]) => (
+                            <SettingsSection
+                              key={what}
+                              title={title}
+                              description={
+                                <code className="settings-endpoint">
+                                  {detail}
+                                </code>
+                              }
+                            >
+                              {testControl(what)}
+                            </SettingsSection>
+                          ))}
+                          <SettingsSection
+                            title="Compute and data"
+                            description="Device and dtype are set per host with TINYSTUDIO_DEVICE / TINYSTUDIO_DTYPE."
+                          >
+                            <p className="text-body-2-regular">
+                              This API host reports {cfg.device} / {cfg.dtype}.
+                            </p>
+                            <p className="text-body-2-regular">
+                              Artifacts:{" "}
+                              <code className="settings-endpoint">
+                                {cfg.data_dir}
+                              </code>
+                            </p>
+                          </SettingsSection>
+                        </div>
+                        <SaveFooter
+                          dirty={dirty}
+                          busy={a.busy}
+                          onReset={() => {
+                            D({});
+                            C({});
+                            a.clearError();
+                          }}
+                          onSave={save}
+                        />
                       </div>
-                    </Panel>
+                    </div>
                   )}
-                  <div className="admin-savebar">
-                    <span role="status">
-                      {dirty
-                        ? `${dirty} unsaved ${dirty === 1 ? "change" : "changes"} across providers`
-                        : "No unsaved changes"}
-                    </span>
-                    <Button
-                      size="sm"
-                      disabled={!dirty || a.busy}
-                      onClick={() => {
-                        D({});
-                        C({});
-                        a.clearError();
-                      }}
-                    >
-                      Reset draft
-                    </Button>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      loading={a.busy}
-                      disabled={!dirty}
-                      onClick={save}
-                    >
-                      Save changes
-                    </Button>
-                  </div>
                 </div>
               </div>
             </SettingsTemplate>
@@ -340,5 +464,43 @@ export function SettingsPage() {
         </>
       )}
     </Page>
+  );
+}
+function SaveFooter({
+  dirty,
+  busy,
+  onReset,
+  onSave,
+}: {
+  dirty: number;
+  busy: boolean;
+  onReset(): void;
+  onSave(): void;
+}) {
+  return (
+    <footer className="settings-save-footer">
+      <span role="status" className="text-body-2-regular text-text-tertiary">
+        {dirty
+          ? `${dirty} unsaved ${dirty === 1 ? "change" : "changes"} across providers`
+          : "No unsaved changes"}
+      </span>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={!dirty || busy}
+        onClick={onReset}
+      >
+        Reset draft
+      </Button>
+      <Button
+        variant="primary"
+        size="sm"
+        loading={busy}
+        disabled={!dirty}
+        onClick={onSave}
+      >
+        Save changes
+      </Button>
+    </footer>
   );
 }

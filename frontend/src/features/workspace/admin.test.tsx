@@ -124,14 +124,21 @@ describe("saved settings semantics", () => {
       listener = vi.fn();
     window.addEventListener("tinystudio:assistant-models-changed", listener);
     wrap(<SettingsPage />, s);
-    await screen.findByLabelText("Provider key");
+    await screen.findByLabelText("Provider key", { selector: "input" });
     expect(screen.getByText("database · configured")).toBeTruthy();
     expect(
-      (screen.getByLabelText("Provider key") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Provider key", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("");
-    fireEvent.change(screen.getByLabelText("Provider key"), {
-      target: { value: "new-key" },
-    });
+    fireEvent.change(
+      screen.getByLabelText("Provider key", { selector: "input" }),
+      {
+        target: { value: "new-key" },
+      },
+    );
     fireEvent.click(
       screen.getByRole("checkbox", { name: "Clear saved Provider key" }),
     );

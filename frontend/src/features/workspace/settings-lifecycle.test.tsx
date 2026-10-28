@@ -14,14 +14,17 @@ import { SettingsPage } from "./settings";
 
 // Make the first edit at the newly loaded field's earliest passive lifecycle.
 // A parent passive reset runs after this child effect and used to erase it.
-vi.mock("../data/common", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../data/common")>();
+vi.mock("../../components/boardui/base/input/input", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("../../components/boardui/base/input/input")
+    >();
   return {
     ...original,
     Input: (props: any) => {
       const edited = useRef(false);
       useEffect(() => {
-        if (props.label === "Provider key" && !edited.current) {
+        if (props["aria-label"] === "Provider key" && !edited.current) {
           edited.current = true;
           props.onChange("first-edit");
         }
@@ -70,7 +73,11 @@ it("keeps the first draft edit after settings arrive", async () => {
   );
   await waitFor(() =>
     expect(
-      (screen.getByLabelText("Provider key") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Provider key", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("first-edit"),
   );
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));

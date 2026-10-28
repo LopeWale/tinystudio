@@ -84,28 +84,49 @@ describe("administration workspaces", () => {
       ),
     };
     mount(<SettingsPage />, context(api));
-    const key = await screen.findByLabelText("Provider key");
-    expect(screen.queryByLabelText("Helper model")).toBeNull();
+    const key = await screen.findByLabelText("Provider key", {
+      selector: "input",
+    });
+    expect(
+      screen.queryByLabelText("Helper model", { selector: "input" }),
+    ).toBeNull();
     fireEvent.change(key, { target: { value: "temporary-secret" } });
     fireEvent.click(screen.getByRole("button", { name: /Helper LLM/ }));
-    expect(screen.queryByLabelText("Provider key")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Helper model"), {
-      target: { value: "replacement" },
-    });
+    expect(
+      screen.queryByLabelText("Provider key", { selector: "input" }),
+    ).toBeNull();
+    fireEvent.change(
+      screen.getByLabelText("Helper model", { selector: "input" }),
+      {
+        target: { value: "replacement" },
+      },
+    );
     fireEvent.click(
       screen.getByRole("button", { name: /OpenAI \(assistant\)/ }),
     );
     expect(
-      (screen.getByLabelText("Provider key") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Provider key", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("temporary-secret");
     expect(screen.getByText("2 unsaved changes across providers")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reset draft" }));
     expect(
-      (screen.getByLabelText("Provider key") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Provider key", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("");
     fireEvent.click(screen.getByRole("button", { name: /Helper LLM/ }));
     expect(
-      (screen.getByLabelText("Helper model") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Helper model", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("original");
     expect(
       (
@@ -126,13 +147,20 @@ describe("administration workspaces", () => {
     };
     const s = context(api);
     mount(<SettingsPage />, s);
-    fireEvent.change(await screen.findByLabelText("Provider key"), {
-      target: { value: "keep-this-draft" },
-    });
+    fireEvent.change(
+      await screen.findByLabelText("Provider key", { selector: "input" }),
+      {
+        target: { value: "keep-this-draft" },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await screen.findByText("Save refused");
     expect(
-      (screen.getByLabelText("Provider key") as HTMLInputElement).value,
+      (
+        screen.getByLabelText("Provider key", {
+          selector: "input",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("keep-this-draft");
     expect(screen.getByText("1 unsaved change across providers")).toBeTruthy();
     expect(JSON.stringify(s.evidence.snapshot())).not.toContain(
