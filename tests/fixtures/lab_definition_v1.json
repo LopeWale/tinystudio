@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "Shared definition contract",
+  "domain": "control",
+  "engine": "system.cosim",
+  "seed": 23,
+  "mode": "offline",
+  "operating_mode": "simulation",
+  "parameters": {},
+  "pipeline": [],
+  "inputs": [],
+  "components": [
+    {"id": "reference", "kind": "signal", "version": "1", "label": "Reference", "position": {"x": 0, "y": 0}, "parameters": {"waveform": "constant", "amplitude": 1}},
+    {"id": "plant", "kind": "plant", "version": "1", "label": "Plant", "position": {"x": 260, "y": 0}, "parameters": {"time_constant": 1, "gain": 1, "initial_state": 0}}
+  ],
+  "connections": [{"id": "drive", "source": "reference", "target": "plant", "port": "input", "kind": "signal", "version": "1"}],
+  "scenarios": [{"id": "nominal", "description": "Pinned contract fixture"}],
+  "clocks": {"step": 0.1, "steps": 20, "hold": "zero_order", "tolerance": 1e-9},
+  "objectives": {"tracking": {"weight": 1}},
+  "learning": null,
+  "retrieval": null,
+  "rewards": {},
+  "evaluators": [],
+  "execution": {"profile": "trusted_native", "backend": "native", "max_seconds": 30, "max_output_bytes": 1048576, "requirements": {}, "grants": {}},
+  "research_overrides": []
+}

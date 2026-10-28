@@ -10,14 +10,15 @@ IMPORT = re.compile(r'''(?m)^(\s*(?:import|export)\b[^\n]*?\bfrom\s*["'])(\.[^"'
 
 def version_frontend(root: Path = ROOT) -> str:
     sources = {path: IMPORT.sub(r"\1\2\3", path.read_text()) for path in sorted(root.rglob("*.js"))}
+    styles = {path: path.read_text() for path in sorted(root.rglob("*.css"))}
     digest = hashlib.sha256()
-    for path, source in sources.items():
+    for path, source in sorted({**sources, **styles}.items()):
         digest.update(path.relative_to(root).as_posix().encode() + b"\0" + source.encode() + b"\0")
     release = digest.hexdigest()[:12]
     for path, source in sources.items():
         path.write_text(IMPORT.sub(lambda match: f"{match[1]}{match[2]}?v={release}{match[3]}", source))
     index = root / "index.html"
-    index.write_text(re.sub(r'studio\.js(?:\?v=[a-f0-9]+)?', 'studio.js?v=' + release, index.read_text()))
+    index.write_text(re.sub(r'studio\.(js|css)(?:\?v=[a-f0-9]+)?', lambda match: f'studio.{match[1]}?v={release}', index.read_text()))
     return release
 
 

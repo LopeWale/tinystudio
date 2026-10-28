@@ -37,3 +37,8 @@ def test_stale_tab_identity_cannot_invoke_model(assistant_api, monkeypatch):
     result=assistant_api.post('/api/assistant/chat',headers={'X-Conversation-Owner':'previous-user'},json={'messages':[{'role':'user','content':'private old account history'}]})
     assert result.status_code==403
     assert result.headers['X-Conversation-Owner-Mismatch']=='true'
+
+@pytest.mark.parametrize('ids', [['bad-id'], ['a'*32]*9, ['x'*33]])
+def test_attachment_ids_are_bounded_at_the_request_schema(assistant_api,ids):
+    response=assistant_api.post('/api/assistant/chat',json={'messages':[{'role':'user','content':'Review'}],'attachment_ids':ids})
+    assert response.status_code==422

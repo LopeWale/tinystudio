@@ -1,0 +1,177 @@
+.catalog-template-gallery {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  margin-block-end: 1.5rem;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 0.75rem;
+  background: var(--color-background-primary-default);
+  min-inline-size: 0;
+}
+.catalog-template-gallery h2,
+.catalog-template-gallery h3 {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-block: 0 0.5rem;
+}
+.catalog-template-gallery p {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  margin-block: 0.5rem;
+}
+.catalog-template-preview {
+  min-inline-size: 0;
+  min-block-size: 21rem;
+  padding-block: 0.5rem;
+}
+.catalog-template-gallery .studio-template__summary {
+  padding-block-end: 0.5rem;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.catalog-template-gallery .catalog-collection-search {
+  flex: 0 1 20rem;
+  max-inline-size: 20rem;
+  min-inline-size: min(10rem, 100%);
+}
+.catalog-template-gallery .data-table tr[data-selected] {
+  background: var(--color-background-secondary-default);
+}
+.catalog-template-gallery dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+.catalog-template-gallery dt {
+  color: var(--color-text-secondary);
+}
+.catalog-template-gallery dd {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+.catalog-template-gallery .ui-fmc {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  margin-block-end: 1rem;
+}
+.catalog-template-gallery .catalog-template-footnote {
+  font-size: 0.75rem;
+  margin-block-start: 1rem;
+}
+.catalog-request-bars,
+.catalog-template-form {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+/* Chart rows own their three-column geometry directly. The source action
+   Button wraps children in a label span, so it is unsuitable for this layout. */
+.catalog-request-bars > button {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 1rem;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-align: start;
+  cursor: pointer;
+}
+.catalog-request-bars > button:hover,
+.catalog-request-bars > button[aria-pressed="true"] {
+  background: var(--color-background-secondary-default);
+}
+.catalog-request-bars > button:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 2px;
+}
+.catalog-request-bars > button > :first-child {
+  white-space: nowrap;
+}
+.catalog-request-bars > button > strong {
+  text-align: end;
+  font-weight: 500;
+}
+.catalog-request-track {
+  display: block;
+  block-size: 0.5rem;
+  background: var(--color-background-secondary-default);
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+.catalog-request-track > span {
+  display: block;
+  block-size: 100%;
+  background: var(--color-chart-1);
+}
+.catalog-request-bars
+  button[aria-pressed="true"]
+  .catalog-request-track
+  > span {
+  background: var(--color-chart-2);
+}
+.catalog-stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.catalog-stage-list button {
+  inline-size: 100%;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.catalog-stage-list button[aria-pressed="true"] {
+  background: var(--color-background-secondary-default);
+}
+.catalog-template-gallery pre {
+  font-size: 0.75rem;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.catalog-template-gallery summary {
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding-block: 0.5rem;
+}
+.catalog-template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: end;
+}
+.catalog-conversation-history {
+  padding-block-end: 1rem;
+  min-block-size: 8rem;
+}
+.catalog-conversation-history article {
+  padding-block: 0.75rem;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.catalog-conversation-history article p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .catalog-template-gallery {
+    padding: 0.75rem;
+  }
+  .catalog-template-gallery button {
+    min-block-size: 2.75rem;
+  }
+  .catalog-template-actions > button {
+    flex: 1 1 100%;
+  }
+}

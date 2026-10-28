@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id":"full","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","clock_origin":"epoch-0","clock_session":"session-A","clock_reset_id":"reset-0"},"qualified":true},
+    {"id":"aliases","scope":"source-B","row":{"clock_domain":"reference","clock_units":"s","clock_epoch":"epoch-0","session_id":"session-A","clock_reset_id":"reset-0"},"qualified":true},
+    {"id":"origin","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","time_origin":"epoch-1","session_id":"session-A","clock_reset_id":"reset-0"},"qualified":true},
+    {"id":"units","scope":"source-A","row":{"clock_domain":"reference","clock_units":"ms","clock_origin":"epoch-0","clock_session":"session-A","clock_reset_id":"reset-0"},"qualified":true},
+    {"id":"session","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","clock_origin":"epoch-0","clock_session":"session-B","clock_reset_id":"reset-0"},"qualified":true},
+    {"id":"reset","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","clock_origin":"epoch-0","clock_session":"session-A","clock_reset_id":"reset-1"},"qualified":true},
+    {"id":"unknown-A","scope":"source-A","row":{"clock_domain":"reference","episode_id":"E"},"qualified":false},
+    {"id":"unknown-A-again","scope":"source-A","row":{"clock_domain":"reference","episode_id":"E"},"qualified":false},
+    {"id":"unknown-B","scope":"source-B","row":{"clock_domain":"reference","episode_id":"E"},"qualified":false},
+    {"id":"number","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","clock_origin":0,"clock_session":1,"clock_reset_id":0},"qualified":true},
+    {"id":"number-alias","scope":"source-B","row":{"clock_domain":"reference","clock_units":"s","clock_epoch":0.0,"session_id":1.0,"clock_reset_id":0},"qualified":true},
+    {"id":"conflicting","scope":"source-A","row":{"clock_domain":"reference","clock_units":"s","clock_origin":"epoch-0","clock_epoch":"epoch-1","clock_session":"session-A"},"invalid":true}
+  ],
+  "compatible_pairs": [["full","aliases"],["unknown-A","unknown-A-again"],["number","number-alias"]],
+  "incompatible_pairs": [["full","origin"],["full","units"],["full","session"],["full","reset"],["unknown-A","unknown-B"]]
+}

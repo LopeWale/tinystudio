@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from tinystudio.api.deps import current_user, forget_secret
-from tinystudio.api.routes import accounts, artifacts, assistant_conversations, auth, data, interp, projects, serving, system, training
+from tinystudio.api.routes import accounts, artifacts, assistant_attachments, assistant_conversations, auth, data, interp, projects, serving, system, training
 from tinystudio.auth import bootstrap_admin, ensure_instance
 from tinystudio.auth.cloudflare import CloudflareAccessMiddleware
 from tinystudio.config import config
@@ -46,12 +46,20 @@ def prepare_database(run_migrations: bool = True) -> None:
     forget_secret()
 
 
-def create_app(run_migrations: bool = True, base_models: list[str] | None = None, auto_up: bool = True, ui: bool = True) -> FastAPI:
+def create_app(run_migrations: bool = True, base_models: list[str] | None = None, auto_up: bool = True,
+               ui: bool = True, ui_directory: Path | None = None, laboratory_dispatch: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
         prepare_database(run_migrations)
         config().data_dir.mkdir(parents=True, exist_ok=True)
-        yield
+        from tinystudio.lab.dispatch import Dispatcher
+        dispatcher = Dispatcher().start() if laboratory_dispatch else None
+        app.state.laboratory_dispatch = dispatcher
+        try:
+            yield
+        finally:
+            if dispatcher:
+                await dispatcher.close()
 
     app = FastAPI(title="tinystudio", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CloudflareAccessMiddleware)
@@ -59,8 +67,11 @@ def create_app(run_migrations: bool = True, base_models: list[str] | None = None
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     def liveness() -> dict[str, bool]:
         return {"ok": True}
-    for module in (system, auth, accounts, assistant_conversations, projects, data, training, serving, interp, artifacts):
+    for module in (system, auth, accounts, assistant_attachments, assistant_conversations, projects, data, training, serving, interp, artifacts):
         app.include_router(module.router)
+    from tinystudio.lab.api import install as install_laboratory
+
+    install_laboratory(app)
     app.include_router(build_v1_router(engine, current_user, base_models, auto_up))
 
     @app.exception_handler(Exception)
@@ -69,13 +80,42 @@ def create_app(run_migrations: bool = True, base_models: list[str] | None = None
         return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
 
     if ui:
+        # Production captures verified bytes in a content-addressed cache during
+        # app construction. Later builds cannot change this process's release.
+        # Explicit ui_directory overrides retain the native/test serving path.
+        if ui_directory is not None:
+            frontend = ui_directory
+            ui_files = StaticFiles(directory=str(frontend), check_dir=False)
+        else:
+            from tinystudio.frontend_release import FrontendReleaseError, FrontendReleaseFiles, retained_frontends, snapshot_frontend
+
+            try:
+                release = snapshot_frontend(UI_DIR / "dist", config().data_dir)
+            except (FrontendReleaseError, OSError) as error:
+                log.error("Frontend release unavailable: %s", error)
+                release = None
+            frontend = release.directory if release else None
+            retained = retained_frontends(config().data_dir / "frontend-releases")
+            ui_files = FrontendReleaseFiles(release, retained)
+
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-        def index() -> str:
-            return (UI_DIR / "index.html").read_text(encoding="utf-8")
+        def index() -> HTMLResponse:
+            source = frontend / "index.html" if frontend else None
+            if source is None or not source.is_file():
+                return HTMLResponse(
+                    '<!doctype html><title>TinyStudio frontend build required</title>'
+                    '<h1>Frontend build required</h1><p>Run <code>npm ci --prefix frontend</code> '
+                    'and <code>npm run build --prefix frontend</code>, then restart TinyStudio.</p>',
+                    status_code=503,
+                )
+            return HTMLResponse(source.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
 
-        @app.get("/favicon.ico", include_in_schema=False)
-        def favicon() -> FileResponse:
-            return FileResponse(UI_DIR / "favicon.svg", media_type="image/svg+xml")
+        @app.get("/favicon.ico", include_in_schema=False, response_model=None)
+        def favicon() -> FileResponse | HTMLResponse:
+            source = frontend / "favicon.svg" if frontend else None
+            if source is None or not source.is_file():
+                return HTMLResponse("", status_code=404)
+            return FileResponse(source, media_type="image/svg+xml")
 
-        app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")
+        app.mount("/ui", ui_files, name="ui")
     return app

@@ -12,7 +12,7 @@ IMPORT = re.compile(r'''(?m)^\s*(?:import|export)\b[^\n]*?\bfrom\s*["']([^"']+)[
 
 
 def test_every_browser_module_is_served_with_javascript_mime():
-    client = TestClient(create_app(run_migrations=False, auto_up=False))
+    client = TestClient(create_app(run_migrations=False, auto_up=False, ui_directory=UI_DIR))
     index = client.get("/")
     assert index.status_code == 200
     entry = re.search(r'<script type="module" src="([^"]+)"', index.text).group(1)
@@ -34,7 +34,7 @@ def test_every_browser_module_is_served_with_javascript_mime():
 
     visit(entry)
     paths = {urlsplit(url).path.removeprefix("/ui/") for url in visited}
-    assert paths == {path.relative_to(UI_DIR).as_posix() for path in UI_DIR.rglob("*.js")}
+    assert paths == {path.relative_to(UI_DIR).as_posix() for path in UI_DIR.rglob("*.js") if "dist" not in path.relative_to(UI_DIR).parts}
     assert {"core/api.js", "core/state.js", "core/router.js", "routes.js", "application.js", "assistant/view.js", "pages/datasets.js"} <= paths
 
 
@@ -45,7 +45,8 @@ def test_release_versioning_is_stable_and_changes_for_dependency_updates(tmp_pat
     spec.loader.exec_module(versioning)
     (tmp_path / "studio.js").write_text('import { render } from "./page.js";\nrender();\n')
     (tmp_path / "page.js").write_text('export const render = () => "first";\n')
-    (tmp_path / "index.html").write_text('<script type="module" src="/ui/studio.js"></script>')
+    (tmp_path / "studio.css").write_text('body { color: black; }\n')
+    (tmp_path / "index.html").write_text('<link rel="stylesheet" href="/ui/studio.css"><script type="module" src="/ui/studio.js"></script>')
     first = versioning.version_frontend(tmp_path)
     assert f'page.js?v={first}' in (tmp_path / "studio.js").read_text()
     assert versioning.version_frontend(tmp_path) == first
@@ -54,3 +55,10 @@ def test_release_versioning_is_stable_and_changes_for_dependency_updates(tmp_pat
     assert second != first
     assert f'page.js?v={second}' in (tmp_path / "studio.js").read_text()
     assert f'studio.js?v={second}' in (tmp_path / "index.html").read_text()
+    assert f'studio.css?v={second}' in (tmp_path / "index.html").read_text()
+    (tmp_path / "studio.css").write_text('body { color: purple; }\n')
+    third = versioning.version_frontend(tmp_path)
+    assert third != second, "a stylesheet-only redesign must invalidate the browser cache"
+    assert f'studio.css?v={third}' in (tmp_path / "index.html").read_text()
+    assert f'page.js?v={third}' in (tmp_path / "studio.js").read_text()
+    assert versioning.version_frontend(tmp_path) == third

@@ -18,6 +18,8 @@ SECRET_KEYS = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "CF_ACCESS_CLIENT_ID"
 
 def load_dotenv(paths: list[Path] | None = None) -> list[Path]:
     """Load KEY=VALUE lines from the first .env files found; returns the files that were read."""
+    if os.environ.get("TINYSTUDIO_SKIP_DOTENV") == "1":
+        return []
     candidates = paths or []
     if not candidates:
         explicit = os.environ.get("TINYSTUDIO_ENV_FILE")

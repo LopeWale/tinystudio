@@ -1,0 +1,300 @@
+@reference "../../styles/globals.css";
+/* Collection routes own their viewport. Inspector identity and checked selection
+   remain separate; the collection scroll anchor survives inspection. */
+.records-page {
+  min-inline-size: 0;
+  gap: 0;
+}
+.records-page .page-heading {
+  align-items: center;
+  margin-block-end: 16px;
+  gap: 16px;
+}
+.records-page .page-heading p {
+  margin-block: 4px 0;
+}
+.records-page .page-heading .data-actions {
+  margin: 0;
+  gap: 8px;
+}
+.records-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 12px;
+  background: var(--color-background-primary-default);
+  border: 1px solid var(--color-border-table);
+  border-block-end: 0;
+  border-start-start-radius: 6px;
+  border-start-end-radius: 6px;
+}
+.records-toolbar > .studio-field {
+  min-inline-size: 160px;
+  margin: 0;
+}
+.records-toolbar > .studio-field:first-child {
+  flex: 1;
+  max-inline-size: 360px;
+}
+.records-count,
+.records-selection {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+  padding-block: 8px;
+}
+.records-selection {
+  margin-inline-start: auto;
+  color: var(--color-accent-700);
+}
+.records-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: max(360px, calc(100dvh - 290px));
+  max-block-size: 760px;
+  border: 1px solid var(--color-border-table);
+  border-radius: 0 0 6px 6px;
+  background: var(--color-background-primary-default);
+  overflow: hidden;
+}
+.records-workbench-inspecting {
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 1fr);
+}
+.records-collection {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+.records-scroll-wrap {
+  position: relative;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  flex: 1;
+}
+.records-scroll {
+  block-size: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.records-scroll:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: -2px;
+}
+.records-scroll-fade {
+  position: absolute;
+  inset: 0 0 auto;
+  block-size: 24px;
+  z-index: 3;
+  pointer-events: none;
+}
+.records-scroll-fade i {
+  position: absolute;
+  inset: 0;
+  opacity: var(--records-scroll, 0);
+}
+.records-scroll-fade i:nth-child(1) {
+  backdrop-filter: blur(1px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.records-scroll-fade i:nth-child(2) {
+  block-size: 16px;
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.records-scroll-fade i:nth-child(3) {
+  background: linear-gradient(
+    to bottom,
+    var(--color-background-primary-default),
+    transparent
+  );
+}
+.records-workbench .data-table {
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.records-page .records-inspected {
+  background: var(--color-accent-50);
+  box-shadow: inset 3px 0 var(--color-accent-600);
+}
+.records-page .data-inspector {
+  position: relative;
+  inset-block-start: auto;
+  max-block-size: none;
+  height: 100%;
+  border: 0;
+  border-inline-start: 1px solid var(--color-border-table);
+  border-radius: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.records-page .data-inspector-heading {
+  position: sticky;
+  inset-block-start: -16px;
+  z-index: 2;
+  background: var(--color-background-primary-default);
+  padding-block: 12px;
+  margin-block-start: -12px;
+}
+.records-page .data-inspector-heading h2 {
+  @apply text-headline-medium;
+}
+.records-page .data-pager {
+  flex: none;
+  padding: 12px;
+  margin: 0;
+  border-block-start: 1px solid var(--color-border-table);
+}
+.records-inspector-navigation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block: 12px;
+}
+.records-inspector-navigation > span {
+  inline-size: 100%;
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+}
+.records-facts {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  @apply text-caption-1-regular;
+  padding-block: 12px;
+  border-block: 1px solid var(--color-border-table);
+}
+.records-facts dt,
+.records-hint {
+  color: var(--color-text-secondary);
+}
+.records-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.records-comparison {
+  border: 1px solid var(--color-border-table);
+  background: var(--color-background-primary-default);
+  border-radius: 0 0 6px 6px;
+  overflow: auto;
+  max-block-size: calc(100dvh - 280px);
+}
+.records-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+.records-section-heading h2 {
+  @apply text-headline-medium;
+  margin: 0;
+}
+.records-section-heading p {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+  margin: 4px 0 0;
+}
+.records-comparison .data-table {
+  border: 0;
+  border-radius: 0;
+}
+.records-comparison .data-table th {
+  min-inline-size: 160px;
+}
+.records-comparison td {
+  min-inline-size: 240px;
+}
+.records-difference td {
+  background: var(--color-background-secondary-default);
+}
+.records-field-note {
+  display: block;
+  color: var(--color-text-secondary);
+  @apply text-caption-2-regular;
+}
+.records-compare-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-inline-size: 480px;
+}
+.records-command-menu {
+  position: relative;
+  @apply text-caption-1-regular;
+}
+.records-command-menu summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 6px;
+}
+.records-command-options {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-end: 0;
+  display: grid;
+  min-inline-size: 180px;
+  padding: 8px;
+  background: var(--color-background-primary-default);
+  border: 1px solid var(--color-border-table);
+  border-radius: 6px;
+  z-index: 5;
+}
+@media (max-width: 850px) {
+  .records-workbench-inspecting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .records-workbench-inspecting > :first-child {
+    display: none;
+  }
+  .records-page .data-inspector {
+    border-inline-start: 0;
+  }
+  .records-toolbar > .studio-field:first-child {
+    max-inline-size: none;
+  }
+  .records-selection {
+    margin-inline-start: 0;
+  }
+  .records-page .page-heading {
+    align-items: start;
+  }
+  .records-workbench {
+    block-size: max(420px, calc(100dvh - 320px));
+  }
+}
+
+.records-page > .data-toolbar {
+  margin-block: 8px 12px;
+}
+.records-page > p {
+  margin-block: 0 12px;
+}
+.records-page .data-inspector-content {
+  padding: 8px 0;
+}
+.records-page .records-workbench .data-table {
+  max-block-size: none;
+}
+.records-workbench[hidden],
+.serving-inspection-frame[hidden] {
+  display: none;
+}
+.records-page .records-local-inspector {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.records-page .records-local-inspector .data-inspector-heading {
+  position: static;
+  margin: 0;
+  padding: 12px 16px;
+  flex: none;
+}
+.records-inspector-body {
+  padding: 8px 16px 16px;
+}

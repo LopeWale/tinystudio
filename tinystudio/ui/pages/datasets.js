@@ -1,6 +1,6 @@
-import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
-import { esc, fmtDate } from "../ui/format.js?v=c96cb305d835";
-import { histogram as drawHistogram } from "../ui/charts.js?v=c96cb305d835";
+import { $, $$ } from "../ui/dom.js?v=c1757fa5eddd";
+import { esc, fmtDate } from "../ui/format.js?v=c1757fa5eddd";
+import { histogram as drawHistogram } from "../ui/charts.js?v=c1757fa5eddd";
 
 // Owns this feature's page rendering and dialogs; application services stay at explicit boundaries.
 export function createDatasetsPages({ state, http, feedback, dialogs, shell, navigation, context, ensureOverview, showTasks, pollTasks, queued, holdTaskRefresh, createJobDialog }) {

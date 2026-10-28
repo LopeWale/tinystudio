@@ -22,7 +22,7 @@ class Element {
 async function fixture(options = {}) {
   const appElement = new Element(), tasksElement = new Element();
   const timers = new Map(), cleared = [], listeners = new Map(), posts = [], requests = [];
-  let timerId = 0, reloads = 0, adds = 0, removes = 0;
+  let timerId = 0, reloads = 0, adds = 0, removes = 0, syncStarts = 0;
   let network = async () => { throw new Error('unexpected network request'); };
   const bodyClasses = new Set();
   const document = {
@@ -36,7 +36,7 @@ async function fixture(options = {}) {
     querySelectorAll() { return []; }, addEventListener() {}, removeEventListener() {},
   };
   const storage = new Map();
-  class ConversationSync { start() {} stop() {} notifySaved() {} requestCheck() {} }
+  class ConversationSync { start() { syncStarts++; } stop() {} notifySaved() {} requestCheck() {} }
   const context = vm.createContext({
     ConversationSync, document, FormData, AbortController, TextEncoder, URLSearchParams, console,
     location: { hash: '#/datasets', reload: () => { reloads++; } },
@@ -49,7 +49,7 @@ async function fixture(options = {}) {
     clearTimeout(id) { cleared.push(id); timers.delete(id); },
     fetch: (...args) => network(...args),
   });
-  const app = await loadFrontend(context);
+  const app = await loadFrontend(context, { transforms: options.transforms || {} });
   const realApi = app.http.api, realBackground = app.http.background;
   app.http.api = async (path) => {
     requests.push(path);
@@ -63,7 +63,7 @@ async function fixture(options = {}) {
   app.http.background = (...args) => app.http.api(...args);
   const errors = [];
   app.feedback.toast = (...args) => errors.push(args);
-  return { app, appElement, tasksElement, timers, cleared, requests, posts, errors, context, realApi, realBackground, setNetwork: (fn) => { network = fn; }, counts: () => ({ reloads, adds, removes }), listeners };
+  return { app, appElement, tasksElement, timers, cleared, requests, posts, errors, context, realApi, realBackground, setNetwork: (fn) => { network = fn; }, counts: () => ({ reloads, adds, removes, syncStarts }), listeners };
 }
 const submitEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 
@@ -289,3 +289,223 @@ test('a delayed successful page response cannot replace sign-in after a backgrou
   assert.equal(f.app.state.pageContext, null); assert.equal(f.app.state.domContext, null);
   assert.deepEqual(f.errors, []); f.app.destroy();
 });
+
+test('startup failure gives a visible retry instead of leaving a blank workspace', async () => {
+  const f = await fixture();
+  f.app.http.api = async () => { throw new Error('offline'); };
+  await f.app.start();
+  assert.match(f.appElement.innerHTML, /Connection unavailable/);
+  const retry = f.appElement.querySelector('.auth-card').querySelector('#reloadApp');
+  assert.equal(typeof retry.onclick, 'function'); retry.onclick();
+  assert.equal(f.counts().reloads, 1); assert.equal(f.counts().adds, 0);
+  f.app.destroy();
+});
+
+test('teardown during startup prevents a late auth response from mounting the app', async () => {
+  const f = await fixture(); let release, mounts = 0;
+  f.app.http.api = () => new Promise(resolve => { release = resolve; });
+  f.app.assistant.mountAssistant = () => { mounts++; };
+  const pending = f.app.start(); f.app.destroy();
+  release({ authenticated: true, user: { id: 8 } }); await pending;
+  assert.equal(mounts, 0); assert.equal(f.app.state.user, null);
+  assert.equal(f.counts().adds, 0); assert.equal(f.timers.size, 0);
+});
+
+
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+const authenticatedStatus = { setup_required: false, authenticated: true, user: { id: 8, role: 'admin' } };
+
+// Disposal is a boundary before state writes and scope-controller starts, not just
+// before routing. Both valid and empty late lists must be harmless.
+for (const projects of [[{ slug: 'late-project', name: 'Late Project' }], []]) {
+  test(`teardown rejects a late ${projects.length ? 'populated' : 'empty'} project response before any startup effect`, async () => {
+    const f = await fixture({ status: authenticatedStatus });
+    const response = deferred(), entered = deferred(); let modals = 0, mounts = 0;
+    const api = f.app.http.api;
+    f.app.http.api = (path) => {
+      if (path !== '/api/projects') return api(path);
+      f.requests.push(path); entered.resolve(); return response.promise;
+    };
+    f.app.dialogs.modal = () => { modals++; throw new Error('disposed application opened a project modal'); };
+    f.app.assistant.mountAssistant = () => { mounts++; };
+    const pending = f.app.start(); await entered.promise;
+    f.app.destroy(); response.resolve(projects); await pending;
+    assert.equal(f.app.state.project, null); assert.equal(f.app.state.projects.length, 0);
+    assert.equal(f.app.state.overview, null); assert.equal(f.counts().syncStarts, 0);
+    assert.equal(modals, 0); assert.equal(mounts, 0); assert.equal(f.counts().adds, 0);
+    assert.equal(f.timers.size, 0); assert.deepEqual(f.requests, ['/api/auth/status', '/api/projects']);
+    assert.deepEqual(f.errors, []); await f.app.start(); assert.equal(f.requests.length, 2);
+  });
+}
+
+test('teardown rejects a delayed startup overview before caching or mounting', async () => {
+  const f = await fixture({ status: authenticatedStatus });
+  const response = deferred(), entered = deferred(); let mounts = 0;
+  const api = f.app.http.api;
+  f.app.http.api = (path) => {
+    if (path !== '/api/overview') return api(path);
+    f.requests.push(path); entered.resolve(); return response.promise;
+  };
+  f.app.assistant.mountAssistant = () => { mounts++; };
+  const pending = f.app.start(); await entered.promise;
+  assert.equal(f.app.state.project, 'project-one'); const starts = f.counts().syncStarts;
+  f.app.destroy(); response.resolve({ project: { name: 'Late overview' }, tree: { datasets: [] } }); await pending;
+  assert.equal(f.app.state.overview, null); assert.equal(f.app.state.project, 'project-one');
+  assert.equal(f.counts().syncStarts, starts); assert.equal(mounts, 0); assert.equal(f.counts().adds, 0);
+  assert.equal(f.timers.size, 0); assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.requests, ['/api/auth/status', '/api/projects', '/api/overview']);
+  await assert.rejects(f.app.overview.ensureOverview(), { name: 'StaleRenderError' });
+});
+
+test('project creation already in flight cannot revive startup after its modal is disposed', async () => {
+  const f = await fixture({ status: authenticatedStatus });
+  const modalOpened = deferred(), created = deferred(); let options, button, closed = false, projectRequests = 0;
+  const api = f.app.http.api;
+  f.app.http.api = (path) => { if (path === '/api/projects') { projectRequests++; return Promise.resolve([]); } return api(path); };
+  f.app.dialogs.modal = (configuration) => {
+    options = configuration;
+    const el = new Element(), name = new Element(), goal = new Element(); button = new Element();
+    name.value = 'new-project'; goal.value = 'Support goal';
+    el.nodes.set('#prName', name); el.nodes.set('#prGoal', goal); el.nodes.set('[data-ok]', button);
+    modalOpened.resolve();
+    return { el, close() { if (!closed) { closed = true; options.onClose('dismiss'); } } };
+  };
+  f.app.dialogs.closeAll = () => { if (options && !closed) { closed = true; options.onClose('navigation'); } };
+  f.app.http.post = () => created.promise;
+  const startup = f.app.start(); await modalOpened.promise;
+  const creating = button.onclick(); f.app.destroy(); await startup;
+  assert.equal(closed, true); assert.equal(f.app.state.project, null);
+  created.resolve({ slug: 'created-too-late' }); await creating;
+  assert.equal(projectRequests, 1, 'late create response must not trigger project selection');
+  assert.equal(f.app.state.project, null); assert.equal(f.app.state.projects.length, 0);
+  assert.equal(f.counts().syncStarts, 0); assert.equal(f.counts().adds, 0); assert.equal(f.timers.size, 0); assert.deepEqual(f.errors, []);
+});
+
+test('ordinary project switches remain available until the project controller is disposed', async () => {
+  const f = await fixture(); f.app.state.user = { id: 8 };
+  const available = [{ slug: 'one' }, { slug: 'two' }]; let requests = 0;
+  f.app.http.api = async (path) => { assert.equal(path, '/api/projects'); requests++; return available; };
+  assert.equal(await f.app.projects.selectProject('one'), 'one');
+  assert.equal(await f.app.projects.selectProject('two'), 'two'); assert.equal(f.app.state.project, 'two');
+  assert.equal(f.context.localStorage.getItem('tinystudio.project'), 'two');
+  assert.equal(f.counts().syncStarts, 2, 'each completed live project change updates the assistant scope');
+  f.app.destroy();
+  await assert.rejects(f.app.projects.selectProject('one'), { name: 'StaleRenderError' });
+  await assert.rejects(f.app.projects.ensureProject(), { name: 'StaleRenderError' });
+  assert.equal(requests, 2); assert.equal(f.app.state.project, 'two'); assert.equal(f.counts().syncStarts, 2);
+});
+
+
+test('controlled fault: the project disposal assertions reject a removed post-await guard', async () => {
+  const f = await fixture({ status: authenticatedStatus, transforms: {
+    'core/projects.js': (source) => {
+      const changed = source.replace('assertActive(); state.projects = next;', 'state.projects = next;');
+      assert.notEqual(changed, source, 'fault must remove the actual post-response boundary'); return changed;
+    },
+  } });
+  const entered = deferred(), response = deferred(), api = f.app.http.api;
+  f.app.http.api = (path) => {
+    if (path !== '/api/projects') return api(path);
+    entered.resolve(); return response.promise;
+  };
+  const pending = f.app.start(); await entered.promise;
+  f.app.destroy(); response.resolve([{ slug: 'violating-late-project' }]); await pending;
+  assert.throws(() => assert.equal(f.app.state.project, null), { code: 'ERR_ASSERTION' });
+});
+
+
+for (const reason of ['escape', 'backdrop', 'dismiss']) {
+  test(`first-project ${reason} dismissal exposes a setup action that recovers without reloading`, async () => {
+    const f = await fixture({ status: authenticatedStatus });
+    const opened = [deferred(), deferred()]; const modals = []; let available = [], mounts = 0, renders = 0;
+    const api = f.app.http.api;
+    f.app.http.api = (path) => {
+      if (path !== '/api/projects') return api(path);
+      f.requests.push(path); return Promise.resolve(available);
+    };
+    f.app.dialogs.modal = (configuration) => {
+      const el = new Element(), name = new Element(), goal = new Element(), button = new Element();
+      name.value = 'support-project'; goal.value = 'Support goal';
+      el.nodes.set('#prName', name); el.nodes.set('#prGoal', goal); el.nodes.set('[data-ok]', button);
+      const m = { configuration, button, closed: false, el, close(closeReason = 'dismiss') {
+        if (!m.closed) { m.closed = true; configuration.onClose(closeReason); }
+      } };
+      modals.push(m); opened[modals.length - 1].resolve(); return m;
+    };
+    f.app.dialogs.closeAll = () => { for (const m of modals) m.close('navigation'); };
+    f.app.http.post = async (path, body) => {
+      assert.equal(path, '/api/projects'); assert.equal(body.name, 'support-project');
+      available = [{ slug: 'support-project', name: 'Support Project' }]; return available[0];
+    };
+    f.app.assistant.mountAssistant = () => { mounts++; };
+    f.app.router.render = async () => { renders++; };
+    const initial = f.app.start(); await opened[0].promise; modals[0].close(reason); await initial;
+    assert.match(f.appElement.innerHTML, /Create your first project/);
+    assert.match(f.appElement.innerHTML, /Create one to open your workspace/);
+    const resume = f.appElement.querySelector('#resumeProjectSetup');
+    assert.equal(typeof resume?.onclick, 'function', 'dismissal must leave an actionable visible page');
+    assert.equal(mounts, 0); assert.equal(renders, 0); assert.equal(f.counts().adds, 0); assert.equal(f.counts().reloads, 0);
+    assert.equal(f.app.state.project, null); assert.equal(f.app.state.overview, null); assert.equal(f.tasksElement.hidden, true);
+    const retry = resume.onclick(); await opened[1].promise;
+    await modals[1].button.onclick(); await retry;
+    assert.equal(f.app.state.project, 'support-project'); assert.equal(f.app.state.overview.project.name, 'Project One');
+    assert.equal(mounts, 1); assert.equal(renders, 1); assert.equal(f.counts().adds, 1); assert.equal(f.counts().reloads, 0);
+    assert.equal(modals[1].closed, true); assert.deepEqual(f.errors, []);
+    assert.deepEqual(f.requests, ['/api/auth/status', '/api/projects', '/api/auth/status', '/api/projects', '/api/projects', '/api/overview', '/api/tasks?include_result=false']);
+    f.app.destroy(); assert.equal(f.timers.size, 0);
+  });
+}
+
+for (const boundary of ['creation', 'selection', 'creation-failure']) {
+  test(`dismissed first-project ${boundary} cannot overwrite a successful setup retry`, async () => {
+    const f = await fixture({ status: authenticatedStatus });
+    const opened = [deferred(), deferred()], oldResult = deferred(), selecting = deferred();
+    const modals = []; let available = [], postCalls = 0, projectReads = 0, heldSelection = false;
+    const api = f.app.http.api;
+    f.app.http.api = path => {
+      if (path === '/api/projects') {
+        projectReads++;
+        if (boundary === 'selection' && postCalls === 1 && !heldSelection) {
+          heldSelection = true; selecting.resolve(); return oldResult.promise;
+        }
+        return Promise.resolve(available);
+      }
+      if (path === '/api/overview') return Promise.resolve({ project: { name: f.app.state.project }, tree: { datasets: [] } });
+      return api(path);
+    };
+    f.app.http.post = async path => {
+      assert.equal(path, '/api/projects'); postCalls++;
+      if (postCalls === 1) return boundary === 'selection' ? { slug: 'dismissed-project' } : oldResult.promise;
+      available = [{ slug: 'retry-project' }]; return available[0];
+    };
+    f.app.dialogs.modal = configuration => {
+      const el = new Element(), name = new Element(), goal = new Element(), button = new Element();
+      name.value = 'test-project'; goal.value = 'Test goal';
+      el.nodes.set('#prName', name); el.nodes.set('#prGoal', goal); el.nodes.set('[data-ok]', button);
+      const m = { el, button, closed: false, close(reason = 'dismiss') { if (!m.closed) { m.closed = true; configuration.onClose(reason); } } };
+      modals.push(m); opened[modals.length - 1].resolve(); return m;
+    };
+    f.app.dialogs.closeAll = () => modals.forEach(m => m.close('navigation'));
+    f.app.assistant.mountAssistant = () => {};
+    f.app.router.render = async () => { f.app.assistant.beginRender('#/datasets'); };
+    const startup = f.app.start(); await opened[0].promise;
+    const oldSubmit = modals[0].button.onclick();
+    await modals[0].button.onclick(); assert.equal(postCalls, 1, 'duplicate submits share one pending creation');
+    if (boundary === 'selection') await selecting.promise;
+    modals[0].close('escape'); await startup;
+    assert.match(f.appElement.innerHTML, /Create your first project/);
+    const retry = f.appElement.querySelector('#resumeProjectSetup').onclick(); await opened[1].promise;
+    await modals[1].button.onclick(); await retry;
+    assert.equal(f.app.state.project, 'retry-project'); assert.equal(f.app.state.overview.project.name, 'retry-project');
+    const capture = f.app.state.pageContext, starts = f.counts().syncStarts, reads = projectReads;
+    assert.ok(capture); assert.equal(capture.project, 'retry-project');
+    if (boundary === 'creation-failure') oldResult.reject(new Error('dismissed request failed'));
+    else oldResult.resolve(boundary === 'selection' ? [{ slug: 'dismissed-project' }, ...available] : { slug: 'dismissed-project' });
+    await oldSubmit;
+    assert.equal(f.app.state.project, 'retry-project'); assert.equal(f.app.state.overview.project.name, 'retry-project');
+    assert.equal(f.app.state.projects.length, 1); assert.equal(f.app.state.projects[0].slug, 'retry-project');
+    assert.equal(f.context.localStorage.getItem('tinystudio.project'), 'retry-project');
+    assert.equal(f.app.state.pageContext, capture); assert.equal(f.counts().syncStarts, starts); assert.equal(projectReads, reads);
+    assert.deepEqual(f.errors, []); assert.equal(postCalls, 2); f.app.destroy();
+  });
+}

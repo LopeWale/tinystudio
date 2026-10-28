@@ -1,0 +1,10 @@
+.upload-field--compact {
+  gap: 8px;
+}
+.upload-field--compact > p,
+.upload-field--compact > ul {
+  margin: 0;
+}
+.upload-field--compact > ul[hidden] {
+  display: none;
+}

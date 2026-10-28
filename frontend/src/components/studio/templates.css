@@ -1,0 +1,55 @@
+/* AffectUI screen composition references; no licensed Pro screen source is copied. */
+.studio-template {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.studio-template__summary {
+  min-inline-size: 0;
+}
+.studio-template__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+.studio-template__layout {
+  display: grid;
+  min-inline-size: 0;
+  gap: 20px;
+}
+.studio-template__layout--inspected {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  align-items: start;
+}
+.studio-template__content {
+  min-inline-size: 0;
+}
+.studio-template__inspector {
+  min-inline-size: 0;
+  padding-inline-start: 20px;
+  border-inline-start: 1px solid var(--color-separator-border);
+}
+.studio-template--settings
+  > .studio-template__layout:not(.studio-template__layout--inspected),
+.studio-template--setup
+  > .studio-template__layout:not(.studio-template__layout--inspected) {
+  max-inline-size: 920px;
+  inline-size: 100%;
+}
+.studio-template--conversation > .studio-template__layout {
+  flex: 1;
+}
+@media (max-width: 960px) {
+  .studio-template__layout--inspected {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .studio-template__inspector {
+    border-inline-start: 0;
+    padding-inline-start: 0;
+    border-block-start: 1px solid var(--color-separator-border);
+    padding-block-start: 16px;
+  }
+}

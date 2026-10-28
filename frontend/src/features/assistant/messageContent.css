@@ -1,0 +1,83 @@
+.assistant-message-plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-block-start: 8px;
+}
+.assistant-message-markdown {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: grid;
+  gap: 12px;
+  margin-block-start: 8px;
+  min-width: 0;
+}
+.assistant-message-markdown :is(p, h3, h4, h5, h6, ul, ol, blockquote, pre) {
+  margin: 0;
+}
+.assistant-message-markdown :is(ul, ol) {
+  padding-inline-start: 24px;
+  display: grid;
+  gap: 8px;
+}
+.assistant-message-markdown ul {
+  list-style: disc;
+}
+.assistant-message-markdown ol {
+  list-style: decimal;
+}
+.assistant-message-markdown blockquote {
+  border-inline-start: 4px solid var(--color-border-button-default);
+  padding-inline-start: 12px;
+  color: var(--color-text-secondary);
+}
+.assistant-message-markdown a {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.assistant-message-markdown a:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 2px;
+}
+.assistant-message-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--color-background-secondary-default);
+  border-radius: 4px;
+  padding-inline: 4px;
+}
+.assistant-message-pre {
+  padding: 12px;
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 12px;
+  background: var(--color-background-secondary-default);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-message-pre code {
+  padding: 0;
+  background: transparent;
+}
+.assistant-message-table {
+  max-width: 100%;
+  border: 1px solid var(--color-border-table);
+  border-radius: 12px;
+}
+.assistant-message-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.assistant-message-table :is(th, td) {
+  padding: 8px 12px;
+  text-align: start;
+  border-block-end: 1px solid var(--color-border-table);
+  vertical-align: top;
+}
+.assistant-message-table th {
+  background: var(--color-background-secondary-default);
+}
+.assistant-message-markdown hr {
+  border: 0;
+  border-block-start: 1px solid var(--color-border-button-default);
+  width: 100%;
+}

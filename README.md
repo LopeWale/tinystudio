@@ -92,11 +92,14 @@ curl -s localhost:8000/v1/chat/completions -H "Authorization: Bearer ts-..." -H 
   -d '{"model":"home/smol-lora/1","messages":[{"role":"user","content":"kitchen lights off"}]}'
 ```
 
-## The web interface (Studio replica)
+## The web interface
 
-`tinystudio serve` serves a replica of Prem Studio's interface at
-http://127.0.0.1:8000/ with the same navigation: Datasets, Finetuning,
-Evaluations (Eval, Metrics), Playground, Models, Traces, API Keys, Stats.
+`tinystudio serve` serves the React interface at http://127.0.0.1:8000/:
+Datasets, Repositories, Finetuning, Evaluations, Metrics, Interpretability,
+Models, Playground, Assistant, Traces and workspace administration. Source
+checkouts must build it first with `npm --prefix frontend ci` followed by
+`npm --prefix frontend run build`. Published wheels include the validated
+production assets. See [frontend development](frontend/README.md).
 
 ```bash
 tinystudio dev                             # API (models in-process) plus one worker, in this terminal
@@ -558,13 +561,26 @@ interpretability capture, comparison, checkpoint and drift paths on a tiny
 random Llama model. Nothing is downloaded: the SmolLM2 tokenizer is read from
 the local Hub cache.
 
-Frontend checks run the shipped ES module graph in isolated browser realms:
+The React interface has its own type, component, lifecycle and distribution
+checks:
+
+```bash
+npm --prefix frontend test
+npm --prefix frontend run typecheck
+npm --prefix frontend run format:check
+npm --prefix frontend run build
+.venv/bin/python scripts/check_react_assets.py
+.venv/bin/python -m pytest -q tests/test_react_frontend_assets.py tests/test_frontend_build_hook.py tests/test_frontend_release.py
+```
+
+The preserved native frontend graph has historical compatibility checks:
 
 ```bash
 node tests/frontend_core.mjs
 node tests/frontend_routing.mjs
 node tests/frontend_pages.cjs
 node tests/frontend_lifecycle.cjs
+node tests/frontend_dialogs.mjs
 node tests/frontend_playground.mjs
 node tests/assistant_frontend.cjs
 node tests/assistant_persistence.cjs
@@ -572,10 +588,12 @@ node --test tests/assistant_sync.cjs tests/conversation_sync.mjs
 .venv/bin/python -m pytest -q tests/test_frontend_assets.py
 ```
 
-After editing frontend JavaScript, run `.venv/bin/python scripts/version_frontend.py`
-to refresh the entry point and dependency cache versions together. There is no
-bundle to generate. See [Frontend architecture](docs/architecture.md#frontend)
-for module boundaries and the browser acceptance scope.
+React source changes require a fresh build. A running API serves an immutable
+snapshot selected at startup, so restart that API after validating the build.
+Old hashed chunks remain available for already-open React tabs. The native
+`scripts/version_frontend.py` applies only to the preserved legacy graph.
+See [Frontend architecture](docs/architecture.md#frontend) for ownership and
+acceptance boundaries.
 
 ## Sources
 

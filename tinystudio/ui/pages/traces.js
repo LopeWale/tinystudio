@@ -1,5 +1,5 @@
-import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
-import { esc, fmtPct, pctClass } from "../ui/format.js?v=c96cb305d835";
+import { $, $$ } from "../ui/dom.js?v=c1757fa5eddd";
+import { esc, fmtPct, pctClass } from "../ui/format.js?v=c1757fa5eddd";
 
 // Owns this feature's page rendering and dialogs; application services stay at explicit boundaries.
 export function createTracesPages({ state, http, feedback, dialogs, shell, context, ensureOverview }) {

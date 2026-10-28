@@ -1,0 +1,324 @@
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 1rem;
+}
+.data-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0.65rem 0;
+}
+.data-table {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.data-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 0.7rem;
+  border-bottom: 1px solid var(--color-border-button-default);
+  vertical-align: top;
+}
+.data-table td {
+  max-width: 32rem;
+  overflow-wrap: anywhere;
+}
+.data-prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  background: var(--color-background-secondary-default);
+  padding: 0.8rem;
+  border-radius: 0.5rem;
+}
+.data-error {
+  color: var(--color-text-error-primary);
+}
+.data-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  padding: 1rem 0;
+}
+.data-pager span {
+  margin-right: auto;
+}
+.data-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.data-histogram {
+  width: 100%;
+  max-height: 180px;
+  color: var(--color-accent-600);
+}
+.data-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  padding: 1rem;
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 0.75rem;
+}
+.data-stack > * + * {
+  margin-top: 1rem;
+}
+.data-muted {
+  opacity: 0.7;
+}
+.data-selected {
+  outline: 2px solid var(--color-accent-600);
+}
+.data-chart {
+  width: 100%;
+  max-height: 340px;
+}
+.data-chart circle[role="button"] {
+  cursor: pointer;
+}
+.data-stat {
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.data-grid input,
+.data-grid select,
+.data-grid textarea {
+  max-width: 100%;
+  width: 100%;
+}
+.data-stack textarea {
+  min-height: 6rem;
+}
+
+/* Data routes use a compact working surface; inspectors retain the selected
+   record beside its source table instead of covering that context with a modal. */
+.data-workspace {
+  min-width: 0;
+}
+.data-workspace .studio-panel {
+  border-radius: 6px;
+  margin-block: 12px;
+  box-shadow: none;
+}
+.data-workspace .data-grid {
+  gap: 12px;
+}
+.data-workspace .data-table th,
+.data-workspace .data-table td {
+  padding-inline: 12px;
+  font-size: 12px;
+}
+.data-workspace .data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-background-secondary-default);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.data-workspace .data-table td {
+  font-variant-numeric: tabular-nums;
+}
+.data-workspace .data-table tbody tr:hover {
+  background: var(--color-background-secondary-hover);
+}
+.data-workspace .data-table td button {
+  margin: 0;
+}
+.data-workspace .data-table {
+  border: 1px solid
+    var(--color-border-table, var(--color-border-button-default));
+  border-radius: 5px;
+}
+.data-workspace .data-prose {
+  font-size: 12px;
+  line-height: 1.65;
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.data-record-link {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+.data-record-link:hover {
+  text-decoration: underline;
+}
+.data-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  margin: 10px 0;
+}
+.data-master-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.data-master,
+.data-inspector,
+.data-repository-detail {
+  min-width: 0;
+}
+.data-inspector {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100dvh - 100px);
+  overflow: auto;
+  border: 1px solid
+    var(--color-border-table, var(--color-border-button-default));
+  background: var(--color-background-primary-default);
+  border-radius: 6px;
+  margin-top: 12px;
+}
+.data-inspector-heading {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--color-background-secondary-default);
+  border-bottom: 1px solid var(--color-border-table);
+  z-index: 2;
+}
+.data-inspector-heading h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+.data-inspector-content {
+  padding: 12px 14px;
+}
+.data-inspector-empty {
+  padding: 20px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.data-inspector-empty h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.data-score-bar {
+  display: block;
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--color-border-table);
+  background: var(--color-background-secondary-default);
+  border-radius: 3px;
+  min-width: 90px;
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-align: right;
+}
+.data-score-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--color-chart-4, var(--color-accent-600));
+  opacity: 0.25;
+  z-index: -1;
+}
+.data-score-bar[aria-pressed="true"] {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 1px;
+}
+.data-score-bar b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.data-repository-workspace {
+  grid-template-columns: minmax(230px, 0.75fr) minmax(0, 1.5fr);
+}
+@media (max-width: 1100px) {
+  .data-master-detail {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
+    gap: 12px;
+  }
+}
+@media (max-width: 850px) {
+  .data-master-detail {
+    display: block;
+  }
+  .data-master-detail.has-selection > .data-master {
+    display: none;
+  }
+  .data-inspector {
+    position: static;
+    max-height: none;
+  }
+  .data-inspector-empty {
+    display: none;
+  }
+  .data-workspace .data-table {
+    max-height: 65dvh;
+    overflow: auto;
+  }
+  .data-workspace .data-actions {
+    gap: 6px;
+  }
+  .data-repository-detail {
+    margin-top: 14px;
+  }
+}
+
+.data-cell-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.5;
+  max-width: 34rem;
+}
+.data-case-prompt {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.6;
+  margin-top: 0;
+}
+.data-reference h3 {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+.data-mobile-back {
+  display: none;
+}
+@media (max-width: 850px) {
+  .data-repository-workspace:not(.has-selection) .data-repository-detail {
+    display: none;
+  }
+  .data-mobile-back {
+    display: block;
+  }
+}
+
+.data-job-detail {
+  min-width: 0;
+}
+@media (max-width: 850px) {
+  .data-job-workspace:not(.has-selection) .data-job-detail {
+    display: none;
+  }
+}
+
+.data-workspace .data-table:not([data-density]) :is(th, td) {
+  padding-block: 9px;
+}

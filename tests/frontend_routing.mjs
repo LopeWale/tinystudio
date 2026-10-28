@@ -132,3 +132,19 @@ test('an older delayed generic failure cannot clobber a successfully rendered de
   assert.deepEqual(h.errors, []);
   assert.equal(h.captures.at(-1).route, '#/models');
 });
+
+test('loading follows the active render and a late older route cannot hide the current indicator', async () => {
+  const location = { hash: '#/first' }, transitions = []; let current, firstDone, secondDone;
+  const router = new HashRouter({ location, window: {},
+    routes: [
+      { pattern: /^#\/first$/, run: () => new Promise(resolve => { firstDone = resolve; }) },
+      { pattern: /^#\/second$/, run: () => new Promise(resolve => { secondDone = resolve; }) },
+    ],
+    beforeRender: () => (current = {}), isCurrent: view => view === current,
+    onError: error => { throw error; }, onLoading: value => transitions.push(value),
+  });
+  const first = router.render(); assert.deepEqual(transitions, [true]);
+  location.hash = '#/second'; const second = router.render();
+  firstDone(); await first; assert.deepEqual(transitions, [true, true]);
+  secondDone(); await second; assert.deepEqual(transitions, [true, true, false]);
+});

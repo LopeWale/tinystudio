@@ -1,7 +1,14 @@
 .venv
 .git
 projects
+# TypeScript checks the canonical shared contract fixture during image build.
+# Re-open only its parent directories; all other test files stay excluded.
 tests
+!tests/
+tests/*
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/lab_definition_v1.json
 docs
 reports
 research_notes
@@ -10,7 +17,17 @@ __pycache__
 .pytest_cache
 .env
 .env.*
-!.env.example
 *.log
 .*.log
 .export-test
+
+# Frontend build inputs contain source and the lockfile, never local secrets,
+# dependencies, editor state or an unverified host-built release.
+**/.env
+**/.env.*
+**/node_modules
+**/.superpowers
+.superpowers
+frontend/.vite
+frontend/coverage
+tinystudio/ui/dist

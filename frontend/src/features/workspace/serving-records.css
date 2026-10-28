@@ -1,0 +1,161 @@
+@reference "../../styles/globals.css";
+.serving-records-page > .workspace-disclosure {
+  margin-block: 12px;
+  border-radius: 6px;
+}
+.serving-records-page .records-workbench table {
+  inline-size: 100%;
+  border-collapse: collapse;
+}
+.serving-records-page table th,
+.serving-records-page table td {
+  text-align: start;
+  vertical-align: top;
+  border-block-end: 1px solid var(--color-border-table);
+  padding: 12px;
+  @apply text-caption-1-regular;
+}
+.serving-records-page table th {
+  position: sticky;
+  inset-block-start: 0;
+  background: var(--color-background-secondary-default);
+  z-index: 1;
+  @apply text-caption-1-semibold;
+}
+.serving-records-page table td {
+  overflow-wrap: anywhere;
+}
+.serving-records-page .records-workbench .actions {
+  justify-content: start;
+  gap: 8px;
+}
+.serving-records-page .serving-inspection-frame .inspection-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: max(400px, calc(100dvh - 300px));
+  max-block-size: 760px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-table);
+  border-radius: 0 0 6px 6px;
+  gap: 0;
+  background: var(--color-background-primary-default);
+}
+.serving-records-page
+  .serving-inspection-frame
+  .inspection-workspace.has-inspector {
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 1fr);
+}
+.serving-records-page .inspection-master {
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: auto;
+}
+.serving-records-page .inspection-master > .studio-panel {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+}
+.serving-records-page .inspection-master > .studio-panel > .panel-heading {
+  padding: 12px;
+}
+.serving-records-page .inspection-master table {
+  inline-size: 100%;
+  border-collapse: collapse;
+}
+.serving-records-page .inspection-master > .studio-panel > .actions {
+  padding: 12px;
+}
+.serving-records-page .serving-inspection-frame .inspection-detail {
+  position: static;
+  max-block-size: none;
+  overflow: auto;
+  border: 0;
+  border-inline-start: 1px solid var(--color-border-table);
+  border-radius: 0;
+  padding: 16px;
+}
+.serving-records-page .trace-selected {
+  background: var(--color-accent-50);
+  box-shadow: inset 3px 0 var(--color-accent-600);
+}
+.serving-records-page .inspection-detail pre {
+  background: var(--color-background-secondary-default);
+  border-radius: 4px;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  @apply text-caption-1-regular;
+}
+@media (max-width: 850px) {
+  .serving-records-page
+    .serving-inspection-frame
+    .inspection-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .serving-records-page
+    .serving-inspection-frame
+    .inspection-workspace.has-inspector
+    .inspection-master {
+    display: none;
+  }
+  .serving-records-page .serving-inspection-frame .inspection-detail {
+    border-inline-start: 0;
+  }
+}
+.serving-records-page .inspection-master {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.serving-records-page .inspection-master .records-scroll > .studio-panel {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+}
+.serving-records-page
+  .inspection-master
+  .records-scroll
+  > .studio-panel
+  > .panel-heading,
+.serving-records-page
+  .inspection-master
+  .records-scroll
+  > .studio-panel
+  > .actions {
+  padding: 12px;
+}
+.serving-records-page .serving-inspection-frame .inspection-detail {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.serving-records-page .inspection-detail > .inspection-label {
+  flex: none;
+}
+
+.serving-records-page .studio-template__toolbar > .records-toolbar {
+  inline-size: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.serving-records-page .studio-template__content {
+  display: grid;
+  gap: 0.75rem;
+}
+.serving-records-page .trace-selected {
+  background: var(--color-background-secondary-default);
+  box-shadow: inset 2px 0 var(--color-text-secondary);
+}
+.serving-records-page table :is(th, td) {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  padding-inline: 0.75rem;
+}
+.serving-records-page table th {
+  background: var(--color-background-primary-default);
+  color: var(--color-text-secondary);
+}

@@ -9,3 +9,8 @@ projects/
 .env.*
 !.env.example
 *.log
+.superpowers/
+frontend/node_modules/
+frontend/.vite/
+frontend/coverage/
+tinystudio/ui/dist/

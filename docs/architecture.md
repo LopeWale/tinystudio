@@ -76,6 +76,87 @@ directory, or private R2 through `docs/cloudflare.md`).
 
 ## Frontend
 
+### React application and runtime boundaries
+
+The production frontend is built from `frontend/src` with React 19, TypeScript,
+Vite, Tailwind CSS 4 and installed free BoardUI source. Hash URLs remain the
+application's route contract. Lazy route groups cover data, workspace and
+interpretability; the shared assistant and session providers stay mounted across
+ordinary navigation. `RouteErrorBoundary` contains render errors below the shell.
+A failed page-code download offers a full reload rather than an ineffective
+retry of React's cached rejected import.
+
+The laboratory is part of this application at `/#/lab`. Its production route
+loads `features/lab/index.tsx`; selected run artifacts flow through `ReplayViews`
+and `TrendWorkbench` to the linked ECharts and Plotly views. Expansion UI belongs
+in these application components and shares the existing shell, project scope,
+uploads and evidence registry. HTML fixtures exercise those same components but
+are not application entry points or deployment artifacts. The normal Vite build
+includes the laboratory and its lazy renderer chunks in `tinystudio/ui/dist`;
+Python packaging and the Docker frontend stage consume that same release.
+
+| Boundary | Ownership and invariant |
+| --- | --- |
+| `app/StudioContext.tsx` | Authentication/setup, selected project, overview and task/confirmation composition. Changing account/project resets route-local state; pending confirmations settle false on navigation or teardown. |
+| `controllers/workspaceScope.ts` (`WorkspaceScope`), `api/client.ts` | Account/project request leases, scoped URLs, same-origin credentials/CSRF and expected conversation owner. Aborted or obsolete responses cannot publish; route changes do not cancel durable conversation saves. External presigned transfers omit application credentials. |
+| `useResource`, `app/evidence.ts` | API-path/workspace reads remain stable across query-only selection. Committed responses and rendered rows/charts carry current route and ownership. Sensitive endpoints and credential fields are omitted/redacted; truncation has explicit omission markers. |
+| `ConversationController`, `ConversationSync` | Database revision/write-queue authority, live/dirty conflict protection, automatic scope-bound polling and tab invalidations, and cleanup of timers/listeners/channels. |
+| `PlaygroundController`, `PlaygroundProvider` | One owned inference stream, cancellation/reset and completed history across navigation; account/project changes reset the session. |
+| `UploadController`, `UploadBatchController` | Real transport progress, cancellation/retry and separate import/index/ready phases. The shared BoardUI-backed `FileUploadField` is used by dataset modes, repositories and assistant attachments. |
+| `EvidenceSelection` | Selected artifact identity, cancellation and synchronous masking of obsolete reads. Plot captions derive measurements from current finite rows. |
+| `ModalStack` | Top-dialog focus/keyboard ownership, background isolation and exact scroll/focus restoration. React Aria portals remain inside the owning dialog. |
+
+These classes own meaningful identity, mutable transitions or resource lifetimes;
+React components present state and pure scientific functions transform records.
+The visual system uses semantic tokens with neutral surfaces and restrained
+selection/status/data colors. BoardUI provenance and original licenses remain in
+`frontend/src/components/boardui/`; `frontend/public/THIRD_PARTY_NOTICES.txt` is
+copied into the production artifact. TinyStudio's custom assistant patterns are
+not represented as BoardUI Pro source.
+
+The Vite development entry uses `/ui/` and proxies `/api` and `/v1` to port 8000.
+It does not import server `.env` files or bypass backend authentication. Its
+`/ui/#/__components` route is development-only and renders outside authenticated
+providers with an explicitly illustrative local runtime that rejects every API
+operation. It shows reusable components without a user/project connection or
+model/transport work; ordinary Vite HTML/module requests still load the page.
+The catalog is excluded from production builds. Commands and component contracts
+are documented in [the frontend guide](../frontend/README.md).
+
+### Built release and Python packaging
+
+`npm run build --prefix frontend` typechecks and emits the production graph into
+`tinystudio/ui/dist/`. The Hatch frontend hook validates an already built graph
+before Python packaging, rejects mutation during packaging and verifies wheel
+asset bytes. It never starts npm or downloads dependencies implicitly. The Python
+service does not require Node at runtime.
+
+At application construction, `tinystudio/frontend_release.py` validates and
+snapshots the built bytes into
+`<TINYSTUDIO_DATA_DIR>/frontend-releases/<content-digest>/`. It checks file hashes,
+rejects symlinks/incomplete inputs and changes observed during copying, and
+publishes staged bytes under a publication lock. A process serves one cached
+release; subsequent builds cannot empty its active asset directory. Restarting
+selects the complete current build. Strict fallback serves retained prior hashed
+assets for old tabs, including when the new index is unavailable; it never
+substitutes an old index/manifest or arbitrary cached file. An unbuilt index
+returns 503 with build instructions.
+
+Retention does not prune caches, choose an automatic rollback or protect against
+privileged modification of the cache itself. Integrity is checked at startup.
+Operators must manage retained disk usage; rollback means selecting a complete
+prior build and restarting. Explicit `ui_directory` overrides preserve native
+compatibility tests. Source/unit and artifact checks do not establish live
+browser, provider, Cloudflare or container acceptance; those need separate
+served-build and user-path evidence.
+
+### Historical native-module compatibility
+
+The following describes the retained native renderer and its compatibility
+tests, not the production React entry. Its original source remains available
+through an explicit `ui_directory` override; production does not silently fall
+back to it when a React build is absent.
+
 The browser uses native ES modules. `ui/studio.js` only boots the application;
 `ui/application.js` is its composition root. Feature modules receive named
 boundaries rather than importing the application or a service locator.
@@ -105,6 +186,15 @@ transport can run without a DOM. The module contracts follow the browser's
 Frontend regression tests use the real module graph with isolated browser
 realms and controlled HTTP/DOM boundaries. Browser acceptance additionally
 checks the served application, including detail routes and live data.
+
+The shell owns grouped workspace navigation, the responsive menu, appearance
+preference, route loading feedback and scrollable table regions. It removes its
+listeners and observer when replaced or destroyed. The modal controller owns
+stacked dialogs, keyboard focus, background isolation and focus restoration;
+navigation closes dialogs through that controller so pending confirmations
+settle as cancelled. The assistant can collapse while selecting page data and
+restore the same draft when the selection completes. JavaScript and CSS share
+one content-derived release version generated by `scripts/version_frontend.py`.
 
 ## Scaling
 

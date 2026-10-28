@@ -36,6 +36,10 @@ autopilot_app = typer.Typer(no_args_is_help=True, help="Continuous fine-tuning c
 for name, sub in (("db", db_app), ("users", users_app), ("projects", projects_app), ("dataset", dataset_app), ("snapshot", snapshot_app), ("job", job_app), ("metric", metric_app), ("eval", eval_app), ("trace", trace_app), ("hub", hub_app), ("repo", repo_app), ("interp", interp_app), ("autopilot", autopilot_app)):
     app.add_typer(sub, name=name)
 
+from tinystudio.lab.cli import register as register_lab
+
+register_lab(app)
+
 console = Console()
 err = Console(stderr=True)
 ProjectOpt = Annotated[str | None, typer.Option("--project", "-p", envvar="TINYSTUDIO_PROJECT", help="Project slug.")]

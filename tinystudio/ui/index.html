@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tinystudio</title>
+<meta name="description" content="Your workspace for datasets, model training, evaluations and interpretability.">
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/ui/studio.css?v=4dbda91726e2">
+<script>try { const appearance = localStorage.getItem("tinystudio.appearance"); if (appearance === "light" || appearance === "dark") document.documentElement.dataset.theme = appearance; } catch (_) {}</script>
+<link rel="stylesheet" href="/ui/studio.css?v=c1757fa5eddd">
 </head>
 <body>
-<div id="app"></div>
+<div id="app" aria-busy="true"><div class="boot-screen" role="status"><div class="boot-card"><h1>tinystudio</h1><p>Opening your workspace…</p><div class="skeleton" aria-hidden="true"></div><div class="skeleton" aria-hidden="true"></div><noscript>Enable JavaScript to use TinyStudio.</noscript></div></div></div>
 <div id="tasks" class="tasks panel" hidden></div>
 <div id="assist"></div>
-<script type="module" src="/ui/studio.js?v=c96cb305d835"></script>
+<script type="module" src="/ui/studio.js?v=c1757fa5eddd"></script>
 </body>
 </html>

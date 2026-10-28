@@ -1,0 +1,22 @@
+[
+  {
+    "file": "button-clean.tsx",
+    "source": "https://raw.githubusercontent.com/flohoeller/affectui/main/components/button-clean.tsx",
+    "upstream_sha256": "b5863cfe612e6db5c0f2f21cc3d84df3cb4c0a1ff23534c1b8fe6ddb843c53d3"
+  },
+  {
+    "file": "filter-menu-clean.tsx",
+    "source": "https://raw.githubusercontent.com/flohoeller/affectui/main/components/filter-menu-clean.tsx",
+    "upstream_sha256": "77d27bd862251f0f626ea733cfea2f588e677a8fde6c20a0dcdf118c83ad8769"
+  },
+  {
+    "file": "segmented-control-clean.tsx",
+    "source": "https://raw.githubusercontent.com/flohoeller/affectui/main/components/segmented-control-clean.tsx",
+    "upstream_sha256": "1d0e5d145b9364dd1e1c52e29a30a50eed92245d26add9b1b4c991511a9dddc3"
+  },
+  {
+    "file": "LICENSE",
+    "source": "https://raw.githubusercontent.com/flohoeller/affectui/main/LICENSE",
+    "upstream_sha256": "3b02a57acfb985557a9a8244a0e84d8765c10ad4892ab6345c66fd688d998a14"
+  }
+]

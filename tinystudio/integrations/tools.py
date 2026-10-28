@@ -23,7 +23,7 @@ class StudioError(RuntimeError):
     """An expected failure reported back to the assistant as a tool error."""
 
 
-PROJECT_PREFIXES = ("/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog", "/api/artifacts")
+PROJECT_PREFIXES = ("/api/overview", "/api/datasets", "/api/datapoints", "/api/augment", "/api/snapshots", "/api/recommend", "/api/jobs", "/api/metrics", "/api/evals", "/api/traces", "/api/stats", "/api/models", "/api/playground", "/api/repositories", "/api/interp", "/api/autopilot", "/api/catalog", "/api/artifacts", "/api/lab")
 
 
 def scoped(path: str, project: str | None) -> str:
@@ -407,4 +407,6 @@ def tool_specs(studio: Studio) -> list[ToolSpec]:
     specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, long_running=True, destructive=f is run_autopilot_cycle) for f in long_running]
     specs += [ToolSpec(f.__name__, (f.__doc__ or "").strip(), f, destructive=f is clean_dataset) for f in mutating]
     specs.append(ToolSpec("delete", (delete.__doc__ or "").strip(), delete, destructive=True))
-    return specs
+    from tinystudio.lab.tools import tool_specs as lab_tool_specs
+
+    return specs + lab_tool_specs(studio, ToolSpec)

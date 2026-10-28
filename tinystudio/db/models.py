@@ -358,3 +358,21 @@ class AssistantConversation(Base):
     provider: Mapped[str] = mapped_column(String(80))
     model: Mapped[str] = mapped_column(String(300))
     updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AssistantAttachment(Base):
+    __tablename__ = 'assistant_attachments'
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    storage_key: Mapped[str] = mapped_column(String(500))
+    extracted_text: Mapped[str] = mapped_column(Text)
+    extracted_chars: Mapped[int] = mapped_column(Integer)
+
+
+# Register additive laboratory tables in the same metadata used by migrations
+# and existing maintenance/test consumers. The laboratory reuses Base above.
+from tinystudio.lab import models as _lab_models  # noqa: E402,F401

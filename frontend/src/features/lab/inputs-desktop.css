@@ -1,0 +1,79 @@
+/* A source chooser beside its collection; neither column is a generic inspector. */
+.lab-page .lab-inputs {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.5fr);
+  gap: 24px;
+  align-items: start;
+}
+.lab-input-sources,
+.lab-input-library {
+  display: grid;
+  gap: 16px;
+  min-inline-size: 0;
+}
+.lab-input-sources {
+  padding-inline-end: 24px;
+  border-inline-end: 1px solid var(--color-separator-border);
+}
+.lab-input-heading h3,
+.lab-input-heading p,
+.lab-input-note {
+  margin: 0;
+}
+.lab-input-heading h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.lab-input-heading p,
+.lab-input-note,
+.lab-input-heading h3 span,
+.lab-input-checksum {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.lab-input-heading p {
+  margin-block-start: 4px;
+}
+.lab-input-library .empty-state {
+  text-align: start;
+  padding: 24px 0;
+}
+.lab-input-checksum summary {
+  cursor: pointer;
+}
+.lab-input-checksum code {
+  display: block;
+  padding-block: 8px;
+}
+.lab-page .lab-input-library .lab-input-row {
+  margin: 0;
+  padding: 16px 0;
+  gap: 12px;
+}
+.lab-input-row > div:first-child {
+  min-inline-size: 0;
+}
+.lab-input-library .lab-input-binding {
+  inline-size: 100%;
+}
+.lab-input-binding > * {
+  flex: 1 1 140px;
+}
+.lab-input-sources > .studio-button {
+  justify-self: start;
+}
+@media (max-width: 800px) {
+  .lab-page .lab-inputs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lab-input-sources {
+    padding-inline-end: 0;
+    border-inline-end: 0;
+    padding-block-end: 24px;
+    border-block-end: 1px solid var(--color-separator-border);
+  }
+}

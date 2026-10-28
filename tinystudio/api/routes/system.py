@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from tinystudio import db as db_mod
@@ -65,7 +65,9 @@ class AssistantBody(BaseModel):
     context: dict[str, Any] | None = None
     with_ui: bool = True
     project: str | None = None
-    conversation_revision: int | None = None
+    conversation_revision: int | None = Field(default=None, ge=0)
+    attachment_ids: list[Annotated[str, Field(min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")]] = Field(default_factory=list, max_length=8)
+    web_search: bool = False
 
 
 @router.get("/health")
@@ -301,27 +303,77 @@ def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(
         raise HTTPException(status_code=400, detail="the last message must come from the user")
     if body.provider not in ("anthropic", "openai"):
         raise HTTPException(status_code=400, detail="provider must be anthropic or openai")
-    project = wrap(lambda: projects_svc.get_project(db, body.project)) if body.project else None
-    persistence = None
-    if body.conversation_revision is not None:
-        from tinystudio.integrations.conversation_turn import ConversationTurn
-        from tinystudio.services import assistant_conversations as conversations
+    from tinystudio.integrations.conversation_admission import ConversationLease, TurnInProgress, claim_revision
+    from tinystudio.integrations.conversation_turn import ConversationTurn
+    from tinystudio.services import assistant_conversations as conversations
 
-        if project is None:
-            raise HTTPException(status_code=400, detail="a saved conversation requires a project")
-        snapshot = conversations.load(db, project.id, principal.user.id)
-        if snapshot["revision"] != body.conversation_revision or not snapshot["history"] or snapshot["history"][-1]["role"] != "user" or snapshot["history"][-1]["content"] != body.messages[-1].get("content"):
-            raise HTTPException(status_code=409, detail="conversation changed; reload before sending")
-        persistence = ConversationTurn(project.id, principal.user.id, snapshot, body.provider, body.model)
-    settings_svc.apply(db)
-    # the assistant calls this API back as the signed-in user, over the loopback address, for one hour at most
-    self_url = os.environ.get("TINYSTUDIO_SELF_URL") or f"http://127.0.0.1:{config().port}"
-    studio = Studio(self_url, body.project, issue_service_token(instance_secret(db), principal.user.id),
-                    cf_access_client_id="", cf_access_client_secret="",
-                    access_assertion=getattr(request.state, "cloudflare_assertion", None))
+    project = wrap(lambda: projects_svc.get_project(db, body.project)) if body.project else None
+    lease = None
+    snapshot = None
+    context = dict(body.context or {})
+    context.pop("attachments", None)
+    try:
+        if body.attachment_ids and (project is None or body.conversation_revision is None):
+            raise HTTPException(status_code=400, detail="attachments require a saved project conversation")
+        if body.conversation_revision is not None:
+            if project is None:
+                raise HTTPException(status_code=400, detail="a saved conversation requires a project")
+            try:
+                lease = ConversationLease.acquire(project.id, principal.user.id)
+            except TurnInProgress as cause:
+                raise HTTPException(status_code=409, detail=str(cause)) from cause
+            snapshot = conversations.load(db, project.id, principal.user.id)
+            if snapshot["revision"] != body.conversation_revision or not snapshot["history"] or snapshot["history"][-1]["role"] != "user" or snapshot["history"][-1]["content"] != body.messages[-1].get("content"):
+                raise HTTPException(status_code=409, detail="conversation changed; reload before sending")
+            from tinystudio.services import assistant_attachments as attachments
+            saved_ids = [item["id"] for item in snapshot["history"][-1].get("attachments", [])]
+            if saved_ids != body.attachment_ids:
+                raise HTTPException(status_code=409, detail="attachment selection changed; reload the saved conversation before sending")
+            try:
+                records = attachments.context(db, project.id, principal.user.id, body.attachment_ids)
+            except ValueError as cause:
+                raise HTTPException(status_code=400, detail=str(cause)) from cause
+            if records:
+                context["attachments"] = records
+        if len(json.dumps({"messages": body.messages, "context": context}, ensure_ascii=False).encode("utf-8")) > 256000:
+            raise HTTPException(status_code=413, detail="conversation, page evidence and extracted attachments exceed 256000 bytes; send fewer files or narrower evidence")
+        settings_svc.apply(db)
+        self_url = os.environ.get("TINYSTUDIO_SELF_URL") or f"http://127.0.0.1:{config().port}"
+        studio = Studio(self_url, body.project, issue_service_token(instance_secret(db), principal.user.id),
+                        cf_access_client_id="", cf_access_client_secret="",
+                        access_assertion=getattr(request.state, "cloudflare_assertion", None))
+        persistence = None
+        if snapshot is not None:
+            try:
+                # Commit admission independently before any provider/tool can run.
+                # Preserve the entire history; its new revision fences retries
+                # even if the lease connection/process disappears mid-turn.
+                claimed = claim_revision(project.id, principal.user.id, snapshot, body.provider, body.model)
+            except conversations.ConversationConflict as cause:
+                raise HTTPException(status_code=409, detail=str(cause)) from cause
+            persistence = ConversationTurn(project.id, principal.user.id, claimed, body.provider, body.model)
+        stream = stream_events(body.provider, studio, body.messages, body.allow_destructive, body.model,
+            context or None, body.with_ui, owner_id=principal.user.id, on_complete=persistence,
+            web_search=body.web_search, on_finished=lease.close if lease else None,
+            admitted_revision=claimed["revision"] if snapshot is not None else None)
+    except BaseException:
+        if lease:
+            lease.close()
+        raise
 
     def events() -> Iterator[str]:
-        for event in stream_events(body.provider, studio, body.messages, body.allow_destructive, body.model, body.context, body.with_ui, owner_id=principal.user.id, on_complete=persistence):
-            yield f"data: {json.dumps(event, default=str)}\n\n"
+        completed = False
+        try:
+            for event in stream:
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+            completed = True
+        finally:
+            close = getattr(stream, "close", None)
+            if close:
+                close()
+            # Normal exhaustion also supports synchronous provider adapters.
+            # Disconnect closes UI waits but leaves the worker's lease intact.
+            if completed and lease:
+                lease.close()
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})

@@ -1,0 +1,7 @@
+node_modules/
+src/components/boardui/
+coverage/
+# Upstream BoardUI styles are retained as installed, with their provenance.
+src/styles/globals.css
+src/styles/theme.css
+src/styles/typography.css

@@ -1,5 +1,5 @@
-import { $ } from "./dom.js?v=c96cb305d835";
-import { esc } from "./format.js?v=c96cb305d835";
+import { $ } from "./dom.js?v=c1757fa5eddd";
+import { esc } from "./format.js?v=c1757fa5eddd";
 
 export const ICONS = {
   datasets: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
@@ -20,7 +20,7 @@ const APPEARANCE_KEY = "tinystudio.appearance";
 const PAGE_NAMES = { datasets: "Datasets", repositories: "Repositories", finetuning: "Finetuning", evaluations: "Evaluations", metrics: "Metrics", playground: "Playground", assistant: "Assistant", interp: "Interpretability", models: "Models", traces: "Traces", keys: "API Keys", stats: "Stats", settings: "Settings", users: "Users", projects: "Projects" };
 
 export function createShell({ state, feedback, dialogs, http, navigation, selectProject, newProjectModal }) {
-  let detach = () => {}, observer = null, preferred = "system";
+  let detach = () => {}, observer = null, preferred = "system", loading = false;
   try { preferred = localStorage.getItem(APPEARANCE_KEY) || "system"; } catch (_) {}
   function applyAppearance(value) {
     preferred = ["light", "dark"].includes(value) ? value : "system";
@@ -45,7 +45,8 @@ export function createShell({ state, feedback, dialogs, http, navigation, select
       <div class="foot"><div class="avatar" aria-hidden="true">${esc((state.user?.name || state.user?.email || "t")[0].toUpperCase())}</div><div class="account-info"><div class="account-name">${esc(state.user?.name || state.user?.email || "")}</div><div class="account-role">${esc(state.user?.role || "")} · <a href="#" id="signOut">sign out</a></div></div></div>
     </aside>`;
   }
-  function setLoading(loading) {
+  function setLoading(value) {
+    loading = value;
     const app = $("#app"), progress = $("#routeProgress");
     app?.setAttribute?.("aria-busy", String(loading));
     if (progress) progress.hidden = !loading;
@@ -58,17 +59,18 @@ export function createShell({ state, feedback, dialogs, http, navigation, select
         table.parentElement.insertBefore(region, table); region.appendChild(table);
       }
       region.setAttribute("role", "region");
-      region.setAttribute("aria-label", table.querySelector("caption")?.textContent?.trim() || "Data table");
+      region.setAttribute("aria-label", table.querySelector("caption")?.textContent?.trim() || table.getAttribute("aria-label") || "Data table");
       region.setAttribute("tabindex", "0");
     }
   }
   function destroy() { detach(); detach = () => {}; observer?.disconnect(); observer = null; setLoading(false); }
   function layout(active, contentHtml, crumbs = []) {
-    destroy();
+    detach(); detach = () => {}; observer?.disconnect(); observer = null;
     const app = $("#app"), title = PAGE_NAMES[active] || active;
     const trail = crumbs.length ? crumbs : [{ label: title }];
     app.innerHTML = `<a class="skip-link" href="#mainContent" id="skipContent">Skip to content</a>${sidebar(active)}<button type="button" class="nav-backdrop" id="navBackdrop" data-open="false" tabindex="-1" aria-hidden="true"></button><div class="main"><header class="topbar"><button type="button" class="btn icon nav-toggle" id="navToggle" aria-label="Open navigation" aria-controls="workspaceNav" aria-expanded="false">☰</button><nav class="breadcrumbs" aria-label="Breadcrumb">${trail.map((c, i) => `${i ? '<span class="sep" aria-hidden="true">/</span>' : ""}${c.href ? `<a href="${c.href}">${esc(c.label)}</a>` : `<span aria-current="page">${esc(c.label)}</span>`}`).join("")}</nav><span class="spacer"></span><span class="workspace-label">${esc(state.overview?.project?.name || state.project || "Workspace")}</span><label class="sr-only" for="appearanceSelect">Appearance</label><select id="appearanceSelect" class="appearance-control" title="Appearance"><option value="system" ${preferred === "system" ? "selected" : ""}>System</option><option value="light" ${preferred === "light" ? "selected" : ""}>Light</option><option value="dark" ${preferred === "dark" ? "selected" : ""}>Dark</option></select><span id="llmStatus"></span></header><div class="route-progress" id="routeProgress" role="status" aria-label="Loading page" hidden></div><main class="content" id="mainContent" tabindex="-1">${contentHtml}</main></div>`;
     state.domContext = state.pageContext;
+    setLoading(loading);
     let open = false;
     const menu = $("#workspaceNav", app), toggle = $("#navToggle", app), backdrop = $("#navBackdrop", app), content = $(".content", app);
     function setNav(value, restore = false) {
@@ -83,6 +85,7 @@ export function createShell({ state, feedback, dialogs, http, navigation, select
     if (backdrop) backdrop.onclick = () => setNav(false, true);
     const onKeyDown = (event) => {
       if (!open) return;
+      if (globalThis.matchMedia && !matchMedia("(max-width: 1000px)").matches) { setNav(false); return; }
       if (event.key === "Escape") { event.preventDefault(); setNav(false, true); }
       if (event.key === "Tab") {
         const focusable = [...menu.querySelectorAll('a[href], button, select')].filter((el) => !el.disabled && el.getClientRects().length);

@@ -13,15 +13,28 @@ from tinystudio.integrations import hub
 from tinystudio.integrations.tools import Studio, StudioError, tool_specs
 
 
+LAB_TOOLS = {
+    "lab_catalog", "lab_definitions", "lab_define", "lab_preflight", "lab_submit",
+    "lab_run", "lab_events", "lab_cancel", "lab_retry", "lab_targets",
+    "lab_export", "lab_operation", "lab_import", "lab_recover",
+    "lab_operations", "lab_operation_cancel", "lab_operation_retry",
+    "lab_promote_dataset", "lab_repository_input",
+}
+
+
 def test_tool_catalog_shape():
     specs = tool_specs(Studio("http://127.0.0.1:1", None))
     names = [s.name for s in specs]
-    assert len(names) == len(set(names)) == 55
+    assert len(names) == len(set(names)) == 55 + len(LAB_TOOLS)
+    assert {name for name in names if name.startswith("lab_")} == LAB_TOOLS
     assert {"get_overview", "create_synthetic_dataset", "start_job", "run_eval", "chat", "delete", "search_hub_models", "download_hub_model", "clean_dataset", "run_autopilot_cycle", "get_autopilot_history", "capture_activations", "get_neuron", "test_neurons", "compare_models"} <= set(names)
     # Cleaning drops dataset rows; autopilot invokes that cleaning phase.
     assert {s.name for s in specs if s.destructive} == {"delete", "clean_dataset", "run_autopilot_cycle"}
     assert all(s.description for s in specs)
-    assert sum(s.long_running for s in specs) == 14 and sum(s.read_only for s in specs) == 25
+    legacy = [s for s in specs if s.name not in LAB_TOOLS]
+    assert sum(s.long_running for s in legacy) == 14 and sum(s.read_only for s in legacy) == 25
+    assert {s.name for s in specs if s.name in LAB_TOOLS and s.read_only} == {"lab_catalog", "lab_definitions", "lab_preflight", "lab_run", "lab_events", "lab_targets", "lab_operation", "lab_operations"}
+    assert {s.name for s in specs if s.name in LAB_TOOLS and s.long_running} == {"lab_submit", "lab_retry", "lab_export", "lab_import", "lab_operation_retry", "lab_promote_dataset", "lab_repository_input"}
 
 
 def test_studio_without_server_raises_clean_error():
@@ -88,10 +101,18 @@ def test_mcp_server_registers_every_tool():
     server = build_server(Studio("http://127.0.0.1:1", None))
     tools = asyncio.run(server.list_tools())
     names = {t.name for t in tools}
-    assert len(names) == 55 and "delete" in names and "get_overview" in names
+    assert len(names) == 55 + len(LAB_TOOLS) and "delete" in names and "get_overview" in names
+    assert {name for name in names if name.startswith("lab_")} == LAB_TOOLS
     delete = next(t for t in tools if t.name == "delete")
     assert delete.annotations.destructive_hint is True
     assert next(t for t in tools if t.name == "get_overview").annotations.read_only_hint is True
+    # C capture and promotion enqueue durable mutations without deleting evidence.
+    # They must be advertised to MCP clients as mutating background operations.
+    for name in ("lab_repository_input", "lab_promote_dataset"):
+        tool = next(t for t in tools if t.name == name)
+        assert tool.annotations.read_only_hint is False
+        assert tool.annotations.destructive_hint is False
+        assert tool.annotations.title == "Starts a background task"
 
 
 def test_json_tool_hardening_against_bad_arguments():

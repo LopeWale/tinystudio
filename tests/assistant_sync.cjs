@@ -35,14 +35,20 @@ class Element extends Events {
     super(); this.id = id; this.document = document; this.children = new Map(); this.value = ''; this.textContent = '';
     this.disabled = false; this.hidden = false; this.scrollTop = 0; this.scrollHeight = 1200; this.clientHeight = 300;
     this.selectionStart = 0; this.selectionEnd = 0; this.writes = 0; this.dataset = {};
-    this.classList = { toggle() {}, add() {}, remove() {} };
+    const classes = new Set();
+    this.classList = { contains: value => classes.has(value), add: value => classes.add(value), remove: value => classes.delete(value), toggle(value,on) { on ??= !classes.has(value); if (on) classes.add(value); else classes.delete(value); return on; } };
   }
   set innerHTML(value) {
     this.html = value; this.writes++;
-    if (this.id === 'asPage' || this.id === 'asSelection') {
+    if (this.id === 'asPage' || this.id === 'asSelection' || this.id === 'assistantDrawer' || this.id === 'assist') {
       // A complete redraw replaces children, as the browser does; preservation cannot pass accidentally.
       this.children.clear();
       for (const [, id] of value.matchAll(/\bid="([^"]+)"/g)) this.children.set(id, new Element(id, this.document));
+    }
+    if (this.id === 'assist') {
+      if (value.includes('class="fab"')) this.children.set('.fab', new Element('fab', this.document));
+      const drawer = this.children.get('assistantDrawer');
+      if (drawer) drawer.hidden = /id="assistantDrawer"[^>]*\bhidden\b/.test(value);
     }
     if (this.id === 'asLog') this.lastElementChild = new Element('', this.document);
   }
@@ -55,15 +61,17 @@ class Element extends Events {
   remove() {}
 }
 class Document extends Events {
-  visibilityState = 'visible'; activeElement = null; page = null;
+  visibilityState = 'visible'; activeElement = null; page = null; host = null;
   constructor() { super(); this.body = new Element('body', this); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   querySelectorAll(selector) {
-    if (!this.page) return [];
     return selector.split(',').map(part => {
       part = part.trim();
+      if (part === '#assist') return this.host;
+      if (part === '#assist .drawer') return this.host?.children.get('assistantDrawer');
+      if (part === '#assist .fab') return this.host?.children.get('.fab');
       if (part === '#asPage') return this.page;
-      return part.startsWith('#') ? this.page.children.get(part.slice(1)) : null;
+      return part.startsWith('#') ? this.page?.children.get(part.slice(1)) || this.host?.children.get(part.slice(1)) || this.host?.children.get('assistantDrawer')?.children.get(part.slice(1)) : null;
     }).filter(Boolean);
   }
   createElement() { return new Element('', this); }
@@ -98,7 +106,7 @@ class Stream {
 function browser(db, { user = 'alice', project = 'demo', transforms = {}, initialFetch = null, modelCatalog = null,
   legacySnapshot = null, importPutFault = null } = {}) {
   const clock = new Clock(), document = new Document(), window = new Events(), navigator = { onLine: true };
-  const requests = [], storage = new Map(), faults = initialFetch ? [initialFetch] : [];
+  const requests = [], errors = [], storage = new Map(), faults = initialFetch ? [initialFetch] : [];
   const legacyKey = `tinystudio.assistant.v2.${encodeURIComponent(user)}.${encodeURIComponent(project)}`;
   if (legacySnapshot) storage.set(legacyKey, JSON.stringify(legacySnapshot));
   let pause = null, chat = null, cookiePrincipal = user;
@@ -124,7 +132,15 @@ function browser(db, { user = 'alice', project = 'demo', transforms = {}, initia
       if (url === '/api/assistant/models') {
         requests.push({ url, user: owner, method: 'GET' });
         assert.ok(modelCatalog, 'a model catalog response must be explicitly configured');
-        return response(200, modelCatalog);
+        return response(200, typeof modelCatalog === 'function' ? await modelCatalog() : modelCatalog);
+      }
+      if (/^\/api\/p\/[^/]+\/overview$/.test(url)) {
+        requests.push({ url, user: owner, method: 'GET' });
+        return response(200, { project: { name: 'Demo' }, tree: { datasets: [] } });
+      }
+      if (url === '/api/assistant/status') {
+        requests.push({ url, user: owner, method: 'GET' });
+        return response(200, { mcp: { tools: 42, command: 'tinystudio mcp' } });
       }
       if (url === '/api/assistant/chat') {
         if (ownerMismatch) return response(403, { detail: 'Conversation owner changed; sign in again' }, null, { 'x-conversation-owner-mismatch': 'true' });
@@ -165,9 +181,9 @@ function browser(db, { user = 'alice', project = 'demo', transforms = {}, initia
   });
   function run(source) { return vm.runInContext(source, context); }
   let app;
-  const moduleReady = loadFrontend(context, { transforms }).then(application => { app = application; });
+  const moduleReady = loadFrontend(context, { transforms }).then(application => { app = application; app.feedback.toast = (...args) => errors.push(args); });
   const b = {
-    db, clock, document, window, navigator, requests, run,
+    db, clock, document, window, navigator, requests, errors, run,
     async begin() {
       await moduleReady;
       app.assistant.conversation.mount();
@@ -179,6 +195,22 @@ function browser(db, { user = 'alice', project = 'demo', transforms = {}, initia
     async ready() {
       await b.begin(); await flush(); await clock.tick(); return b;
     },
+    openAssistantPage() {
+      const rendered = { html: '', layouts: 0 };
+      app.shell.layout = (_active, html) => {
+        rendered.html = html; rendered.layouts++;
+        const content = new Element('assistant-root', document);
+        content.innerHTML = html;
+        assert.match(html, /id="asPage"/, 'the real Assistant page must emit its conversation container');
+        document.page = new Element('asPage', document); content.children.set('asPage', document.page);
+        return content;
+      };
+      document.page = null;
+      run('ASSIST.models = null;'); app.assistant.beginRender("#/assistant");
+      rendered.pending = run('pageAssistant()');
+      return rendered;
+    },
+    navigate(hash) { context.location.hash = hash; app.assistant.beginRender(hash); },
     async save(content) {
       run(`ASSIST.history.push({role:'user',content:${JSON.stringify(content)}});`);
       await run('assistSave()'); await flush();
@@ -192,6 +224,7 @@ function browser(db, { user = 'alice', project = 'demo', transforms = {}, initia
     set cookieUser(value) { cookiePrincipal = value; },
     legacyStored() { return storage.has(legacyKey); },
     mountPicker() { app.assistant.context.mount(); },
+    mountWidget() { document.host = new Element('assist', document); app.assistant.mountAssistant(); },
     get stream() { return chat; },
     stop() {
       app.assistant.destroy();
@@ -466,7 +499,7 @@ test('legacy import with lost committed acknowledgement automatically adopts the
   assert.deepEqual([input.selectionStart, input.selectionEnd], [1, 7]);
 });
 
-async function pickedDrawer(t, transforms = {}) {
+async function pickedDrawer(t, transforms = {}, openBeforePick = false) {
   const b = await browser(new SharedMapDB(), { transforms }).ready(); t.after(() => b.stop());
   const queryAll = b.document.querySelectorAll.bind(b.document), fab = new Element('fab', b.document);
   b.document.querySelectorAll = selector => selector.split(',').flatMap(part => {
@@ -482,13 +515,15 @@ async function pickedDrawer(t, transforms = {}) {
     bindContext(pickedRow, 'Evaluation row <7>', { score: 0.75 });`);
   const input = b.input, page = b.node, writes = page.writes;
   input.value = 'explain the selected result'; input.focus(); input.setSelectionRange(8, 16);
+  if (openBeforePick) { b.run('toggleAssistant(true)'); await flush(); assert.equal(page.hidden, false); assert.equal(b.document.body.classList.contains('assistant-open'), true); }
   b.node.children.get('asPick').onclick();
-  b.run('toggleAssistant(false)');
+  if (openBeforePick) { assert.equal(page.hidden, true, 'picking exposes the data underneath the drawer'); assert.equal(b.document.body.classList.contains('assistant-open'), false); }
+  else b.run('toggleAssistant(false)');
   let intercepted = false;
   b.document.emit('click', { target: b.run('pickedRow'), preventDefault() { intercepted = true; }, stopImmediatePropagation() {} });
   assert.equal(intercepted, true, 'the actual mounted picker handles the structured row');
   assert.equal(b.run('ASSIST.selection.data.score'), 0.75);
-  assert.equal(page.hidden, true);
+  assert.equal(page.hidden, !openBeforePick, 'picking reopens a previously open drawer');
   b.run('toggleAssistant(true)'); await flush();
   assert.equal(b.input, input); assert.equal(page.writes, writes, 'reopening updates the attachment without replacing the composer');
   assert.equal(input.value, 'explain the selected result'); assert.equal(b.document.activeElement, input);
@@ -519,4 +554,113 @@ test('closed-drawer attachment regression detects a missing incremental refresh'
   const { b } = await pickedDrawer(t, transforms);
   assert.throws(() => assert.equal(b.node.children.get('asSelection').hidden, false), assert.AssertionError,
     'the regression must reject a drawer that keeps a selected row hidden');
+});
+
+test('Pick data collapses the open drawer, reopens after selection and retains the focused draft', async t => {
+  const { b, input } = await pickedDrawer(t, {}, true);
+  assert.equal(b.document.body.classList.contains('assistant-open'), true);
+  assert.equal(b.node.children.get('asSelection').hidden, false);
+  assert.equal(input.value, 'explain the selected result');
+  b.run('toggleAssistant(false)');
+  assert.equal(b.document.body.classList.contains('assistant-open'), false);
+});
+
+
+test('full Assistant page renders before a pending provider catalog and reconciles without replacing a focused draft', async t => {
+  const catalog = deferred();
+  const b = await browser(new SharedMapDB(), { modelCatalog: () => catalog.promise }).ready(); t.after(() => b.stop());
+  const rendered = b.openAssistantPage(); await flush();
+  assert.equal(rendered.layouts, 1, 'slow provider discovery cannot keep the prior route visible');
+  assert.match(rendered.html, /<h1>Assistant<\/h1>/); assert.match(rendered.html, /assistant-conversation/);
+  await rendered.pending; // Route completion is independent of provider latency.
+  const input = b.input, page = b.node, writes = page.writes;
+  assert.ok(input); assert.match(page.innerHTML, /Loading model catalog/);
+  input.value = 'draft while the provider catalog is pending'; input.focus(); input.setSelectionRange(6, 17);
+  assert.equal(b.requests.filter(request => request.url === '/api/assistant/models').length, 1);
+  catalog.resolve({ anthropic: { available: false, models: [] }, openai: { available: true, default: 'discovered', models: [{ id: 'discovered', name: 'Discovered model' }] } });
+  await flush();
+  assert.equal(b.run('ASSIST.provider'), 'openai'); assert.equal(b.run('ASSIST.model'), 'discovered');
+  assert.match(page.children.get('asModel').innerHTML, /Discovered model/); assert.equal(page.children.get('asModelNotice').innerHTML, '');
+  assert.equal(b.input, input); assert.equal(page.writes, writes); assert.equal(rendered.layouts, 1);
+  assert.equal(input.value, 'draft while the provider catalog is pending'); assert.equal(b.document.activeElement, input);
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [6, 17]); assert.deepEqual(b.errors, []);
+});
+
+test('obsolete Assistant catalog completion cannot redraw the destination or report a stale error', async t => {
+  for (const [scope, outcome] of [['route', 'success'], ['route', 'failure'], ['project', 'success']]) {
+    const catalog = deferred();
+    const b = await browser(new SharedMapDB(), { modelCatalog: async () => { await catalog.promise; if (outcome === 'failure') throw new Error('obsolete provider failure'); return { anthropic: { available: true, models: [] }, openai: { available: false, models: [] } }; } }).ready();
+    t.after(() => b.stop());
+    const rendered = b.openAssistantPage(); await flush(); await rendered.pending;
+    const oldPage = b.node, writes = oldPage.writes;
+    if (scope === 'project') b.run('state.project = "other-project"; syncAssistantScope();');
+    b.navigate("#/datasets");
+    b.document.page = null; b.document.body.innerHTML = '<h1>Datasets destination</h1>';
+    const destinationWrites = b.document.body.writes;
+    catalog.resolve(); await flush();
+    assert.equal(rendered.layouts, 1); assert.equal(oldPage.writes, writes);
+    assert.equal(b.document.body.writes, destinationWrites); assert.equal(b.document.body.innerHTML, '<h1>Datasets destination</h1>');
+    assert.equal(b.run('ASSIST.models'), null, 'an obsolete page response cannot adopt its provider catalog');
+    assert.deepEqual(b.errors, [], 'failures belonging to an obsolete route stay silent');
+  }
+});
+
+test('current Assistant catalog failure reports feedback without hiding its usable conversation', async t => {
+  const catalog = deferred();
+  const b = await browser(new SharedMapDB(), { modelCatalog: async () => { await catalog.promise; throw new Error('catalog unavailable'); } }).ready(); t.after(() => b.stop());
+  const rendered = b.openAssistantPage(); await flush(); await rendered.pending;
+  const input = b.input; input.value = 'preserve this draft'; input.focus();
+  catalog.resolve(); await flush();
+  assert.deepEqual(b.errors, [['catalog unavailable', true]]);
+  assert.equal(rendered.layouts, 1); assert.equal(b.input, input); assert.equal(input.value, 'preserve this draft'); assert.equal(b.document.activeElement, input);
+});
+
+
+test('pending-catalog page visibility assertion detects a restored blocking await', async t => {
+  const catalog = deferred();
+  const b = await browser(new SharedMapDB(), { modelCatalog: () => catalog.promise, transforms: {
+    'assistant/view.js': (source) => {
+      const changed = source.replace('  conversation.requestCheck();\n  const content = layout', '  conversation.requestCheck();\n  await loadAssistantModels();\n  const content = layout');
+      assert.notEqual(changed, source, 'controlled fault must restore the blocking provider await'); return changed;
+    },
+  } }).ready(); t.after(() => b.stop());
+  const rendered = b.openAssistantPage(); await flush();
+  assert.throws(() => assert.equal(rendered.layouts, 1), { code: 'ERR_ASSERTION' });
+  catalog.resolve({ anthropic: { available: true, models: [{ id: 'model-a' }] }, openai: { available: false, models: [] } });
+  await rendered.pending; await flush();
+});
+
+
+test('full-page Assistant shortcuts and launcher focus the existing composer while keeping the drawer closed', async t => {
+  const modelCatalog = { anthropic: { available: true, models: [{ id: 'model-a' }] }, openai: { available: false, models: [] } };
+  const b = await browser(new SharedMapDB(), { modelCatalog }).ready(); t.after(() => b.stop());
+  b.mountWidget();
+  const rendered = b.openAssistantPage(); await rendered.pending; await flush();
+  const input = b.input; input.value = 'full page draft'; input.setSelectionRange(3, 8);
+  const drawer = b.document.querySelector('#assist .drawer');
+  for (const modifier of ['ctrlKey', 'metaKey']) {
+    b.document.activeElement = b.document.body;
+    const event = { key: 'k', [modifier]: true, prevented: false, preventDefault() { this.prevented = true; } };
+    b.document.emit('keydown', event);
+    assert.equal(event.prevented, true); assert.equal(b.document.activeElement, input);
+    assert.equal(drawer.hidden, true); assert.equal(b.run('ASSIST.open'), false);
+    assert.equal(b.document.body.classList.contains('assistant-open'), false);
+    assert.equal(drawer.querySelector('#asInput'), null, 'the shortcut must not construct a duplicate conversation');
+  }
+  b.document.querySelector('#assist .fab').onclick();
+  b.run('toggleAssistant(true)');
+  assert.equal(b.document.activeElement, input); assert.equal(b.input, input); assert.equal(input.value, 'full page draft');
+  assert.deepEqual([input.selectionStart, input.selectionEnd], [3, 8]);
+  assert.equal(drawer.hidden, true); assert.equal(b.run('ASSIST.open'), false);
+  assert.equal(drawer.querySelector('#asInput'), null); assert.equal(b.document.body.classList.contains('assistant-open'), false);
+  // Returning to an ordinary page retains the existing global shortcut behavior.
+  b.navigate('#/datasets'); b.document.page = null;
+  b.document.emit('keydown', { key: 'k', ctrlKey: true, preventDefault() {} }); await flush();
+  assert.equal(b.run('ASSIST.open'), true); assert.equal(drawer.hidden, false);
+  assert.ok(drawer.querySelector('#asInput')); assert.equal(b.document.body.classList.contains('assistant-open'), true);
+  b.navigate('#/assistant');
+  const returning = b.openAssistantPage(); await returning.pending; await flush();
+  assert.equal(drawer.hidden, true, 'full-page navigation explicitly closes an already open ordinary-page drawer');
+  assert.equal(b.run('ASSIST.open'), false); assert.equal(b.document.body.classList.contains('assistant-open'), false);
+  b.run('toggleAssistant(false)'); assert.equal(drawer.hidden, true); assert.equal(b.run('ASSIST.open'), false);
 });

@@ -34,11 +34,42 @@ class ToolDisplay(BaseModel):
     output: Any = None
 
 
+class AttachmentDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(max_length=32)
+    name: str = Field(max_length=255)
+    size: int = Field(ge=0)
+    sha256: str = Field(max_length=64)
+    project_id: str = Field(max_length=32)
+    user_id: str = Field(max_length=32)
+    extracted_chars: int = Field(ge=0)
+    retained_chars: int = Field(ge=0)
+    status: Literal["ready"] = "ready"
+
+
+class SourceDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    url: str = Field(max_length=4000, pattern=r"^https?://")
+    title: str = Field(default="", max_length=1000)
+
+
+class SearchDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(default="", max_length=300)
+    state: str = Field(max_length=80)
+    query: str | None = Field(default=None, max_length=4000)
+    error: str | None = Field(default=None, max_length=1000)
+
+
 class ConversationMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     role: Literal["user", "assistant"]
     content: str
     calls: list[ToolDisplay] = Field(default_factory=list, max_length=128)
+    attachments: list[AttachmentDisplay] = Field(default_factory=list, max_length=8)
+    sources: list[SourceDisplay] = Field(default_factory=list, max_length=128)
+    selected_data: Any = None
+    searches: list[SearchDisplay] = Field(default_factory=list, max_length=128)
 
 
 class ConversationWrite(BaseModel):
@@ -87,6 +118,17 @@ def save(db: Session, project_id: str, user_id: str, body: ConversationWrite) ->
     The caller's transaction owns commit/rollback, as for other services.
     """
     payload = body.snapshot()
+    if any(message.get("attachments") for message in payload["history"]):
+        from tinystudio.services import assistant_attachments as attachments
+
+        previous = load(db, project_id, user_id)["history"]
+        for index, message in enumerate(payload["history"]):
+            displays = message.get("attachments", [])
+            retained = previous[index].get("attachments", []) if index < len(previous) else []
+            # Historical metadata remains inspectable after raw-file deletion.
+            # New/changed selections must resolve to this exact private owner.
+            if displays != retained:
+                message["attachments"] = [attachments.metadata(attachments.owned(db, project_id, user_id, item["id"])) for item in displays]
     table = AssistantConversation.__table__
     values = {**payload, "revision": body.revision + 1, "updated": func.now()}
     if body.revision == 0:

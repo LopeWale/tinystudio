@@ -1,5 +1,5 @@
-import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
-import { esc } from "../ui/format.js?v=c96cb305d835";
+import { $, $$ } from "../ui/dom.js?v=c1757fa5eddd";
+import { esc } from "../ui/format.js?v=c1757fa5eddd";
 
 export function createTaskDrawer({ state, http, feedback, navigation }) {
   let timer = null, disposed = false, scope = null, generation = 0, pending = null;

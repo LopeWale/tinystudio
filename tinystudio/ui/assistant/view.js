@@ -1,6 +1,6 @@
-import { $, $$ } from "../ui/dom.js?v=c96cb305d835";
-import { esc } from "../ui/format.js?v=c96cb305d835";
-import { ICONS } from "../ui/layout.js?v=c96cb305d835";
+import { $, $$ } from "../ui/dom.js?v=c1757fa5eddd";
+import { esc } from "../ui/format.js?v=c1757fa5eddd";
+import { ICONS } from "../ui/layout.js?v=c1757fa5eddd";
 
 export function createAssistantView({ state, assistantState: ASSIST, http, feedback, dialogs, shell, conversation, context, chat, ensureOverview }) {
   const api = (...args) => http.api(...args);
@@ -37,7 +37,7 @@ export function createAssistantView({ state, assistantState: ASSIST, http, feedb
 function updateDrawerVisibility() {
   const visible = ASSIST.open && !pickCollapsed;
   const drawer = $("#assist .drawer"); if (drawer) drawer.hidden = !visible;
-  $("#assist .fab")?.classList.toggle("on", ASSIST.open);
+  $("#assist .fab")?.classList.toggle("on", Boolean(visible));
   $("#assist .fab")?.setAttribute?.("aria-expanded", String(visible));
   document.body?.classList.toggle("assistant-open", Boolean(visible));
   const picker = $("#assistantPicker"); if (picker) picker.hidden = !ASSIST.picking;
@@ -187,6 +187,8 @@ function renderAssistant(container, { full = false, preserveDraft = true } = {})
   $("#asReset", container).onclick = guard(async () => {
     const session = ASSIST.session;
     if (session.busy || !session.loaded || session.dirty || session.error) return;
+    if (!await confirmModal("Clear this conversation?", "This removes the saved messages for this project. This cannot be undone.", async () => {}, "Clear conversation")) return;
+    if (session !== ASSIST.session || session.busy || session.dirty || session.error) return;
     session.history = []; session.usage = ""; await assistSave(session); assistRedraw();
   });
   if ($("#asClose", container)) $("#asClose", container).onclick = () => toggleAssistant(false);
@@ -199,6 +201,12 @@ function renderAssistant(container, { full = false, preserveDraft = true } = {})
 }
 
 function toggleAssistant(open) {
+  if (open !== false && location.hash === "#/assistant") {
+    ASSIST.open = false;
+    updateDrawerVisibility(); assistPreferences();
+    const page = $("#asPage"); if (page) $("#asInput", page)?.focus();
+    return;
+  }
   ASSIST.open = open ?? !ASSIST.open;
   const drawer = $("#assist .drawer"); if (!drawer) return;
   updateDrawerVisibility();
@@ -228,9 +236,8 @@ async function pageAssistant() {
   const view = state.pageContext;
   await ensureOverview(true); assertRender(view);
   const st = await api("/api/assistant/status");
-  conversation.requestCheck();
-  await loadAssistantModels();
   assertRender(view);
+  conversation.requestCheck();
   const content = layout("assistant", `<div class="page-head"><div><span class="eyebrow">Project workspace</span><h1>Assistant</h1></div><span class="meta">Turn questions into your next step. Available on any page with ⌘K or Ctrl+K.</span></div>
     <div class="assistant-workspace">
       <div class="panel assist-page assistant-conversation" id="asPage"></div>
@@ -249,6 +256,18 @@ async function pageAssistant() {
     </div>`, [{ label: "Assistant" }]);
   if (ASSIST.open) toggleAssistant(false);
   renderAssistant($("#asPage", content), { full: true });
+  const session = ASSIST.session;
+  // Provider discovery may be slow; the conversation is usable while it loads.
+  guard(async () => {
+    try { await loadAssistantModels(); }
+    catch (error) {
+      assertRender(view);
+      if (session !== ASSIST.session) return;
+      throw error;
+    }
+    assertRender(view);
+    if (session === ASSIST.session) assistRenderRemote();
+  })();
 }
 
   function destroy() {

@@ -1,0 +1,217 @@
+@reference "../../styles/globals.css";
+/* Feature compositions follow the approved AffectUI collection/evidence
+   hierarchy. State, chart scales and record ownership stay in the controllers. */
+.data-workspace .data-template {
+  gap: 0;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 12px;
+  background: var(--color-background-primary-default);
+  overflow: clip;
+}
+.data-template > .studio-template__summary {
+  padding: 12px 16px;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.data-template > .studio-template__toolbar {
+  padding: 12px 16px;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.data-template .records-toolbar,
+.data-template .analytical-toolbar,
+.data-template .data-toolbar {
+  flex: 1;
+  inline-size: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  gap: 8px;
+  background: transparent;
+}
+.data-template .records-toolbar > .studio-field:first-child,
+.data-template .analytical-toolbar > .studio-field:first-child,
+.data-template .data-toolbar > .studio-field:first-child {
+  flex: 1 1 240px;
+  max-inline-size: 560px;
+}
+.data-template .analytical-scope {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  @apply text-body-2-regular;
+}
+.data-workspace .data-template .data-table {
+  border: 0;
+  border-radius: 0;
+}
+.data-workspace .data-template .data-table th,
+.data-workspace .data-template .data-table td {
+  min-block-size: 44px;
+  padding-inline: 14px;
+  border-block-end: 1px solid var(--color-separator-border);
+  @apply text-body-2-regular;
+}
+.data-workspace .data-template .data-table th {
+  color: var(--color-text-secondary);
+  background: var(--color-background-primary-default);
+  white-space: nowrap;
+}
+.data-workspace .data-template .data-table tbody tr:last-child td {
+  border-block-end: 0;
+}
+.data-template .data-record-link {
+  font-weight: 500;
+}
+.data-template .records-workbench {
+  border: 0;
+  border-radius: 0;
+  block-size: max(360px, calc(100dvh - 340px));
+}
+.data-template .records-inspected,
+.data-template .training-inspectable-row[aria-selected="true"] {
+  background: var(--color-background-secondary-default);
+  box-shadow: inset 2px 0 var(--color-accent-600);
+}
+.data-template .records-selection {
+  color: var(--color-text-secondary);
+}
+.data-template .data-inspector-heading {
+  background: var(--color-background-primary-default);
+}
+.data-template .data-prose {
+  border: 1px solid var(--color-separator-border);
+  border-radius: 8px;
+  @apply text-body-2-regular;
+}
+.data-template .data-pager {
+  padding: 12px 16px;
+  border-block-start: 1px solid var(--color-separator-border);
+  @apply text-body-2-regular;
+}
+.data-template .records-comparison {
+  border: 0;
+  border-radius: 0;
+}
+.data-view-navigation {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-block: -4px 12px;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.data-view-navigation > a,
+.data-view-navigation > button {
+  padding: 10px 8px;
+  border-radius: 0;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+.data-view-navigation > [aria-current="page"] {
+  color: var(--color-text-primary);
+  border-block-end: 2px solid var(--color-text-primary);
+}
+.data-view-navigation > a:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 2px;
+}
+/* Run and evaluation evidence form a primary chart and a distinct exact-record
+   region; quiet dividers replace repeated card frames. */
+.analytical-workspace
+  .data-template
+  > .studio-template__layout
+  > .studio-template__content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+.analytical-workspace .data-template .studio-panel {
+  margin: 0;
+  border-radius: 8px;
+  box-shadow: none;
+}
+.data-template .analytical-evaluation-overview,
+.data-template .analytical-evidence-grid,
+.data-template .data-master-detail {
+  gap: 16px;
+}
+.data-template .training-directory-inspector,
+.data-template .data-inspector {
+  border-radius: 8px;
+  box-shadow: none;
+}
+.data-template .records-local-inspector {
+  border-radius: 0;
+}
+.data-template.data-setup
+  > .studio-template__layout
+  > .studio-template__content {
+  display: grid;
+  gap: 12px;
+}
+.data-template.data-setup .studio-field {
+  margin: 0;
+}
+.data-template.data-setup .data-actions {
+  margin-block: 0;
+}
+@media (max-width: 850px) {
+  .data-workspace .data-template {
+    border-radius: 8px;
+  }
+  .data-template > .studio-template__summary,
+  .data-template > .studio-template__toolbar {
+    padding: 12px;
+  }
+  .data-template .records-toolbar > .studio-field:first-child,
+  .data-template .analytical-toolbar > .studio-field:first-child,
+  .data-template .data-toolbar > .studio-field:first-child {
+    flex-basis: 100%;
+    max-inline-size: none;
+  }
+  .data-template .records-workbench {
+    block-size: max(420px, calc(100dvh - 380px));
+  }
+  .data-workspace .data-template button:not(.ui-segc__opt),
+  .data-template .data-view-navigation > a {
+    min-block-size: 44px;
+  }
+  .analytical-workspace
+    .data-template
+    > .studio-template__layout
+    > .studio-template__content {
+    padding: 12px;
+  }
+}
+
+/* Inspection reserves a stable reading column. Horizontal scrolling belongs to
+   the collection, so its cells keep their readable measure beside the details. */
+.data-template .records-workbench-inspecting {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+.data-template .records-workbench .data-table table {
+  min-inline-size: 760px;
+}
+.data-template .records-workbench .data-record-link,
+.data-template .records-workbench time {
+  white-space: nowrap;
+}
+@media (max-width: 850px) {
+  .data-template .records-workbench-inspecting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Shared tables own row density; legacy tables retain their feature spacing. */
+.data-workspace .data-template .data-table:not([data-density]) :is(th, td),
+.data-workspace .data-template .data-table[data-density] th {
+  padding-block: 11px;
+}
+@media (max-width: 850px) {
+  .data-template .records-toolbar--unselected > .records-selection,
+  .data-template .records-toolbar--unselected > .records-bulk-action {
+    display: none;
+  }
+}
