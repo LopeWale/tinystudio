@@ -266,19 +266,46 @@ describe("project lifecycle", () => {
     expect(s.refreshProjects).toHaveBeenCalled();
     expect(s.navigate).toHaveBeenCalledWith("#/datasets");
   });
-  it("offers no last-project deletion and no member deletion", async () => {
-    const api = {
+  it.each([
+    { role: "admin", count: 1, canDelete: false },
+    { role: "member", count: 2, canDelete: false },
+    { role: "admin", count: 2, canDelete: true },
+  ])(
+    "enforces inspected project deletion for $role with $count projects",
+    async ({ role, count, canDelete }) => {
+      const api = {
         get: vi.fn(async () => [
-          { name: "Only project", slug: "fixture", datasets: 0, jobs: 0 },
+          { name: "Selected project", slug: "selected", datasets: 0, jobs: 0 },
+          ...(count > 1
+            ? [{ name: "Other project", slug: "other", datasets: 0, jobs: 0 }]
+            : []),
         ]),
-      },
-      s = runtime(api);
-    wrap(<ProjectsPage />, s);
-    await screen.findByRole("button", { name: "Only project" });
-    expect(
-      screen.queryByRole("button", { name: "Delete Only project" }),
-    ).toBeNull();
-  });
+        del: vi.fn(async () => ({})),
+      };
+      const s = runtime(api, role);
+      wrap(<ProjectsPage />, s);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Selected project" }),
+      );
+      expect(
+        screen.getByRole("complementary", { name: "Project details" }),
+      ).toBeTruthy();
+      const remove = screen.queryByRole("button", {
+        name: "Delete Selected project",
+      });
+      if (canDelete) {
+        expect(remove).toBeTruthy();
+        fireEvent.click(remove!);
+        await waitFor(() =>
+          expect(api.del).toHaveBeenCalledWith("/api/p/selected"),
+        );
+        expect(s.confirm).toHaveBeenCalled();
+      } else {
+        expect(remove).toBeNull();
+        expect(api.del).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 describe("user administration", () => {
   const users = [
@@ -304,14 +331,14 @@ describe("user administration", () => {
       },
       s = runtime(api);
     wrap(<UsersPage />, s);
-    await screen.findByRole("combobox", {
-      name: "Role for admin@example.test",
+    await screen.findByRole("button", {
+      name: /Role for admin@example.test/,
     });
     expect(
       (
-        screen.getByRole("combobox", {
-          name: "Role for admin@example.test",
-        }) as HTMLSelectElement
+        screen.getByRole("button", {
+          name: /Role for admin@example.test/,
+        }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
     expect(
@@ -320,10 +347,10 @@ describe("user administration", () => {
     expect(
       screen.queryByRole("button", { name: "Disable admin@example.test" }),
     ).toBeNull();
-    fireEvent.change(
-      screen.getByRole("combobox", { name: "Role for member@example.test" }),
-      { target: { value: "admin" } },
+    fireEvent.click(
+      screen.getByRole("button", { name: /Role for member@example.test/ }),
     );
+    fireEvent.click(screen.getByRole("option", { name: "Admin" }));
     await waitFor(() =>
       expect(api.patch).toHaveBeenCalledWith("/api/users/other", {
         role: "admin",

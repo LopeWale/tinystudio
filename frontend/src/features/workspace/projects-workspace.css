@@ -1,0 +1,45 @@
+.projects-count {
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.projects-identity,
+.projects-detail-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.projects-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.projects-detail h3,
+.projects-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.projects-detail dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+.projects-detail dt {
+  color: var(--color-text-tertiary);
+}
+.projects-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.projects-load-error {
+  flex: none;
+  padding: 12px;
+}
+.projects-create-dialog {
+  max-inline-size: 36rem;
+}
+.projects-create-fields {
+  display: grid;
+  gap: 16px;
+}

@@ -1,0 +1,25 @@
+@reference "../../styles/globals.css";
+.keys-create-dialog.studio-modal {
+  inline-size: min(440px, calc(100vw - 32px));
+}
+.keys-secret-dialog.studio-modal {
+  inline-size: min(560px, calc(100vw - 32px));
+}
+.keys-help-dialog.studio-modal {
+  inline-size: min(720px, calc(100vw - 32px));
+}
+.keys-create-dialog .modal-content {
+  display: grid;
+  gap: 16px;
+}
+.keys-create-dialog .modal-content p,
+.keys-secret-dialog .modal-content p,
+.keys-help-dialog .modal-content p {
+  color: var(--color-text-secondary);
+  @apply text-body-2-regular;
+}
+.keys-secret-dialog pre,
+.keys-help-dialog pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

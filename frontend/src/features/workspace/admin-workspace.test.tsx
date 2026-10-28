@@ -213,9 +213,8 @@ describe("administration workspaces", () => {
     };
     mount(<UsersPage />, context(api));
     await screen.findByText("owner@test");
-    fireEvent.change(screen.getByLabelText("Account role"), {
-      target: { value: "member" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: /Account role/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Members" }));
     expect(screen.queryByText("owner@test")).toBeNull();
     expect(screen.getByText("member@test")).toBeTruthy();
     expect(api.patch).not.toHaveBeenCalled();
@@ -231,8 +230,7 @@ describe("administration workspaces", () => {
       }),
     );
     await screen.findByText("Production");
-    const details = screen.getByText("Using your key").closest("details")!;
-    expect(details.open).toBe(false);
+    expect(screen.queryByRole("dialog", { name: "Using your key" })).toBeNull();
     fireEvent.change(
       screen.getByRole("searchbox", { name: "Find an API key" }),
       { target: { value: "Development" } },
@@ -240,7 +238,15 @@ describe("administration workspaces", () => {
     expect(screen.queryByText("Production")).toBeNull();
     expect(screen.getByText("Development")).toBeTruthy();
     fireEvent.click(screen.getByText("Using your key"));
-    expect(details.open).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Using your key" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+    expect(
+      (
+        screen.getByRole("searchbox", {
+          name: "Find an API key",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("Development");
   });
 });
 

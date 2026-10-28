@@ -1,0 +1,37 @@
+@reference "../../styles/globals.css";
+.users-workspace .records-workbench {
+  border-radius: 6px;
+}
+.users-workspace .users-role-filter {
+  min-inline-size: 140px;
+}
+.users-account-count {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  @apply text-caption-1-regular;
+}
+.users-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.users-load-error {
+  padding: 16px;
+}
+.studio-modal.users-dialog {
+  inline-size: min(640px, calc(100vw - 32px));
+}
+.users-form {
+  display: grid;
+  gap: 16px;
+}
+.users-form-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+@media (max-width: 600px) {
+  .users-form-identity {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
