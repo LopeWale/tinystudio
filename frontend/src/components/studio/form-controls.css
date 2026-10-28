@@ -1,0 +1,22 @@
+@reference "../../styles/globals.css";
+/* Opt-in surface for installed BoardUI fields. The group owns the border and
+   focus treatment; legacy global input styling must not add a second frame. */
+.studio-form-control {
+  padding: 8px 10px;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 6px;
+  background: var(--color-background-primary-default);
+}
+.studio-form-control:focus-within {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 2px;
+}
+.studio-form-control :is(input, textarea) {
+  min-block-size: 20px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  @apply text-body-2-regular;
+}

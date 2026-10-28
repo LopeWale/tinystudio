@@ -10,6 +10,7 @@ import {
   render,
   screen,
   within,
+  waitFor,
 } from "@testing-library/react";
 import {
   DataTable,
@@ -112,7 +113,7 @@ describe("reusable typed table variants", () => {
     render(<DataTable label="Records" rows={rows} {...fixture()} />);
     fireEvent.click(screen.getByRole("button", { name: "Filters" }));
     fireEvent.click(
-      within(screen.getByRole("region", { name: "Records filters" })).getByRole(
+      within(screen.getByRole("dialog", { name: "Records filters" })).getByRole(
         "button",
         { name: /^Status/ },
       ),
@@ -120,7 +121,7 @@ describe("reusable typed table variants", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "ready" }));
     expect(screen.getByRole("status")).toHaveTextContent("16 rows of 32");
     fireEvent.click(
-      within(screen.getByRole("region", { name: "Records filters" })).getByRole(
+      within(screen.getByRole("dialog", { name: "Records filters" })).getByRole(
         "button",
         { name: /^Amount/ },
       ),
@@ -130,6 +131,42 @@ describe("reusable typed table variants", () => {
     expect(screen.getByRole("table")).toHaveTextContent("Record 2");
     fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
     expect(screen.getByRole("status")).toHaveTextContent("32 rows");
+  });
+  it("dismisses filters with Escape and switches between filter and column controls", async () => {
+    // FocusScope restores focus on the next animation frame; the suite's
+    // no-op animation stub would suppress this browser behavior entirely.
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      setTimeout(() => callback(performance.now()), 0),
+    );
+    vi.stubGlobal("cancelAnimationFrame", clearTimeout);
+    const user = userEvent.setup();
+    render(<DataTable label="Records" rows={rows} {...fixture()} />);
+    const filters = screen.getByRole("button", { name: "Filters" });
+    await user.click(filters);
+    expect(
+      screen.getByRole("dialog", { name: "Records filters" }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "Records filters" }),
+    ).toBeNull();
+    await waitFor(() => expect(filters).toHaveFocus());
+    await user.click(filters);
+    await user.click(screen.getByRole("button", { name: "Columns" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Records filters" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("dialog", { name: "Records visible columns" }),
+    ).toBeVisible();
+    await user.click(filters);
+    expect(
+      screen.queryByRole("dialog", { name: "Records visible columns" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("dialog", { name: "Records filters" }),
+    ).toBeVisible();
+    expect(screen.getByRole("table", { name: "Records" })).toBeVisible();
   });
   it("changes page size, moves pages, and clamps when the loaded rows shrink", () => {
     const f = fixture();

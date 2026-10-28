@@ -1,5 +1,5 @@
 @reference "../../styles/globals.css";
-/* Feature compositions follow the approved AffectUI collection/evidence
+/* Feature compositions follow the referenced AffectUI collection/evidence
    hierarchy. State, chart scales and record ownership stay in the controllers. */
 .data-workspace .data-template {
   gap: 0;
@@ -214,4 +214,266 @@
   .data-template .records-toolbar--unselected > .records-bulk-action {
     display: none;
   }
+}
+
+/* Collections fill their actual workspace rather than subtracting an assumed
+   toolbar height from the viewport. View controls and paging stay with the rows. */
+.workbench-shell .studio-page.collection-page {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+}
+.collection-page > .page-heading {
+  flex: none;
+}
+.collection-page > .data-template,
+.collection-page > .data-template > .studio-template__layout,
+.collection-page
+  > .data-template
+  > .studio-template__layout
+  > .studio-template__content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+}
+.collection-page .data-template .records-workbench {
+  flex: 1;
+  block-size: auto;
+  min-block-size: 280px;
+  max-block-size: none;
+}
+.collection-page .records-workbench > .records-scroll-wrap > .records-scroll {
+  overflow: hidden;
+}
+.collection-page
+  .records-workbench
+  > .records-scroll-wrap
+  > .records-scroll
+  > .data-table {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+}
+.collection-page .records-workbench .data-table__scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow: auto;
+}
+.collection-page .data-table__toolbar,
+.collection-page .data-table__footer {
+  flex: none;
+}
+.collection-page .data-table__footer {
+  padding-inline-end: 76px;
+}
+.collection-page .records-comparison {
+  flex: 1;
+  max-block-size: none;
+  min-block-size: 0;
+}
+
+/* Affect UI Folder: selected identity and actions lead a full-width contents
+   workspace. Metadata supports the documents instead of enclosing their table. */
+.collection-page .studio-page__navigation {
+  flex: none;
+  margin-block-end: 12px;
+}
+.collection-page .repository-detail > .studio-template__summary {
+  padding-block: 12px;
+}
+.repository-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+  margin: 0;
+  @apply text-caption-1-regular;
+}
+.repository-summary > div {
+  display: flex;
+  gap: 8px;
+  min-inline-size: 0;
+}
+.repository-summary dt {
+  color: var(--color-text-secondary);
+}
+.repository-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.repository-detail .data-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+}
+.repository-detail .data-table__scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow: auto;
+}
+.repository-detail .data-table td:first-child {
+  inline-size: 55%;
+}
+.repository-detail .data-table td {
+  overflow-wrap: anywhere;
+}
+.repository-create-form {
+  display: grid;
+  gap: 16px;
+}
+.repository-import-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.repository-query-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 140px;
+  gap: 16px;
+  align-items: end;
+}
+.repository-dialog-hint {
+  color: var(--color-text-secondary);
+  margin-block: 20px 8px;
+  @apply text-body-2-regular;
+}
+@media (max-width: 700px) {
+  .repository-import-grid,
+  .repository-query-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* AffectUI Evals: one bucket filter belongs to the record surface; versions
+   have a separate peer pane. Panels retain state but never expose hidden UI. */
+.workbench-shell .studio-page.dataset-detail-page {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+}
+.dataset-detail-page .studio-page__navigation {
+  margin-block-end: 12px;
+  flex: none;
+}
+.dataset-back {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+}
+.dataset-view-tabs {
+  flex: none;
+  margin-block-end: 12px;
+}
+.dataset-view-panel,
+.dataset-view-panel > .data-template,
+.dataset-view-panel .studio-template__layout,
+.dataset-view-panel .studio-template__content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+.dataset-view-panel[hidden],
+.dataset-detail-page [hidden] {
+  display: none !important;
+}
+.dataset-detail-page .records-workbench {
+  flex: 1;
+  block-size: auto;
+  max-block-size: none;
+  min-block-size: 280px;
+}
+.dataset-detail-page
+  .records-collection
+  > .records-scroll-wrap
+  > .records-scroll {
+  overflow: hidden;
+}
+.dataset-detail-page
+  .records-collection
+  > .records-scroll-wrap
+  > .records-scroll
+  > .data-table,
+.dataset-snapshots .data-table {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  flex: 1;
+}
+.dataset-detail-page .data-table__scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow: auto;
+}
+.dataset-detail-page .data-table__toolbar,
+.dataset-detail-page .data-table__footer,
+.dataset-detail-page .data-pager {
+  flex: none;
+}
+.dataset-detail-page .data-table__footer,
+.dataset-detail-page .data-pager {
+  padding-inline-end: 76px;
+}
+.dataset-detail-page .data-template .records-workbench .data-table table {
+  table-layout: fixed;
+  min-inline-size: 760px;
+}
+.dataset-detail-page .data-cell-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+.dataset-detail-page .records-workbench td button {
+  inline-size: 100%;
+  text-align: start;
+  justify-content: start;
+}
+.dataset-record-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 100%;
+  min-inline-size: 0;
+}
+.dataset-record-controls:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: -2px;
+}
+.dataset-snapshot-summary {
+  padding: 16px;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.dataset-snapshot-summary h2 {
+  margin: 0;
+  @apply text-headline-medium;
+}
+.dataset-snapshot-summary p {
+  margin-block: 4px 0;
+  color: var(--color-text-secondary);
+  @apply text-body-2-regular;
+}
+.dataset-detail-page .records-comparison {
+  min-block-size: 0;
+  max-block-size: none;
+  flex: 1;
+}
+
+.dataset-detail-page .data-table th button {
+  padding-inline: 0;
+}
+.dataset-detail-page .data-table .dataset-record-open {
+  padding: 0;
+  color: var(--color-text-primary);
+  @apply text-body-2-regular;
 }

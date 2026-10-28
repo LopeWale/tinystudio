@@ -93,9 +93,23 @@
   font-size: 12px;
   color: var(--color-text-secondary);
 }
-.data-table__filters {
-  padding: 12px;
-  border-block-end: 1px solid var(--color-separator-border);
+.data-table__filter-popover {
+  inline-size: min(340px, calc(100vw - 24px));
+  max-block-size: min(480px, calc(100dvh - 32px));
+  overflow: auto;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 10px;
+  background: var(--color-background-primary-default);
+  box-shadow: var(--shadow-md);
+  z-index: 60;
+}
+.data-table__filter-dialog {
+  padding: 8px;
+  outline: none;
+}
+.data-table__filter-dialog:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: -2px;
 }
 .data-table__empty {
   padding: 24px 12px;

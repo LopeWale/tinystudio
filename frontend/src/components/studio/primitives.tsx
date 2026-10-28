@@ -12,6 +12,7 @@ import {
   type HTMLAttributes,
   type ButtonHTMLAttributes,
   type ElementType,
+  type Ref,
 } from "react";
 import { createPortal } from "react-dom";
 import { UNSAFE_PortalProvider } from "react-aria/PortalProvider";
@@ -27,15 +28,28 @@ export function Page({
   title,
   description,
   actions,
+  navigation,
+  headingRef,
   children,
   className,
   ...props
-}: Box & { title: string; description?: ReactNode; actions?: ReactNode }) {
+}: Box & {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+  navigation?: ReactNode;
+  headingRef?: Ref<HTMLHeadingElement>;
+}) {
   return (
     <section {...props} className={cx("studio-page", className)}>
+      {navigation && (
+        <div className="studio-page__navigation">{navigation}</div>
+      )}
       <header className="page-heading studio-page__heading">
         <div>
-          <h1>{title}</h1>
+          <h1 ref={headingRef} tabIndex={headingRef ? -1 : undefined}>
+            {title}
+          </h1>
           {description && <p className="muted">{description}</p>}
         </div>
         {actions && (

@@ -53,7 +53,7 @@ describe("interactive reusable template gallery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Filters" }));
     fireEvent.click(
       within(
-        screen.getByRole("region", {
+        screen.getByRole("dialog", {
           name: "Sample dataset collection filters",
         }),
       ).getByRole("button", { name: /^Kind/ }),

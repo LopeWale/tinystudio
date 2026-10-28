@@ -81,18 +81,17 @@ export function FileUploadField({
         disabled={disabled}
         presentation={presentation}
       />
-      <p
-        className={
-          presentation === "compact"
-            ? "text-caption-1-regular text-text-tertiary"
-            : undefined
-        }
-      >
-        {accept || "All file types"}
-        {maxBytes !== undefined
-          ? ` · up to ${maxBytes.toLocaleString()} bytes each`
-          : ""}
-      </p>
+      {maxBytes !== undefined && (
+        <p
+          className={
+            presentation === "compact"
+              ? "text-caption-1-regular text-text-tertiary"
+              : undefined
+          }
+        >
+          Up to {maxBytes.toLocaleString()} bytes each
+        </p>
+      )}
       {errors.map((error) => (
         <p
           role="alert"

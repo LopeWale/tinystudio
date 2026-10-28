@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type HTMLAttributes,
   type ReactNode,
 } from "react";
@@ -38,6 +39,8 @@ export type TableColumn<T> = {
   sortable?: boolean;
   filterable?: boolean;
   hideable?: boolean;
+  /** Optional presentation width; follows the column when other columns hide. */
+  width?: CSSProperties["width"];
 };
 export type DataTableProps<T> = {
   label: string;
@@ -51,6 +54,8 @@ export type DataTableProps<T> = {
     cells: ReactNode,
   ) => ReactNode;
   empty?: ReactNode;
+  /** Feature-owned search and selection controls, beside the shared view controls. */
+  toolbarContent?: ReactNode;
   scopeKey?: string;
   /** Revoke assistant controls when a retained view is not active. */
   assistantActionsEnabled?: boolean;
@@ -64,6 +69,7 @@ function TableView<T>({
   rowProps,
   renderRow,
   empty,
+  toolbarContent,
   scopeKey,
   assistantActionsEnabled = true,
   pagination = "client",
@@ -166,27 +172,23 @@ function TableView<T>({
           count={count}
           densityControl={densityControl}
           advanced={variant === "advanced"}
+          content={toolbarContent}
+          onCloseFilters={() => setFiltersOpen(false)}
+          filtersContent={
+            <FilterMenu
+              key={scopeKey}
+              title={`${label} filters`}
+              groups={groups}
+              value={Object.fromEntries(
+                Object.entries(state.filters).map(([id, values]) => [
+                  id,
+                  [...values],
+                ]),
+              )}
+              onChange={(filters) => controller.setFilters(filters)}
+            />
+          }
         />
-      )}
-      {variant !== "simple" && filtersOpen && (
-        <div
-          className="data-table__filters"
-          role="region"
-          aria-label={`${label} filters`}
-        >
-          <FilterMenu
-            key={scopeKey}
-            title={`${label} filters`}
-            groups={groups}
-            value={Object.fromEntries(
-              Object.entries(state.filters).map(([id, values]) => [
-                id,
-                [...values],
-              ]),
-            )}
-            onChange={(filters) => controller.setFilters(filters)}
-          />
-        </div>
       )}
       <div
         className="data-table__scroll"
@@ -195,6 +197,11 @@ function TableView<T>({
         tabIndex={0}
       >
         <table aria-label={label}>
+          <colgroup>
+            {visible.map((column) => (
+              <col key={column.id} style={{ width: column.width }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               {visible.map((column) => (
@@ -249,14 +256,14 @@ function TableView<T>({
             })}
           </tbody>
         </table>
+        {!state.filtered && (
+          <div className="data-table__empty">
+            {rows.length
+              ? "No matching rows. Clear filters or reset the view to see loaded records."
+              : (empty ?? "No records available.")}
+          </div>
+        )}
       </div>
-      {!state.filtered && (
-        <div className="data-table__empty">
-          {rows.length
-            ? "No matching rows. Clear filters or reset the view to see loaded records."
-            : (empty ?? "No records available.")}
-        </div>
-      )}
       {variant !== "simple" && (
         <div className="data-table__footer">
           <span role="status">
@@ -462,6 +469,9 @@ function TableToolbar<T>({
   count,
   densityControl,
   advanced,
+  content,
+  filtersContent,
+  onCloseFilters,
 }: {
   label: string;
   controller: RecordTableController<T>;
@@ -473,8 +483,18 @@ function TableToolbar<T>({
   count: number;
   densityControl: ReactNode;
   advanced: boolean;
+  content?: ReactNode;
+  filtersContent: ReactNode;
+  onCloseFilters: () => void;
 }) {
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const filterTrigger = useRef<HTMLButtonElement>(null);
+  const filterPopover = useRef<HTMLElement>(null);
+  const filterId = useId();
+  useDismissOnOutsidePress(filtersOpen, onCloseFilters, [
+    filterTrigger,
+    filterPopover,
+  ]);
   const trigger = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const popover = useRef<HTMLElement>(null);
@@ -488,11 +508,23 @@ function TableToolbar<T>({
       role="group"
       aria-label={`${label} table controls`}
     >
+      {content != null && <div className="data-table__context">{content}</div>}
       <div className="data-table__view-actions">
         {showFilters && (
-          <Button aria-expanded={filtersOpen} onClick={onToggleFilters}>
+          <SourceButton
+            ref={filterTrigger}
+            variant="secondary"
+            className="studio-button"
+            aria-haspopup="dialog"
+            aria-expanded={filtersOpen}
+            aria-controls={filtersOpen ? filterId : undefined}
+            onClick={() => {
+              setColumnsOpen(false);
+              onToggleFilters();
+            }}
+          >
             Filters{count ? ` (${count})` : ""}
-          </Button>
+          </SourceButton>
         )}
         <SourceButton
           variant="secondary"
@@ -501,7 +533,10 @@ function TableToolbar<T>({
           aria-haspopup="dialog"
           aria-expanded={columnsOpen}
           aria-controls={columnsOpen ? panelId : undefined}
-          onClick={() => setColumnsOpen((open) => !open)}
+          onClick={() => {
+            onCloseFilters();
+            setColumnsOpen((open) => !open);
+          }}
         >
           Columns
         </SourceButton>
@@ -510,6 +545,26 @@ function TableToolbar<T>({
         </Button>
       </div>
       {advanced && densityControl}
+      <Popover
+        ref={filterPopover}
+        isNonModal
+        triggerRef={filterTrigger}
+        isOpen={filtersOpen}
+        onOpenChange={(open) => {
+          if (!open) onCloseFilters();
+        }}
+        placement="bottom start"
+        offset={6}
+        className="data-table__filter-popover"
+      >
+        <Dialog
+          id={filterId}
+          aria-label={`${label} filters`}
+          className="data-table__filter-dialog"
+        >
+          {filtersContent}
+        </Dialog>
+      </Popover>
       <Popover
         ref={popover}
         isNonModal

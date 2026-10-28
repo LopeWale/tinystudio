@@ -1,4 +1,7 @@
 /* AffectUI screen composition references; no licensed Pro screen source is copied. */
+.studio-template[hidden] {
+  display: none;
+}
 .studio-template {
   min-inline-size: 0;
   display: flex;

@@ -71,7 +71,7 @@ function mountDataset(post: any, training = 1) {
     post,
   };
   const s = runtime(api);
-  render(
+  const view = render(
     <StudioContext.Provider value={s}>
       <MemoryRouter initialEntries={["/datasets/fixture"]}>
         <Routes>
@@ -80,16 +80,21 @@ function mountDataset(post: any, training = 1) {
       </MemoryRouter>
     </StudioContext.Provider>,
   );
-  return { api, s };
+  return { api, s, view };
 }
 async function failSnapshot(post: any) {
   fireEvent.click(
-    await screen.findByRole("button", {
+    await screen.findByRole("tab", {
       name: "Snapshots",
       exact: true,
     } as any),
   );
   fireEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
+  fireEvent.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Create snapshot",
+    }),
+  );
   await waitFor(() => expect(post).toHaveBeenCalledOnce());
   await waitFor(() =>
     expect(
@@ -98,6 +103,57 @@ async function failSnapshot(post: any) {
   );
 }
 describe("operation-owned errors", () => {
+  it.each(["success", "failure"])(
+    "ignores late snapshot %s after changing project while preserving the new dialog",
+    async (outcome) => {
+      let resolve!: (value: any) => void;
+      let reject!: (error: Error) => void;
+      const pending = new Promise((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      const { s, view } = mountDataset(
+        vi.fn(() => pending),
+        10,
+      );
+      fireEvent.click(await screen.findByRole("tab", { name: "Snapshots" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
+      fireEvent.click(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: "Create snapshot",
+        }),
+      );
+      view.rerender(
+        <StudioContext.Provider
+          value={{ ...s, project: "second", scopeKey: "u:second" }}
+        >
+          <MemoryRouter initialEntries={["/datasets/fixture"]}>
+            <Routes>
+              <Route path="/datasets/:name" element={<DatasetPage />} />
+            </Routes>
+          </MemoryRouter>
+        </StudioContext.Provider>,
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Add datapoint" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "user" }), {
+        target: { value: "New project draft" },
+      });
+      await act(async () => {
+        if (outcome === "success") resolve(inlineSnapshot);
+        else reject(Error("Old project failure"));
+      });
+      expect(
+        screen.getByRole("dialog", { name: "Add datapoint" }),
+      ).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "user" })).toHaveValue(
+        "New project draft",
+      );
+      expect(s.toast).not.toHaveBeenCalled();
+      expect(s.refreshOverview).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    },
+  );
   it("preserves the snapshot validation failure but does not inherit it into Add Datapoint", async () => {
     const post = vi.fn(async () => {
       throw Error(minimumError);
@@ -112,6 +168,7 @@ describe("operation-owned errors", () => {
       within(screen.getByRole("dialog")).getByRole("alert").textContent,
     ).toBe(minimumError);
     fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Records" }));
     fireEvent.click(screen.getByRole("button", { name: "Add datapoint" }));
     expect(screen.getByRole("dialog").textContent).not.toContain(minimumError);
     expect(screen.queryByRole("alert")).toBeNull();
@@ -185,6 +242,81 @@ describe("operation-owned errors", () => {
     expect(screen.getByRole("status").textContent).toBe("idle");
     expect(s.toast).toHaveBeenCalledWith("Old operation failed", true);
   });
+  it("resets busy on project change and lets the new project submit before the old response", async () => {
+    let finishOld!: () => void;
+    let finishNew!: () => void;
+    const old = new Promise<void>((resolve) => {
+      finishOld = resolve;
+    });
+    const next = new Promise<void>((resolve) => {
+      finishNew = resolve;
+    });
+    const operation = vi
+      .fn()
+      .mockReturnValueOnce(old)
+      .mockReturnValueOnce(next);
+    const s = runtime({});
+    function Harness() {
+      const a = useAction();
+      return (
+        <button disabled={a.busy} onClick={() => a.run(operation)}>
+          Submit
+        </button>
+      );
+    }
+    const view = render(
+      <StudioContext.Provider value={s}>
+        <Harness />
+      </StudioContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    view.rerender(
+      <StudioContext.Provider value={{ ...s, project: "new-project" }}>
+        <Harness />
+      </StudioContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await act(async () => finishOld());
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await act(async () => finishNew());
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the latest operation busy when an older same-scope request finishes", async () => {
+    let finishOld!: () => void, finishNew!: () => void;
+    const old = new Promise<void>((resolve) => {
+      finishOld = resolve;
+    });
+    const next = new Promise<void>((resolve) => {
+      finishNew = resolve;
+    });
+    const operation = vi
+      .fn()
+      .mockReturnValueOnce(old)
+      .mockReturnValueOnce(next);
+    function Harness() {
+      const a = useAction();
+      return (
+        <>
+          <button onClick={() => a.run(operation)}>Start</button>
+          <p role="status">{a.busy ? "busy" : "idle"}</p>
+        </>
+      );
+    }
+    render(
+      <StudioContext.Provider value={runtime({})}>
+        <Harness />
+      </StudioContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await act(async () => finishOld());
+    expect(screen.getByRole("status")).toHaveTextContent("busy");
+    await act(async () => finishNew());
+    expect(screen.getByRole("status")).toHaveTextContent("idle");
+  });
   it("does not report a failed request after its owning scope unmounts", async () => {
     let reject!: (error: Error) => void;
     const pending = new Promise((_, r) => {
@@ -242,12 +374,17 @@ describe("backend task view discrimination", () => {
       10,
     );
     fireEvent.click(
-      await screen.findByRole("button", {
+      await screen.findByRole("tab", {
         name: "Snapshots",
         exact: true,
       } as any),
     );
     fireEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Create snapshot",
+      }),
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(s.refreshOverview).toHaveBeenCalled();
     expect(s.trackTask).not.toHaveBeenCalled();
@@ -260,12 +397,17 @@ describe("backend task view discrimination", () => {
       10,
     );
     fireEvent.click(
-      await screen.findByRole("button", {
+      await screen.findByRole("tab", {
         name: "Snapshots",
         exact: true,
       } as any),
     );
     fireEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Create snapshot",
+      }),
+    );
     await waitFor(() => expect(s.trackTask).toHaveBeenCalledWith(task));
     expect(s.showTasks).toHaveBeenCalledOnce();
   });

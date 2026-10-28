@@ -29,12 +29,15 @@ export function useAction() {
   const [error, setError] = useState("");
   const generation = useRef(0);
   const errorOwner = useRef(0);
+  const operationOwner = useRef(0);
   const clearError = useCallback(() => {
     errorOwner.current++;
     setError("");
   }, []);
   useEffect(() => {
     generation.current++;
+    setBusy(false);
+    setError("");
     return () => {
       generation.current++;
     };
@@ -45,6 +48,7 @@ export function useAction() {
     clearError,
     run: async (fn: () => Promise<any>) => {
       const own = generation.current;
+      const operation = ++operationOwner.current;
       const ownError = ++errorOwner.current;
       setBusy(true);
       setError("");
@@ -56,7 +60,8 @@ export function useAction() {
           s.toast(e.message, true);
         }
       } finally {
-        if (own === generation.current) setBusy(false);
+        if (own === generation.current && operation === operationOwner.current)
+          setBusy(false);
       }
     },
   };

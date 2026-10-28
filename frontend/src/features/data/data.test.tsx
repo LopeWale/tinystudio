@@ -262,11 +262,11 @@ describe("actual React submission controls", () => {
   });
   it("preserves job snapshot and reasoning in actual request", async () => {
     const api = {
-      get: vi.fn(async () => [
-        { name: "support-v1", training_count: 80, validation_count: 20 },
-      ]),
-      post: vi.fn(async () => ({ name: "new-job" })),
-    },
+        get: vi.fn(async () => [
+          { name: "support-v1", training_count: 80, validation_count: 20 },
+        ]),
+        post: vi.fn(async () => ({ name: "new-job" })),
+      },
       s = runtime(api);
     wrap(<JobDialog onClose={() => {}} />, s);
     await screen.findByRole("option", { name: "support-v1 — 80/20" });
@@ -346,9 +346,7 @@ describe("actual React submission controls", () => {
       </StudioContext.Provider>,
     );
     await screen.findAllByText("row 0");
-    fireEvent.change(screen.getByRole("combobox", { name: "Bucket" }), {
-      target: { value: "training" },
-    });
+    fireEvent.click(screen.getByRole("radio", { name: /^training/ }));
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith(
         "/api/datasets/support?offset=0&limit=15&bucket=training",

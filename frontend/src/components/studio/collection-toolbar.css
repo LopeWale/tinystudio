@@ -1,0 +1,63 @@
+@reference "../../styles/globals.css";
+/* Affect UI CRM/Data Table visual hierarchy: a quiet local command row and a
+   wide collection. Selection actions appear only when they have an object. */
+.collection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-inline-size: 0;
+}
+.collection-toolbar__search {
+  flex: 1 1 200px;
+  max-inline-size: 280px;
+  min-inline-size: 140px;
+}
+.collection-toolbar__search-field {
+  border: 1px solid var(--color-separator-border);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  background: var(--color-background-primary-default);
+}
+.collection-toolbar__search input {
+  @apply text-body-2-regular;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+.collection-toolbar__search input::placeholder {
+  color: var(--color-text-secondary);
+}
+.collection-toolbar__selection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  @apply text-caption-1-regular;
+}
+.collection-toolbar__selection > span {
+  color: var(--color-text-secondary);
+}
+.data-table__context {
+  flex: 1 1 240px;
+  min-inline-size: 0;
+}
+@media (max-width: 700px) {
+  .data-table__context {
+    flex-basis: 100%;
+  }
+  .collection-toolbar__search {
+    max-inline-size: none;
+  }
+  .collection-toolbar__search-field {
+    min-block-size: 44px;
+    box-sizing: border-box;
+  }
+  .collection-toolbar__selection {
+    flex-basis: 100%;
+  }
+}

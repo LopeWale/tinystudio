@@ -1,3 +1,10 @@
+import { SegmentedControl } from "../../components/affectui/controls";
+import { Input as StyledInput } from "../../components/boardui/base/input/input";
+import "../../components/studio/form-controls.css";
+import {
+  CollectionToolbar,
+  CollectionSelectionActions,
+} from "../../components/studio/collection-toolbar";
 import { AdvancedTable, SimpleTable } from "../../components/studio/data-table";
 import {
   CollectionTemplate,
@@ -6,7 +13,7 @@ import {
   AnalysisTemplate,
 } from "../../components/studio/templates";
 import { useComponentAction } from "../assistant/actions";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useId } from "react";
 import { useParams } from "react-router-dom";
 import { useStudio, useResource } from "../../app/StudioContext";
 import {
@@ -340,6 +347,14 @@ export function DatasetsPage() {
     [comparing, compare] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null),
     compareFocus = useRef<HTMLElement | null>(null);
+  const collectionSearch = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!comparing && compareFocus.current) {
+      const trigger = compareFocus.current;
+      if (trigger.isConnected && !trigger.matches(":disabled")) trigger.focus();
+      else collectionSearch.current?.focus();
+    }
+  }, [comparing]);
   const closeInspection = () => {
     inspect(null);
     returnFocus.current?.focus();
@@ -375,7 +390,7 @@ export function DatasetsPage() {
   });
   return (
     <Page
-      className="data-workspace records-page"
+      className="data-workspace records-page collection-page"
       title="Datasets"
       description="Prepare, review, and snapshot the data your models learn from."
       actions={
@@ -387,43 +402,6 @@ export function DatasetsPage() {
       <CollectionTemplate
         className="data-template"
         label="Dataset collection workspace"
-        toolbar={
-          <div
-            className={cx(
-              "records-toolbar",
-              !checked.length && "records-toolbar--unselected",
-            )}
-          >
-            <Input
-              label="Find a dataset"
-              type="search"
-              value={q}
-              onChange={Q}
-            />
-            <span className="records-count">{visible.length} datasets</span>
-            <span className="records-selection" role="status">
-              {checked.length} selected
-            </span>
-            <Button
-              className="records-bulk-action"
-              disabled={checked.length < 2}
-              onClick={(event) => {
-                compareFocus.current = event.currentTarget;
-                compare(true);
-              }}
-            >
-              Compare selected
-            </Button>
-            <Button
-              className="records-bulk-action"
-              disabled={!checked.length}
-              variant="ghost"
-              onClick={() => setChecked([])}
-            >
-              Clear selection
-            </Button>
-          </div>
-        }
       >
         <ErrorNotice error={r.error} />
         {r.isStale && !r.loading && (
@@ -471,6 +449,37 @@ export function DatasetsPage() {
         >
           <RecordsScroll label="Dataset collection">
             <AdvancedTable
+              empty={
+                r.loading ? (
+                  "Loading records…"
+                ) : (
+                  <EmptyState>
+                    {q ? (
+                      <>
+                        No datasets match “{q}”.{" "}
+                        <Button onClick={() => Q("")}>Clear search</Button>
+                      </>
+                    ) : (
+                      "No datasets yet. Upload JSONL or generate examples from documents."
+                    )}
+                  </EmptyState>
+                )
+              }
+              toolbarContent={
+                <CollectionToolbar
+                  searchRef={collectionSearch}
+                  label="Find a dataset"
+                  query={q}
+                  onQueryChange={Q}
+                  selectedCount={checked.length}
+                  onCompare={(event) => {
+                    compareFocus.current = event.currentTarget;
+                    compare(true);
+                  }}
+                  onClearSelection={() => setChecked([])}
+                />
+              }
+              assistantActionsEnabled={!comparing}
               scopeKey={s.scopeKey + ":" + s.route}
               label="Datasets"
               rows={visible}
@@ -573,18 +582,6 @@ export function DatasetsPage() {
                 ),
               })}
             />
-            {!r.loading && !visible.length && (
-              <EmptyState>
-                {q ? (
-                  <>
-                    No datasets match “{q}”.{" "}
-                    <Button onClick={() => Q("")}>Clear search</Button>
-                  </>
-                ) : (
-                  "No datasets yet. Upload JSONL or generate examples from documents."
-                )}
-              </EmptyState>
-            )}
           </RecordsScroll>
           {inspected && (
             <DetailInspector title={inspected.name} onClose={closeInspection}>
@@ -626,6 +623,15 @@ export function DatasetPage() {
     name = params.name || params.dataset || "";
   const s = useStudio(),
     a = useAction();
+  const [view, setView] = useState("records");
+  const panelId = useId();
+  const recordsFocus = useRef<HTMLDivElement>(null);
+  const dialogGeneration = useRef(0);
+  const submissionGeneration = useRef<number | null>(null);
+  const closeDialog = () => {
+    dialogGeneration.current++;
+    D("");
+  };
   const [bucket, B] = useState(""),
     [offset, O] = useState(0),
     [dialog, D] = useState(""),
@@ -638,7 +644,12 @@ export function DatasetPage() {
     compareFocus = useRef<HTMLElement | null>(null);
   const closeInspection = () => {
     S(null);
-    returnFocus.current?.focus();
+    if (
+      returnFocus.current?.isConnected &&
+      !returnFocus.current.closest("[hidden]")
+    )
+      returnFocus.current.focus();
+    else recordsFocus.current?.focus();
   };
   const toggleRecord = (record: any) =>
     setChecked((previous) =>
@@ -649,15 +660,20 @@ export function DatasetPage() {
   const r = useRetainedResource<any>(
     `/api/datasets/${enc(name)}?offset=${offset}&limit=15${bucket ? `&bucket=${enc(bucket)}` : ""}`,
   );
-  const snaps = useResource<any[]>("/api/snapshots");
+  const snaps = useRetainedResource<any[]>("/api/snapshots");
   useEffect(() => {
+    setView("records");
+    dialogGeneration.current++;
     B("");
     O(0);
     D("");
     S(null);
     setChecked([]);
     compare(false);
-  }, [name, s.project]);
+    return () => {
+      dialogGeneration.current++;
+    };
+  }, [name, s.project, s.user?.id]);
   const meta = r.data?.meta || {},
     rows = r.data?.rows || [],
     ownSnaps = (snaps.data || []).filter((x) => x.dataset === name);
@@ -677,6 +693,14 @@ export function DatasetPage() {
   }, [r.data]);
   const field = (k: string) => (x: any) => V((p: any) => ({ ...p, [k]: x }));
   function open(type: string) {
+    if (type === "snapshots") {
+      setView("snapshots");
+      requestAnimationFrame(() =>
+        document.getElementById(panelId + "-snapshots")?.focus(),
+      );
+      return;
+    }
+    dialogGeneration.current++;
     a.clearError();
     D(type);
     V({
@@ -703,6 +727,7 @@ export function DatasetPage() {
     label: "Filter datapoints by bucket",
     kind: "filter",
     state: bucket,
+    disabled: view !== "records" || comparing || Boolean(dialog),
     options: [
       { value: "", label: "All buckets" },
       ...["training", "validation", "uncategorized"].map((value) => ({
@@ -726,7 +751,8 @@ export function DatasetPage() {
       value: String(row.id),
       label: `Datapoint ${row.id}`,
     })),
-    disabled: !rows.length,
+    disabled:
+      !rows.length || view !== "records" || comparing || Boolean(dialog),
     run: (value) => {
       const row = rows.find((item: any) => String(item.id) === value);
       if (!row) throw Error("Choose a visible datapoint");
@@ -739,8 +765,10 @@ export function DatasetPage() {
     label: "Open dataset setup",
     kind: "open",
     state: dialog,
+    disabled: Boolean(dialog) || a.busy,
     options: [
       ["snapshots", "Snapshots"],
+      ["create-snapshot", "Create snapshot"],
       ["quality", "Quality"],
       ["labels", "Labels"],
       ["split", "Autosplit"],
@@ -752,6 +780,7 @@ export function DatasetPage() {
       if (
         ![
           "snapshots",
+          "create-snapshot",
           "quality",
           "labels",
           "split",
@@ -764,63 +793,94 @@ export function DatasetPage() {
       open(value!);
     },
   });
+  function runSave() {
+    const generation = dialogGeneration.current;
+    if (submissionGeneration.current === generation) return;
+    submissionGeneration.current = generation;
+    void a.run(save).finally(() => {
+      if (submissionGeneration.current === generation)
+        submissionGeneration.current = null;
+    });
+  }
   async function save() {
-    let result;
-    if (dialog === "split")
-      result = await s.api.post(`/api/datasets/${enc(name)}/split`, {
-        train_pct: Number(v.train_pct),
-        synthetic_in_validation: v.synthetic_in_validation,
-      });
-    if (dialog === "enrich")
-      result = await s.api.post("/api/augment", {
-        dataset: name,
-        count: Number(v.count),
-        temperature: Number(v.temperature),
-        instructions: v.instructions,
-        avoid: v.avoid,
-      });
-    if (dialog === "add")
-      result = await s.api.post("/api/datapoints", {
-        dataset: name,
-        bucket: v.bucket,
-        messages: [
-          ...(v.system.trim()
-            ? [{ role: "system", content: v.system.trim() }]
-            : []),
-          { role: "user", content: v.user.trim() },
-          { role: "assistant", content: v.assistant.trim() },
-        ],
-      });
-    if (dialog === "snapshots")
-      result = await s.api.post("/api/snapshots", {
-        dataset: name,
-        name: v.name.trim() || `${name}-v${ownSnaps.length + 1}`,
-      });
-    if (dialog === "labels" || dialog === "auto-label") {
-      await s.api.put(`/api/datasets/${enc(name)}/labels`, {
-        labels: labels
-          .filter((x) => x.name.trim())
-          .map((x) => ({ ...x, name: x.name.trim() })),
-      });
-      if (dialog === "auto-label")
-        result = await s.api.post(`/api/datasets/${enc(name)}/auto-label`, {});
+    const generation = dialogGeneration.current;
+    const isCurrent = () => generation === dialogGeneration.current;
+    try {
+      let result;
+      if (dialog === "split")
+        result = await s.api.post(`/api/datasets/${enc(name)}/split`, {
+          train_pct: Number(v.train_pct),
+          synthetic_in_validation: v.synthetic_in_validation,
+        });
+      if (dialog === "enrich")
+        result = await s.api.post("/api/augment", {
+          dataset: name,
+          count: Number(v.count),
+          temperature: Number(v.temperature),
+          instructions: v.instructions,
+          avoid: v.avoid,
+        });
+      if (dialog === "add")
+        result = await s.api.post("/api/datapoints", {
+          dataset: name,
+          bucket: v.bucket,
+          messages: [
+            ...(v.system.trim()
+              ? [{ role: "system", content: v.system.trim() }]
+              : []),
+            { role: "user", content: v.user.trim() },
+            { role: "assistant", content: v.assistant.trim() },
+          ],
+        });
+      if (dialog === "create-snapshot")
+        result = await s.api.post("/api/snapshots", {
+          dataset: name,
+          name: v.name.trim() || `${name}-v${ownSnaps.length + 1}`,
+        });
+      if (dialog === "labels" || dialog === "auto-label") {
+        await s.api.put(`/api/datasets/${enc(name)}/labels`, {
+          labels: labels
+            .filter((x) => x.name.trim())
+            .map((x) => ({ ...x, name: x.name.trim() })),
+        });
+        if (!isCurrent()) return;
+        if (dialog === "auto-label")
+          result = await s.api.post(
+            `/api/datasets/${enc(name)}/auto-label`,
+            {},
+          );
+      }
+      if (!isCurrent()) return;
+      if (result) track(s, result);
+      D("");
+      r.reload();
+      snaps.reload();
+      await s.refreshOverview();
+    } catch (error) {
+      if (isCurrent()) throw error;
     }
-    if (result) track(s, result);
-    D("");
-    r.reload();
-    snaps.reload();
-    await s.refreshOverview();
   }
   return (
     <Page
-      className="data-workspace records-page"
+      className="data-workspace records-page dataset-detail-page"
       title={name}
+      navigation={
+        <a className="dataset-back" href="#/datasets">
+          ← Back to datasets
+        </a>
+      }
       description={`${r.data?.total ?? "…"} datapoints`}
       actions={
         <div className="data-actions">
-          <Button variant="primary" onClick={() => open("add")}>
-            Add datapoint
+          <Button
+            variant="primary"
+            onClick={() =>
+              open(view === "snapshots" ? "create-snapshot" : "add")
+            }
+          >
+            {view === "snapshots" ? "Create snapshot" : "Add datapoint"}
           </Button>
+          <Button onClick={() => open("quality")}>Quality</Button>
           <details className="records-command-menu">
             <summary>Dataset actions</summary>
             <div className="records-command-options">
@@ -834,616 +894,681 @@ export function DatasetPage() {
                   {label}
                 </Button>
               ))}
+              <a
+                href={scopedDownload(
+                  s.project,
+                  `/api/datasets/${enc(name)}/download`,
+                )}
+              >
+                Download
+              </a>
+              <Button
+                variant="danger"
+                onClick={() =>
+                  a.run(async () => {
+                    if (
+                      await s.confirm(
+                        `Delete "${name}" and its datapoints? Snapshots are kept.`,
+                      )
+                    ) {
+                      await s.api.del(`/api/datasets/${enc(name)}`);
+                      s.navigate("#/datasets");
+                    }
+                  })
+                }
+              >
+                Delete dataset
+              </Button>
             </div>
           </details>
-          <a
-            href={scopedDownload(
-              s.project,
-              `/api/datasets/${enc(name)}/download`,
-            )}
-          >
-            Download
-          </a>
-          <Button
-            variant="danger"
-            onClick={() =>
-              a.run(async () => {
-                if (
-                  await s.confirm(
-                    `Delete "${name}" and its datapoints? Snapshots are kept.`,
-                  )
-                ) {
-                  await s.api.del(`/api/datasets/${enc(name)}`);
-                  s.navigate("#/datasets");
-                }
-              })
-            }
-          >
-            Delete
-          </Button>
         </div>
       }
     >
-      <DetailTemplate
-        className="data-template"
-        label="Dataset record workspace"
-        summary={
-          <>
-            <nav className="data-view-navigation" aria-label="Dataset views">
-              <a href={`#/datasets/${enc(name)}`} aria-current="page">
-                Rows
-              </a>
-              <Button variant="ghost" onClick={() => open("quality")}>
-                Quality
-              </Button>
-              <Button variant="ghost" onClick={() => open("snapshots")}>
-                Snapshots
-              </Button>
-            </nav>
-            <div className="data-toolbar">
-              {["uncategorized", "training", "validation"].map((b) => (
-                <Evidence
-                  key={b}
-                  label="Dataset bucket"
-                  data={{ bucket: b, count: meta.buckets?.[b] }}
-                >
-                  <Button
-                    aria-pressed={bucket === b}
-                    onClick={() => {
-                      B(bucket === b ? "" : b);
-                      O(0);
-                    }}
-                  >
-                    {b}: {meta.buckets?.[b] ?? "…"}
-                  </Button>
-                </Evidence>
-              ))}
-            </div>
-          </>
-        }
-        toolbar={
-          <div
-            className={cx(
-              "records-toolbar",
-              !checked.length && "records-toolbar--unselected",
-            )}
-          >
-            <Select
-              label="Bucket"
-              value={bucket}
-              onChange={(value: string) => {
-                B(value);
-                O(0);
-              }}
-              options={[
-                { value: "", label: "All buckets" },
-                "uncategorized",
-                "training",
-                "validation",
-              ]}
-            />
-            <span className="records-selection" role="status">
-              {checked.length} selected
-            </span>
-            <Button
-              className="records-bulk-action"
-              disabled={checked.length < 2}
-              onClick={(event) => {
-                compareFocus.current = event.currentTarget;
-                compare(true);
-              }}
-            >
-              Compare selected
-            </Button>
-            <Button
-              className="records-bulk-action"
-              disabled={!checked.length}
-              variant="ghost"
-              onClick={() => setChecked([])}
-            >
-              Clear selection
-            </Button>
-            {r.error && <Button onClick={r.reload}>Retry datapoints</Button>}
-          </div>
-        }
+      <div className="dataset-view-tabs">
+        <SegmentedControl
+          kind="tabs"
+          variant="underline"
+          size="sm"
+          aria-label="Dataset views"
+          value={view}
+          onChange={setView}
+          options={[
+            {
+              value: "records",
+              label: "Records",
+              controls: panelId + "-records",
+            },
+            {
+              value: "snapshots",
+              label: "Snapshots",
+              controls: panelId + "-snapshots",
+            },
+          ]}
+        />
+      </div>
+      <div
+        id={panelId + "-records"}
+        role="tabpanel"
+        tabIndex={-1}
+        aria-label="Records"
+        hidden={view !== "records"}
+        className="dataset-view-panel"
       >
-        <ErrorNotice error={r.error || a.error} />
-        {r.isStale && !r.loading && (
-          <p role="status">Refresh failed. Previous results remain visible.</p>
-        )}
-        {!ownSnaps.length && (
-          <p>Create a snapshot to run finetuning and evaluation.</p>
-        )}
-        {comparing && (
-          <RecordComparison
-            records={checked}
-            fields={[
-              {
-                label: "User message",
-                value: (row) =>
-                  [...row.messages]
-                    .reverse()
-                    .find((m: any) => m.role === "user")?.content || "—",
-              },
-              {
-                label: "Assistant response",
-                value: (row) =>
-                  [...row.messages]
-                    .reverse()
-                    .find((m: any) => m.role === "assistant")?.content || "—",
-              },
-              { label: "Bucket", value: (row) => row.bucket || "—" },
-              {
-                label: "Labels",
-                value: (row) => (row.labels || []).join(", ") || "—",
-              },
-              { label: "Source", value: (row) => row.source || "uploaded" },
-              {
-                label: "Rating",
-                value: (row) => (row.rating == null ? "—" : `${row.rating}/10`),
-              },
-            ]}
-            onRemove={toggleRecord}
-            onClose={() => {
-              compare(false);
-              compareFocus.current?.focus();
-            }}
-          />
-        )}
-        <div
-          hidden={comparing}
-          className={cx(
-            "records-workbench",
-            selected && "records-workbench-inspecting",
-          )}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") closeInspection();
-          }}
+        <DetailTemplate
+          className="data-template"
+          label="Dataset record workspace"
         >
-          <div className="records-collection">
-            <RecordsScroll label="Datapoint collection">
-              {r.loading && (
-                <p role="status">
-                  {r.isStale
-                    ? "Refreshing datapoints… Previous results remain visible."
-                    : "Loading datapoints…"}
-                </p>
-              )}
-              <AdvancedTable
-                scopeKey={s.scopeKey + ":" + s.route}
-                label="Dataset records"
-                rows={rows}
-                getRowId={(row: any) => String(row.id)}
-                pagination="external"
-                columns={[
-                  {
-                    id: "col-0",
-                    label: "Select",
-                    value: (row: any) =>
-                      checked.some((item) => item.id === row.id),
-                    sortable: false,
-                    filterable: false,
-                    hideable: false,
-                    render: (row: any) => (
-                      <>
-                        <Checkbox
-                          aria-label={`Select datapoint ${row.id}`}
-                          isSelected={checked.some(
-                            (item) => item.id === row.id,
-                          )}
-                          onChange={() => toggleRecord(row)}
-                        />
-                      </>
-                    ),
-                  },
-                  {
-                    id: "col-1",
-                    label: "#",
-                    value: (row: any) => offset + rows.indexOf(row) + 1,
-                    render: (row: any) => <>{offset + rows.indexOf(row) + 1}</>,
-                  },
-                  {
-                    id: "col-2",
-                    label: "User message",
-                    hideable: false,
-                    value: (row: any) =>
-                      [...row.messages]
-                        .reverse()
-                        .find((m: any) => m.role === "user")?.content ||
-                      "No user message",
-                    render: (row: any) => (
-                      <>
-                        <Button
-                          variant="ghost"
-                          aria-label={`Inspect datapoint ${row.id}: ${[...row.messages].reverse().find((m: any) => m.role === "user")?.content || "No user message"}`}
-                          aria-pressed={selected?.id === row.id}
-                          onClick={(event) => {
-                            returnFocus.current = event.currentTarget;
-                            a.clearError();
-                            S(row);
-                          }}
-                        >
-                          <span className="data-cell-preview">
-                            {[...row.messages]
-                              .reverse()
-                              .find((m: any) => m.role === "user")?.content ||
-                              "No user message"}
-                          </span>
-                        </Button>
-                      </>
-                    ),
-                  },
-                  {
-                    id: "col-3",
-                    label: "Assistant response",
-                    value: (row: any) => row.messages.at(-1)?.content,
-                    render: (row: any) => (
-                      <>
-                        <span className="data-cell-preview">
-                          {row.messages.at(-1)?.content}
-                        </span>
-                      </>
-                    ),
-                  },
-                  {
-                    id: "col-4",
-                    label: "Bucket",
-                    value: (row: any) => row.bucket,
-                    render: (row: any) => <>{row.bucket}</>,
-                  },
-                  {
-                    id: "col-5",
-                    label: "Labels",
-                    value: (row: any) => (row.labels || []).join(", "),
-                    render: (row: any) => (
-                      <>{(row.labels || []).join(", ") || "—"}</>
-                    ),
-                  },
-                  {
-                    id: "col-6",
-                    label: "Data type",
-                    value: (row: any) => row.source || "uploaded",
-                    render: (row: any) => <>{row.source || "uploaded"}</>,
-                  },
-                ]}
-                renderRow={(row: any, { key, ...props }, cells) => (
-                  <Evidence
-                    as="tr"
-                    {...props}
-                    key={key}
-                    label="Datapoint"
-                    data={row}
-                  >
-                    {cells}
-                  </Evidence>
-                )}
-                rowProps={(row: any) => ({
-                  className: cx(selected?.id === row.id && "records-inspected"),
-                })}
-              />
-              {!r.loading && !rows.length && (
-                <EmptyState>
-                  No datapoints in this view.{" "}
-                  {bucket && (
-                    <Button
-                      onClick={() => {
-                        B("");
-                        O(0);
-                      }}
-                    >
-                      Show all buckets
-                    </Button>
-                  )}
-                </EmptyState>
-              )}
-            </RecordsScroll>
-            <Pager
-              offset={offset}
-              limit={15}
-              total={bucket ? meta.buckets?.[bucket] || 0 : r.data?.total || 0}
-              onChange={O}
-            />
-          </div>
-          {selected && (
-            <DetailInspector
-              title={`Datapoint ${selected.id ?? ""}`}
-              onClose={closeInspection}
-            >
-              <div className="records-inspector-navigation">
-                <span>
-                  {rows.some((row: any) => row.id === selected.id)
-                    ? `${rows.findIndex((row: any) => row.id === selected.id) + 1} of ${rows.length} on this page`
-                    : "Outside the current page"}
-                </span>
-                <Button
-                  size="sm"
-                  disabled={
-                    rows.findIndex((row: any) => row.id === selected.id) <= 0
-                  }
-                  onClick={() =>
-                    S(
-                      rows[
-                        rows.findIndex((row: any) => row.id === selected.id) - 1
-                      ],
-                    )
-                  }
-                >
-                  Previous record
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={
-                    rows.findIndex((row: any) => row.id === selected.id) < 0 ||
-                    rows.findIndex((row: any) => row.id === selected.id) >=
-                      rows.length - 1
-                  }
-                  onClick={() =>
-                    S(
-                      rows[
-                        rows.findIndex((row: any) => row.id === selected.id) + 1
-                      ],
-                    )
-                  }
-                >
-                  Next record
-                </Button>
-              </div>
-              <Evidence label="Selected datapoint" data={selected}>
-                <Messages messages={selected.messages} />
-                <dl className="records-facts">
-                  <dt>Bucket</dt>
-                  <dd>{selected.bucket}</dd>
-                  <dt>Labels</dt>
-                  <dd>{(selected.labels || []).join(", ") || "none"}</dd>
-                  <dt>Source</dt>
-                  <dd>{selected.source || "uploaded"}</dd>
-                  <dt>Rating</dt>
-                  <dd>
-                    {selected.rating == null ? "—" : `${selected.rating}/10`}
-                  </dd>
-                </dl>
-              </Evidence>
-            </DetailInspector>
+          <ErrorNotice error={r.error || a.error} />
+          {r.isStale && !r.loading && (
+            <p role="status">
+              Refresh failed. Previous results remain visible.
+            </p>
           )}
-        </div>
-        {dialog === "quality" && (
-          <QualityDialog
-            name={name}
-            onClose={() => {
-              D("");
-              r.reload();
+          {comparing && (
+            <RecordComparison
+              records={checked}
+              fields={[
+                {
+                  label: "User message",
+                  value: (row) =>
+                    [...row.messages]
+                      .reverse()
+                      .find((m: any) => m.role === "user")?.content || "—",
+                },
+                {
+                  label: "Assistant response",
+                  value: (row) =>
+                    [...row.messages]
+                      .reverse()
+                      .find((m: any) => m.role === "assistant")?.content || "—",
+                },
+                { label: "Bucket", value: (row) => row.bucket || "—" },
+                {
+                  label: "Labels",
+                  value: (row) => (row.labels || []).join(", ") || "—",
+                },
+                { label: "Source", value: (row) => row.source || "uploaded" },
+                {
+                  label: "Rating",
+                  value: (row) =>
+                    row.rating == null ? "—" : `${row.rating}/10`,
+                },
+              ]}
+              onRemove={toggleRecord}
+              onClose={() => {
+                compare(false);
+                requestAnimationFrame(() => {
+                  if (
+                    compareFocus.current?.isConnected &&
+                    !compareFocus.current.matches(":disabled") &&
+                    !compareFocus.current.closest("[hidden]")
+                  )
+                    compareFocus.current.focus();
+                  else recordsFocus.current?.focus();
+                });
+              }}
+            />
+          )}
+          <div
+            hidden={comparing}
+            className={cx(
+              "records-workbench",
+              selected && "records-workbench-inspecting",
+            )}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeInspection();
             }}
-          />
-        )}
-        {dialog === "job" && (
-          <JobDialog onClose={() => D("")} snapshot={ownSnaps[0]?.name} />
-        )}{" "}
-        {dialog && !["quality", "job"].includes(dialog) && (
-          <Modal
-            open
-            wide
-            title={
-              {
-                snapshots: "Snapshots",
-                split: "Autosplit dataset",
-                enrich: "Enrich dataset",
-                add: "Add datapoint",
-                labels: "Labels",
-                "auto-label": "Labels",
-              }[dialog]
-            }
-            onClose={() => D("")}
-            footer={
-              <div className="data-actions">
-                {dialog === "labels" && (
-                  <Button
-                    onClick={() => {
-                      a.clearError();
-                      D("auto-label");
-                    }}
-                  >
-                    Auto-label with helper LLM
-                  </Button>
-                )}
-                <Button
-                  variant="primary"
-                  loading={a.busy}
-                  onClick={() => a.run(save)}
-                >
-                  {dialog === "auto-label"
-                    ? "Save labels & auto-label"
-                    : dialog === "snapshots"
-                      ? "Create snapshot"
-                      : "Save"}
-                </Button>
-              </div>
-            }
           >
-            <ErrorNotice error={a.error} />
-            {dialog === "snapshots" ? (
-              <>
-                <p>Snapshots freeze current training and validation buckets.</p>
-                <SimpleTable
+            <div className="records-collection">
+              <RecordsScroll label="Datapoint collection">
+                {r.loading && (
+                  <p role="status">
+                    {r.isStale
+                      ? "Refreshing datapoints… Previous results remain visible."
+                      : "Loading datapoints…"}
+                  </p>
+                )}
+                <AdvancedTable
                   scopeKey={s.scopeKey + ":" + s.route}
-                  label="Snapshots"
-                  rows={ownSnaps}
-                  getRowId={(x: any) => String(x.name)}
-                  pagination="none"
+                  label="Dataset records"
+                  assistantActionsEnabled={
+                    view === "records" && !comparing && !dialog
+                  }
+                  toolbarContent={
+                    <div
+                      className="dataset-record-controls"
+                      ref={recordsFocus}
+                      tabIndex={-1}
+                    >
+                      <SegmentedControl
+                        aria-label="Bucket"
+                        size="sm"
+                        variant="tray"
+                        value={bucket}
+                        onChange={(value) => {
+                          B(value);
+                          O(0);
+                        }}
+                        options={[
+                          {
+                            value: "",
+                            label: "All buckets",
+                            count: r.data?.total ?? "…",
+                          },
+                          ...["training", "validation", "uncategorized"].map(
+                            (value) => ({
+                              value,
+                              label: value,
+                              count: meta.buckets?.[value] ?? "…",
+                            }),
+                          ),
+                        ]}
+                      />
+                      <CollectionSelectionActions
+                        selectedCount={checked.length}
+                        returnFocus={recordsFocus}
+                        onCompare={(event) => {
+                          compareFocus.current = event.currentTarget;
+                          compare(true);
+                        }}
+                        onClearSelection={() => setChecked([])}
+                      />
+                    </div>
+                  }
+                  rows={rows}
+                  getRowId={(row: any) => String(row.id)}
+                  pagination="external"
                   columns={[
                     {
                       id: "col-0",
-                      label: "Name",
-                      value: (x: any) => x.name,
-                      render: (x: any) => <>{x.name}</>,
-                    },
-                    {
-                      id: "col-1",
-                      label: "Training",
-                      value: (x: any) => x.training_count,
-                      render: (x: any) => <>{x.training_count}</>,
-                    },
-                    {
-                      id: "col-2",
-                      label: "Validation",
-                      value: (x: any) => x.validation_count,
-                      render: (x: any) => <>{x.validation_count}</>,
-                    },
-                    {
-                      id: "col-3",
-                      label: "Actions",
-                      value: (x: any) => x.name,
+                      label: "Select",
+                      width: 56,
+                      value: (row: any) =>
+                        checked.some((item) => item.id === row.id),
                       sortable: false,
                       filterable: false,
                       hideable: false,
-                      render: (x: any) => (
+                      render: (row: any) => (
                         <>
-                          <a
-                            href={scopedDownload(
-                              s.project,
-                              `/api/snapshots/${enc(x.name)}/download`,
+                          <Checkbox
+                            aria-label={`Select datapoint ${row.id}`}
+                            isSelected={checked.some(
+                              (item) => item.id === row.id,
                             )}
-                          >
-                            Download
-                          </a>
+                            onChange={() => toggleRecord(row)}
+                          />
+                        </>
+                      ),
+                    },
+                    {
+                      id: "col-1",
+                      label: "#",
+                      width: 48,
+                      value: (row: any) => offset + rows.indexOf(row) + 1,
+                      render: (row: any) => (
+                        <>{offset + rows.indexOf(row) + 1}</>
+                      ),
+                    },
+                    {
+                      id: "col-2",
+                      label: "User message",
+                      width: "30%",
+                      hideable: false,
+                      value: (row: any) =>
+                        [...row.messages]
+                          .reverse()
+                          .find((m: any) => m.role === "user")?.content ||
+                        "No user message",
+                      render: (row: any) => (
+                        <>
                           <Button
-                            variant="danger"
-                            onClick={() =>
-                              a.run(async () => {
-                                if (
-                                  await s.confirm(
-                                    `Delete snapshot "${x.name}"? Existing results are kept.`,
-                                  )
-                                ) {
-                                  await s.api.del(
-                                    `/api/snapshots/${enc(x.name)}`,
-                                  );
-                                  snaps.reload();
-                                  await s.refreshOverview();
-                                }
-                              })
-                            }
+                            variant="ghost"
+                            className="dataset-record-open"
+                            aria-label={`Inspect datapoint ${row.id}: ${[...row.messages].reverse().find((m: any) => m.role === "user")?.content || "No user message"}`}
+                            aria-pressed={selected?.id === row.id}
+                            onClick={(event) => {
+                              returnFocus.current = event.currentTarget;
+                              a.clearError();
+                              S(row);
+                            }}
                           >
-                            Delete
+                            <span className="data-cell-preview">
+                              {[...row.messages]
+                                .reverse()
+                                .find((m: any) => m.role === "user")?.content ||
+                                "No user message"}
+                            </span>
                           </Button>
                         </>
                       ),
                     },
+                    {
+                      id: "col-3",
+                      label: "Assistant response",
+                      width: "28%",
+                      value: (row: any) =>
+                        [...row.messages]
+                          .reverse()
+                          .find((message: any) => message.role === "assistant")
+                          ?.content || "—",
+                      render: (row: any) => (
+                        <>
+                          <span className="data-cell-preview">
+                            {[...row.messages]
+                              .reverse()
+                              .find(
+                                (message: any) => message.role === "assistant",
+                              )?.content || "—"}
+                          </span>
+                        </>
+                      ),
+                    },
+                    {
+                      id: "col-4",
+                      label: "Bucket",
+                      width: 100,
+                      value: (row: any) => row.bucket,
+                      render: (row: any) => <>{row.bucket}</>,
+                    },
+                    {
+                      id: "col-5",
+                      label: "Labels",
+                      width: 100,
+                      value: (row: any) => (row.labels || []).join(", "),
+                      render: (row: any) => (
+                        <>{(row.labels || []).join(", ") || "—"}</>
+                      ),
+                    },
+                    {
+                      id: "col-6",
+                      label: "Data type",
+                      width: 110,
+                      value: (row: any) => row.source || "uploaded",
+                      render: (row: any) => <>{row.source || "uploaded"}</>,
+                    },
                   ]}
-                  renderRow={(x: any, { key, ...props }, cells) => (
+                  renderRow={(row: any, { key, ...props }, cells) => (
                     <Evidence
                       as="tr"
                       {...props}
                       key={key}
-                      label="Snapshot"
-                      data={x}
+                      label="Datapoint"
+                      data={row}
                     >
                       {cells}
                     </Evidence>
                   )}
+                  rowProps={(row: any) => ({
+                    className: cx(
+                      selected?.id === row.id && "records-inspected",
+                    ),
+                  })}
                 />
-                <Input
-                  label="New snapshot name"
-                  value={v.name}
-                  onChange={field("name")}
-                  placeholder={`${name}-v${ownSnaps.length + 1}`}
-                />
-              </>
-            ) : dialog === "split" ? (
-              <>
-                <p>Assign uncategorized rows; existing assignments are kept.</p>
-                <Input
-                  label="Training percentage"
-                  type="number"
-                  min={1}
-                  max={99}
-                  value={v.train_pct}
-                  onChange={field("train_pct")}
-                />
-                <Check
-                  label="Allow synthetic data in validation"
-                  checked={v.synthetic_in_validation}
-                  onChange={field("synthetic_in_validation")}
-                />
-              </>
-            ) : dialog === "enrich" ? (
-              <>
-                <Input
-                  label="New datapoints"
-                  type="number"
-                  min={1}
-                  max={2000}
-                  value={v.count}
-                  onChange={field("count")}
-                />
-                <Input
-                  label="Temperature"
-                  type="number"
-                  min={0}
-                  max={1.5}
-                  step={0.1}
-                  value={v.temperature}
-                  onChange={field("temperature")}
-                />
-                <Text
-                  label="Instructions"
-                  value={v.instructions}
-                  onChange={field("instructions")}
-                />
-                <Text label="Avoid" value={v.avoid} onChange={field("avoid")} />
-              </>
-            ) : dialog === "add" ? (
-              <>
-                {["system", "user", "assistant"].map((k) => (
-                  <Text key={k} label={k} value={v[k]} onChange={field(k)} />
-                ))}
-                <Select
-                  label="Bucket"
-                  value={v.bucket}
-                  onChange={field("bucket")}
-                  options={["uncategorized", "training", "validation"]}
-                />
-              </>
-            ) : (
-              <>
-                <p>
-                  Define a vocabulary; helper auto-labeling assigns one label
-                  per datapoint.
-                </p>
-                {labels.map((x, i) => (
-                  <div className="data-grid" key={i}>
-                    <Input
-                      label={`Label ${i + 1} name`}
-                      value={x.name}
-                      onChange={(name: string) =>
-                        L(labels.map((l, j) => (j === i ? { ...l, name } : l)))
-                      }
-                    />
-                    <Input
-                      label={`Label ${i + 1} description`}
-                      value={x.description}
-                      onChange={(description: string) =>
-                        L(
-                          labels.map((l, j) =>
-                            j === i ? { ...l, description } : l,
-                          ),
-                        )
-                      }
-                    />
-                    <Button onClick={() => L(labels.filter((_, j) => j !== i))}>
-                      Remove label {i + 1}
-                    </Button>
-                  </div>
-                ))}
-                <Button
-                  onClick={() => L([...labels, { name: "", description: "" }])}
-                >
-                  Add label
-                </Button>
-              </>
+                {!r.loading && !rows.length && (
+                  <EmptyState>
+                    No datapoints in this view.{" "}
+                    {bucket && (
+                      <Button
+                        onClick={() => {
+                          B("");
+                          O(0);
+                        }}
+                      >
+                        Show all buckets
+                      </Button>
+                    )}
+                  </EmptyState>
+                )}
+              </RecordsScroll>
+              <Pager
+                offset={offset}
+                limit={15}
+                total={
+                  bucket ? meta.buckets?.[bucket] || 0 : r.data?.total || 0
+                }
+                onChange={O}
+              />
+            </div>
+            {selected && (
+              <DetailInspector
+                title={`Datapoint ${selected.id ?? ""}`}
+                onClose={closeInspection}
+              >
+                <div className="records-inspector-navigation">
+                  <span>
+                    {rows.some((row: any) => row.id === selected.id)
+                      ? `${rows.findIndex((row: any) => row.id === selected.id) + 1} of ${rows.length} on this page`
+                      : "Outside the current page"}
+                  </span>
+                  <Button
+                    size="sm"
+                    disabled={
+                      rows.findIndex((row: any) => row.id === selected.id) <= 0
+                    }
+                    onClick={() =>
+                      S(
+                        rows[
+                          rows.findIndex((row: any) => row.id === selected.id) -
+                            1
+                        ],
+                      )
+                    }
+                  >
+                    Previous record
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={
+                      rows.findIndex((row: any) => row.id === selected.id) <
+                        0 ||
+                      rows.findIndex((row: any) => row.id === selected.id) >=
+                        rows.length - 1
+                    }
+                    onClick={() =>
+                      S(
+                        rows[
+                          rows.findIndex((row: any) => row.id === selected.id) +
+                            1
+                        ],
+                      )
+                    }
+                  >
+                    Next record
+                  </Button>
+                </div>
+                <Evidence label="Selected datapoint" data={selected}>
+                  <Messages messages={selected.messages} />
+                  <dl className="records-facts">
+                    <dt>Bucket</dt>
+                    <dd>{selected.bucket}</dd>
+                    <dt>Labels</dt>
+                    <dd>{(selected.labels || []).join(", ") || "none"}</dd>
+                    <dt>Source</dt>
+                    <dd>{selected.source || "uploaded"}</dd>
+                    <dt>Rating</dt>
+                    <dd>
+                      {selected.rating == null ? "—" : `${selected.rating}/10`}
+                    </dd>
+                  </dl>
+                </Evidence>
+              </DetailInspector>
             )}
-          </Modal>
-        )}
-      </DetailTemplate>
+          </div>
+        </DetailTemplate>
+      </div>
+      <div
+        id={panelId + "-snapshots"}
+        role="tabpanel"
+        tabIndex={-1}
+        aria-label="Snapshots"
+        hidden={view !== "snapshots"}
+        className="dataset-view-panel"
+      >
+        <DetailTemplate
+          className="data-template dataset-snapshots"
+          label="Dataset snapshots"
+        >
+          <div className="dataset-snapshot-summary">
+            <h2>Frozen versions</h2>
+            <p>
+              Snapshots preserve the training and validation records used by
+              fine tuning and evaluations.
+            </p>
+          </div>
+          <ErrorNotice error={snaps.error} />
+          {snaps.error && (
+            <Button onClick={snaps.reload}>Retry snapshots</Button>
+          )}
+          {snaps.loading && (
+            <p role="status">
+              {snaps.isStale
+                ? "Refreshing snapshots… Previous results remain visible."
+                : "Loading snapshots…"}
+            </p>
+          )}
+          {snaps.isStale && !snaps.loading && (
+            <p role="status">
+              Refresh failed. Previous snapshots remain visible.
+            </p>
+          )}
+          <AdvancedTable
+            scopeKey={s.scopeKey + ":" + s.route}
+            label="Snapshots"
+            rows={ownSnaps}
+            getRowId={(x: any) => String(x.name)}
+            pagination="client"
+            assistantActionsEnabled={view === "snapshots" && !dialog}
+            empty={
+              <EmptyState>
+                {snaps.loading
+                  ? "Loading snapshots…"
+                  : snaps.error
+                    ? "Snapshots could not be refreshed."
+                    : "No snapshots yet. Create a frozen version to start fine tuning or evaluation."}
+              </EmptyState>
+            }
+            columns={[
+              {
+                id: "col-0",
+                label: "Name",
+                value: (x: any) => x.name,
+                render: (x: any) => <>{x.name}</>,
+              },
+              {
+                id: "col-1",
+                label: "Training",
+                value: (x: any) => x.training_count,
+                render: (x: any) => <>{x.training_count}</>,
+              },
+              {
+                id: "col-2",
+                label: "Validation",
+                value: (x: any) => x.validation_count,
+                render: (x: any) => <>{x.validation_count}</>,
+              },
+              {
+                id: "col-3",
+                label: "Actions",
+                value: (x: any) => x.name,
+                sortable: false,
+                filterable: false,
+                hideable: false,
+                render: (x: any) => (
+                  <>
+                    <a
+                      href={scopedDownload(
+                        s.project,
+                        `/api/snapshots/${enc(x.name)}/download`,
+                      )}
+                    >
+                      Download
+                    </a>
+                    <Button
+                      variant="danger"
+                      onClick={() =>
+                        a.run(async () => {
+                          if (
+                            await s.confirm(
+                              `Delete snapshot "${x.name}"? Existing results are kept.`,
+                            )
+                          ) {
+                            await s.api.del(`/api/snapshots/${enc(x.name)}`);
+                            snaps.reload();
+                            await s.refreshOverview();
+                          }
+                        })
+                      }
+                    >
+                      Delete
+                    </Button>
+                  </>
+                ),
+              },
+            ]}
+            renderRow={(x: any, { key, ...props }, cells) => (
+              <Evidence as="tr" {...props} key={key} label="Snapshot" data={x}>
+                {cells}
+              </Evidence>
+            )}
+          />
+        </DetailTemplate>
+      </div>
+      {dialog === "quality" && (
+        <QualityDialog
+          name={name}
+          onClose={() => {
+            closeDialog();
+            r.reload();
+          }}
+        />
+      )}
+      {dialog === "job" && (
+        <JobDialog onClose={closeDialog} snapshot={ownSnaps[0]?.name} />
+      )}{" "}
+      {dialog && !["quality", "job"].includes(dialog) && (
+        <Modal
+          open
+          wide={dialog !== "create-snapshot" && dialog !== "split"}
+          title={
+            {
+              "create-snapshot": "Create snapshot",
+              split: "Autosplit dataset",
+              enrich: "Enrich dataset",
+              add: "Add datapoint",
+              labels: "Labels",
+              "auto-label": "Labels",
+            }[dialog]
+          }
+          onClose={closeDialog}
+          footer={
+            <div className="data-actions">
+              {dialog === "labels" && (
+                <Button
+                  onClick={() => {
+                    a.clearError();
+                    D("auto-label");
+                  }}
+                >
+                  Auto-label with helper LLM
+                </Button>
+              )}
+              <Button variant="primary" loading={a.busy} onClick={runSave}>
+                {dialog === "auto-label"
+                  ? "Save labels & auto-label"
+                  : dialog === "create-snapshot"
+                    ? "Create snapshot"
+                    : "Save"}
+              </Button>
+            </div>
+          }
+        >
+          <ErrorNotice error={a.error} />
+          {dialog === "create-snapshot" ? (
+            <>
+              <p>Snapshots freeze current training and validation buckets.</p>
+              <StyledInput
+                fieldClassName="studio-form-control"
+                label="New snapshot name"
+                value={v.name}
+                onChange={field("name")}
+                placeholder={`${name}-v${ownSnaps.length + 1}`}
+              />
+            </>
+          ) : dialog === "split" ? (
+            <>
+              <p>Assign uncategorized rows; existing assignments are kept.</p>
+              <Input
+                label="Training percentage"
+                type="number"
+                min={1}
+                max={99}
+                value={v.train_pct}
+                onChange={field("train_pct")}
+              />
+              <Check
+                label="Allow synthetic data in validation"
+                checked={v.synthetic_in_validation}
+                onChange={field("synthetic_in_validation")}
+              />
+            </>
+          ) : dialog === "enrich" ? (
+            <>
+              <Input
+                label="New datapoints"
+                type="number"
+                min={1}
+                max={2000}
+                value={v.count}
+                onChange={field("count")}
+              />
+              <Input
+                label="Temperature"
+                type="number"
+                min={0}
+                max={1.5}
+                step={0.1}
+                value={v.temperature}
+                onChange={field("temperature")}
+              />
+              <Text
+                label="Instructions"
+                value={v.instructions}
+                onChange={field("instructions")}
+              />
+              <Text label="Avoid" value={v.avoid} onChange={field("avoid")} />
+            </>
+          ) : dialog === "add" ? (
+            <>
+              {["system", "user", "assistant"].map((k) => (
+                <Text key={k} label={k} value={v[k]} onChange={field(k)} />
+              ))}
+              <Select
+                label="Bucket"
+                value={v.bucket}
+                onChange={field("bucket")}
+                options={["uncategorized", "training", "validation"]}
+              />
+            </>
+          ) : (
+            <>
+              <p>
+                Define a vocabulary; helper auto-labeling assigns one label per
+                datapoint.
+              </p>
+              {labels.map((x, i) => (
+                <div className="data-grid" key={i}>
+                  <Input
+                    label={`Label ${i + 1} name`}
+                    value={x.name}
+                    onChange={(name: string) =>
+                      L(labels.map((l, j) => (j === i ? { ...l, name } : l)))
+                    }
+                  />
+                  <Input
+                    label={`Label ${i + 1} description`}
+                    value={x.description}
+                    onChange={(description: string) =>
+                      L(
+                        labels.map((l, j) =>
+                          j === i ? { ...l, description } : l,
+                        ),
+                      )
+                    }
+                  />
+                  <Button onClick={() => L(labels.filter((_, j) => j !== i))}>
+                    Remove label {i + 1}
+                  </Button>
+                </div>
+              ))}
+              <Button
+                onClick={() => L([...labels, { name: "", description: "" }])}
+              >
+                Add label
+              </Button>
+            </>
+          )}
+        </Modal>
+      )}
     </Page>
   );
 }

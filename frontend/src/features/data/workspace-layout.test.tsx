@@ -149,7 +149,7 @@ describe("compact data workspaces", () => {
     fireEvent.click(within(controls).getByRole("button", { name: "Filters" }));
     fireEvent.click(
       within(
-        screen.getByRole("region", { name: "Datasets filters" }),
+        screen.getByRole("dialog", { name: "Datasets filters" }),
       ).getByRole("button", { name: /^Origin/ }),
     );
     fireEvent.click(screen.getByRole("checkbox", { name: "Uploaded" }));
@@ -222,6 +222,68 @@ describe("compact data workspaces", () => {
       ).toBe(true),
     );
   });
+  it("retains record state across keyboard tabs and revokes hidden assistant table controls", async () => {
+    const view = mount(
+      <DatasetPage />,
+      "/datasets/alpha",
+      "/datasets/:name",
+      vi.fn(async (path: string) =>
+        path === "/api/snapshots"
+          ? []
+          : {
+              total: 1,
+              meta: { buckets: { training: 1 } },
+              rows: [
+                {
+                  id: 42,
+                  bucket: "training",
+                  labels: [],
+                  messages: [
+                    { role: "user", content: "Question" },
+                    { role: "assistant", content: "Actual answer" },
+                    { role: "tool", content: "Later tool result" },
+                  ],
+                },
+              ],
+            },
+      ),
+    );
+    const table = await screen.findByRole("table", { name: "Dataset records" });
+    expect(within(table).getByText("Actual answer")).toBeVisible();
+    expect(within(table).queryByText("Later tool result")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select datapoint 42" }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Compact" }));
+    const oldDensity = view.registry
+      .inspect()
+      .actions.find((item) => item.label === "Dataset records: row density")!;
+    const recordsTab = screen.getByRole("tab", { name: "Records" });
+    recordsTab.focus();
+    fireEvent.keyDown(recordsTab, { key: "ArrowRight" });
+    expect(screen.getByRole("tabpanel", { name: "Snapshots" })).toBeVisible();
+    expect(screen.queryByRole("table", { name: "Dataset records" })).toBeNull();
+    await expect(
+      view.registry.execute(oldDensity.ref, "spacious", false),
+    ).rejects.toThrow("stale");
+    const select = view.registry
+      .inspect()
+      .actions.find((item) => item.id === "dataset.select")!;
+    expect(select.disabled).toBe(true);
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Snapshots" }), {
+      key: "ArrowLeft",
+    });
+    expect(screen.getByRole("radio", { name: "Compact" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(
+      screen.getByRole("checkbox", { name: "Select datapoint 42" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("button", { name: "Compare selected" }),
+    ).toBeDisabled();
+  });
   it("opens a linked datapoint inspector without obscuring or changing the table filter", async () => {
     const get = vi.fn(async (path: string) =>
       path === "/api/snapshots"
@@ -259,10 +321,10 @@ describe("compact data workspaces", () => {
     expect(
       screen.queryByRole("complementary", { name: "Datapoint 42" }),
     ).toBeNull();
-    expect(
-      (screen.getByRole("combobox", { name: "Bucket" }) as HTMLSelectElement)
-        .value,
-    ).toBe("");
+    expect(screen.getByRole("radio", { name: /^All buckets/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
   it("keeps dataset selection and bucket context when opening snapshots from local navigation", async () => {
     const get = vi.fn(async (path: string) =>
@@ -292,31 +354,28 @@ describe("compact data workspaces", () => {
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "Select datapoint 42" }),
     );
-    fireEvent.change(screen.getByRole("combobox", { name: "Bucket" }), {
-      target: { value: "training" },
-    });
-    const navigation = screen.getByRole("navigation", {
+    fireEvent.click(screen.getByRole("radio", { name: /^training/ }));
+    const navigation = screen.getByRole("tablist", {
       name: "Dataset views",
     });
     expect(
       within(navigation)
-        .getByRole("link", { name: "Rows" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-    fireEvent.click(
-      within(navigation).getByRole("button", { name: "Snapshots" }),
-    );
-    const snapshots = await screen.findByRole("dialog", { name: "Snapshots" });
+        .getByRole("tab", { name: "Records" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.click(within(navigation).getByRole("tab", { name: "Snapshots" }));
+    const snapshots = await screen.findByRole("tabpanel", {
+      name: "Snapshots",
+    });
+    expect(screen.queryByRole("table", { name: "Dataset records" })).toBeNull();
     expect(
       within(snapshots).getByRole("table", { name: "Snapshots" }).textContent,
     ).toContain("frozen-v1");
-    fireEvent.click(
-      within(snapshots).getByRole("button", { name: "Close dialog" }),
+    fireEvent.click(within(navigation).getByRole("tab", { name: "Records" }));
+    expect(screen.getByRole("radio", { name: /^training/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
     );
-    expect(
-      (screen.getByRole("combobox", { name: "Bucket" }) as HTMLSelectElement)
-        .value,
-    ).toBe("training");
     expect(
       (
         screen.getByRole("checkbox", {

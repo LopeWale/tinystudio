@@ -10,6 +10,7 @@ export type TemplateProps = {
   inspector?: ReactNode;
   className?: string;
   label?: string;
+  hidden?: boolean;
 };
 type TemplateKind =
   | "collection"
@@ -27,9 +28,11 @@ function Template({
   inspector,
   className,
   label,
+  hidden,
 }: TemplateProps & { kind: TemplateKind }) {
   return (
     <section
+      hidden={hidden}
       aria-label={label}
       className={cx("studio-template", `studio-template--${kind}`, className)}
       data-template={kind}
