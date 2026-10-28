@@ -5,10 +5,8 @@ import { cx } from "../boardui/utils/cx";
 
 import {
   isValidElement,
-  useEffect,
   useLayoutEffect,
   useRef,
-  useState,
   type ComponentPropsWithRef,
   type SyntheticEvent,
   type ReactNode,
@@ -56,12 +54,10 @@ export function Button({
   const tone = VARIANTS.includes(variant) ? variant : "primary";
   const scale = SIZES.includes(size) ? size : "md";
 
-  // Morph: when label or icon change, the width glides to its new size and the new content blurs in.
-  // Nothing animates on the first render.
+  // Only the width morphs when content changes. Essential labels and icons
+  // remain painted even when the browser suspends animations.
   const inner = useRef<HTMLButtonElement | null>(null);
   const lastWidth = useRef(0);
-  const [ready, setReady] = useState(false);
-  useEffect(() => setReady(true), []);
   const labelKey = text ?? "label";
   const iconKey = loading && icon ? "spinner" : contentKey(icon);
   const iconRightKey = contentKey(iconRight);
@@ -107,7 +103,6 @@ export function Button({
         data-icon-only={iconOnly || undefined}
         data-icon-left={(!iconOnly && Boolean(icon)) || undefined}
         data-icon-right={(!iconOnly && Boolean(iconRight)) || undefined}
-        data-ready={ready || undefined}
         ref={(el) => {
           inner.current = el;
           if (typeof ref === "function") ref(el);
@@ -134,7 +129,7 @@ export function Button({
           onPointerEnter?.(event);
         }}
       >
-        {/* New keys remount the parts that changed, which replays their enter animation */}
+        {/* Stable keys preserve unchanged icon and label content. */}
         {icon && (
           <span
             className="ui-buttonc__icon"
@@ -384,15 +379,9 @@ const css = /* css */ `
   object-fit: contain;
 }
 
-/* Morph: the button clips while its width glides; changed parts blur in */
+/* Clip only the width morph; label visibility never depends on an animation. */
 .ui-buttonc {
   overflow: clip;
-}
-.ui-buttonc[data-ready] .ui-buttonc__label {
-  animation: ui-buttonc-label-in 480ms cubic-bezier(0.25, 1, 0.5, 1) both;
-}
-.ui-buttonc[data-ready] .ui-buttonc__icon {
-  animation: ui-buttonc-icon-in 520ms cubic-bezier(0.25, 1, 0.5, 1) both;
 }
 
 /* Loading: a light band sweeps across a copy of the dimmed label */
@@ -431,21 +420,6 @@ const css = /* css */ `
   animation: ui-buttonc-spin 900ms linear infinite;
 }
 
-@keyframes ui-buttonc-label-in {
-  from {
-    opacity: 0;
-    filter: blur(3px);
-    transform: translateY(25%);
-  }
-}
-@keyframes ui-buttonc-icon-in {
-  from {
-    opacity: 0;
-    filter: blur(2px);
-    transform: scale(0.7);
-  }
-}
-
 @keyframes ui-buttonc-spin {
   to {
     transform: rotate(1turn);
@@ -462,10 +436,6 @@ const css = /* css */ `
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ui-buttonc[data-ready] .ui-buttonc__label,
-  .ui-buttonc[data-ready] .ui-buttonc__icon {
-    animation: none;
-  }
   .ui-buttonc {
     transition-duration: 1ms;
   }
