@@ -27,6 +27,37 @@ export class AssistantUiBridge {
       )
     );
   }
+  /** Recheck retained panes at use time; connection alone does not imply availability. */
+  private visible(element: Element) {
+    if (
+      !element.isConnected ||
+      element.getAttribute("type") === "hidden" ||
+      element.closest('[hidden],[inert],[aria-hidden="true"]') ||
+      !element.getClientRects().length
+    )
+      return false;
+    for (
+      let ancestor: Element | null = element;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      const style = getComputedStyle(ancestor);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse"
+      )
+        return false;
+    }
+    return true;
+  }
+  private disabled(element: Element) {
+    return (
+      element.matches(":disabled") ||
+      element.hasAttribute("disabled") ||
+      !!element.closest('[aria-disabled="true"]')
+    );
+  }
   private label(element: Element) {
     return (
       element.getAttribute("aria-label") ||
@@ -52,19 +83,14 @@ export class AssistantUiBridge {
     for (const element of root?.querySelectorAll(
       "button,a[href],input,select,textarea,[role=button]",
     ) || []) {
-      if (
-        this.blocked(element) ||
-        element.getAttribute("type") === "hidden" ||
-        !element.getClientRects().length
-      )
-        continue;
+      if (this.blocked(element) || !this.visible(element)) continue;
       const ref = `control_${this.refs.size + 1}`;
       this.refs.set(ref, element);
       controls.push({
         ref,
         kind: element.tagName.toLowerCase(),
         label: this.label(element),
-        disabled: element.hasAttribute("disabled"),
+        disabled: this.disabled(element),
         ...(element instanceof HTMLSelectElement
           ? {
               options: Array.from(element.options)
@@ -82,8 +108,13 @@ export class AssistantUiBridge {
     };
   }
   async perform(action: string, args: any, allowed: boolean): Promise<any> {
-    if(action === "list_actions") return this.runtime.actions?.inspect() || {actions:[]};
-    if(action === "execute_action") {if(!this.runtime.actions) throw new Error("Component actions unavailable");return this.runtime.actions.execute(args.ref,args.value,allowed);}
+    if (action === "list_actions")
+      return this.runtime.actions?.inspect() || { actions: [] };
+    if (action === "execute_action") {
+      if (!this.runtime.actions)
+        throw new Error("Component actions unavailable");
+      return this.runtime.actions.execute(args.ref, args.value, allowed);
+    }
     if (["click", "fill", "select"].includes(action) && !allowed)
       throw new Error(
         "Interface changes require explicit actions/deletions opt-in for this turn",
@@ -108,7 +139,8 @@ export class AssistantUiBridge {
       this.route !== location.hash ||
       !element?.isConnected ||
       this.blocked(element) ||
-      element.hasAttribute("disabled")
+      !this.visible(element) ||
+      this.disabled(element)
     )
       throw new Error(
         "Control reference is stale or unavailable; read the current page again",

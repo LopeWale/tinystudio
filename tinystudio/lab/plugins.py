@@ -169,7 +169,7 @@ def manifest_for(row: dict) -> dict:
                          "network.mininet", "network.ns3", "robotics.gazebo", "simulation.matlab"}
     target_notes = ["Execution host must advertise the selected backend, profile and exact runtime."]
     if id_ == "learning.pretrained":
-        target_notes.append("Each objective/update strategy requires separate qualification; QLoRA requires its compatible CUDA runtime.")
+        target_notes.append("Each objective/update strategy requires separate qualification; QLoRA requires compatible CUDA or the pinned Linux ARM64 Python 3.12 CPU NF4 pack.")
     if row.get("requires_operator_binding") or executable:
         target_notes.append("Exact operator grants/bindings and provisioned dependencies are required; definitions cannot grant authority.")
     ports = input_contracts(id_)
@@ -182,6 +182,12 @@ def manifest_for(row: dict) -> dict:
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
             "Independent parameter-count/update checks, held-out exclusion, transported checkpoint reload and inference artifacts.",
             "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
+    if implemented and id_ == "learning.pretrained":
+        fixtures.append(FixtureRequirement(path="tests/test_lab_qlora.py", evidence_required=[
+            "Real SFT, raw causal LM and DPO adapter optimization on the pinned Linux ARM64 CPU NF4 stack.",
+            "Packed/nested quantization state, adapter precision, frozen reference and optimizer membership checks.",
+            "Live-policy versus extracted-bundle reload equality and wrong-float-base/missing-state counterexamples.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     manifest = PluginManifest(id=id_, kinds=kinds, implemented=implemented,
         implementation_version=version if implemented else None, inputs=ports,
         outputs=[PortContract(name="artifacts", media_types=["application/json"], units="artifact_defined",

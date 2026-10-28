@@ -459,3 +459,276 @@ describe("assistant actions on the visible table controller", () => {
     expect(screen.getByRole("status")).toHaveTextContent("1 row of 125");
   });
 });
+
+describe("bounded workspace table layout", () => {
+  function measuredWorkspace() {
+    let height = 337;
+    let width = 900;
+    let shortRows = false;
+    const observers = new Set<() => void>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private callback: () => void) {
+          observers.add(callback);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {
+          observers.delete(this.callback);
+        }
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("data-table__scroll") ? height : 0;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("data-table__scroll") ? width : 0;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const density =
+          this.closest(".data-table")?.getAttribute("data-density");
+        const block =
+          this.tagName === "THEAD"
+            ? 40
+            : this.tagName === "TR" && this.closest("tbody")
+              ? shortRows
+                ? 22
+                : density === "compact"
+                  ? 32
+                  : density === "spacious"
+                    ? 56
+                    : 44
+              : 0;
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          bottom: block,
+          right: width,
+          height: block,
+          width,
+          toJSON() {},
+        };
+      },
+    );
+    return {
+      resize(next: number, nextWidth = width) {
+        height = next;
+        width = nextWidth;
+        act(() => [...observers].forEach((callback) => callback()));
+      },
+      shortenRows() {
+        shortRows = true;
+        act(() => [...observers].forEach((callback) => callback()));
+      },
+      lengthenRows() {
+        shortRows = false;
+        act(() => [...observers].forEach((callback) => callback()));
+      },
+    };
+  }
+  afterEach(() => vi.restoreAllMocks());
+  it("fits natural rows to body capacity, supports density/manual overrides and restores fit on reset", () => {
+    const geometry = measuredWorkspace();
+    render(
+      <AdvancedTable
+        label="Records"
+        rows={rows}
+        {...fixture()}
+        layout="fill"
+      />,
+    );
+    const size = screen.getByLabelText("Records rows per page");
+    expect(size).toHaveValue("fit");
+    expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      7,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("link", { name: "Record 6" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Compact" }));
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      10,
+    );
+    fireEvent.change(size, { target: { value: "10" } });
+    geometry.resize(160);
+    expect(size).toHaveValue("10");
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      11,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
+    expect(size).toHaveValue("fit");
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      3,
+    );
+    expect(screen.getByText("Page 1 of 16")).toBeInTheDocument();
+  });
+  it("keeps short final pages stable and clamps after the data shrinks", () => {
+    const geometry = measuredWorkspace();
+    const f = fixture();
+    const view = render(
+      <DataTable label="Records" rows={rows} {...f} layout="fill" />,
+    );
+    for (let i = 0; i < 5; i++)
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Page 6 of 6")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Record 30" })).toBeInTheDocument();
+    geometry.shortenRows();
+    expect(screen.getByText("Page 6 of 6")).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      3,
+    );
+    view.rerender(
+      <DataTable
+        label="Records"
+        rows={rows.slice(0, 3)}
+        {...f}
+        layout="fill"
+      />,
+    );
+    expect(screen.getByText("Page 1 of 1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Record 0" })).toBeInTheDocument();
+  });
+  it("forgets tall-row samples on source refresh and scope changes independently", () => {
+    const geometry = measuredWorkspace();
+    const f = fixture();
+    const refreshed = [...rows];
+    const view = render(
+      <DataTable
+        label="Records"
+        rows={rows}
+        {...f}
+        scopeKey="a"
+        layout="fill"
+      />,
+    );
+    expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+    geometry.shortenRows();
+    expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+    view.rerender(
+      <DataTable
+        label="Records"
+        rows={refreshed}
+        {...f}
+        scopeKey="a"
+        layout="fill"
+      />,
+    );
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      14,
+    );
+    geometry.lengthenRows();
+    expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+    geometry.shortenRows();
+    expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+    view.rerender(
+      <DataTable
+        label="Records"
+        rows={refreshed}
+        {...f}
+        scopeKey="b"
+        layout="fill"
+      />,
+    );
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
+  it("remeasures shorter natural rows after font loading completes", () => {
+    const original = Object.getOwnPropertyDescriptor(document, "fonts");
+    const fonts = new EventTarget();
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: fonts,
+    });
+    const geometry = measuredWorkspace();
+    const view = render(
+      <DataTable label="Records" rows={rows} {...fixture()} layout="fill" />,
+    );
+    try {
+      expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+      geometry.shortenRows();
+      expect(screen.getByText("Page 1 of 6")).toBeInTheDocument();
+      act(() => fonts.dispatchEvent(new Event("loadingdone")));
+      expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      if (original) Object.defineProperty(document, "fonts", original);
+      else Reflect.deleteProperty(document, "fonts");
+    }
+  });
+  it("keeps header/footer in stable regions and portals filters without inserting content above rows", () => {
+    measuredWorkspace();
+    const view = render(
+      <DataTable label="Records" rows={rows} {...fixture()} layout="fill" />,
+    );
+    const root = view.container.querySelector(".data-table")!;
+    const viewport = root.querySelector(".data-table__viewport")!;
+    const region = screen.getByRole("region", { name: "Records rows" });
+    expect(root.querySelector(".data-table__toolbar")?.parentElement).toBe(
+      root,
+    );
+    expect(root.querySelector(".data-table__footer")?.parentElement).toBe(root);
+    expect(region.parentElement).toBe(viewport);
+    expect(region.querySelector("thead")).toBeInTheDocument();
+    const initialChildren = root.childElementCount;
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    expect(
+      screen.getByRole("dialog", { name: "Records filters" }),
+    ).toBeInTheDocument();
+    expect(root.querySelector('[role="dialog"]')).toBeNull();
+    expect(root.childElementCount).toBe(initialChildren);
+    const fade = viewport.querySelector(".data-table__scroll-fade")!;
+    expect(fade).toHaveAttribute("aria-hidden", "true");
+    expect(fade.children).toHaveLength(3);
+    expect(
+      (viewport as HTMLElement).style.getPropertyValue(
+        "--data-table-header-height",
+      ),
+    ).toBe("40px");
+    fireEvent.scroll(region, { target: { scrollTop: 12 } });
+    expect(
+      (viewport as HTMLElement).style.getPropertyValue(
+        "--data-table-scroll-fade",
+      ),
+    ).toBe("0.5");
+    fireEvent.scroll(region, { target: { scrollTop: 0 } });
+    expect(
+      (viewport as HTMLElement).style.getPropertyValue(
+        "--data-table-scroll-fade",
+      ),
+    ).toBe("0");
+  });
+  it("leaves external windows intact and content layout on its existing manual default", () => {
+    measuredWorkspace();
+    const f = fixture();
+    const view = render(
+      <DataTable
+        label="Records"
+        rows={rows}
+        {...f}
+        layout="fill"
+        pagination="external"
+      />,
+    );
+    expect(screen.queryByLabelText("Records rows per page")).toBeNull();
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      33,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loaded rows: 32 of 32",
+    );
+    view.rerender(<DataTable label="Records" rows={rows} {...f} />);
+    expect(screen.getByLabelText("Records rows per page")).toHaveValue("25");
+    expect(screen.queryByRole("option", { name: "Fit workspace" })).toBeNull();
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      26,
+    );
+  });
+});

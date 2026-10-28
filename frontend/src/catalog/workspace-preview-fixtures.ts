@@ -46,12 +46,12 @@ export const previewSnapshots = previewDatasets.map((dataset, index) => ({
 }));
 export const previewModels = [
   {
-    id: "sample-support-lora",
+    id: "sample-support/1",
     alias: "Sample support LoRA",
     kind: "fine-tuned",
     base_model: "sample/base-1b",
     parameters: 1_000_000_000,
-    status: "loaded",
+    status: "up",
     training_type: "lora",
     created: "2026-10-26T10:00:00Z",
     notes: "Illustrative model record; inference is disabled in this preview.",
@@ -62,7 +62,7 @@ export const previewModels = [
     kind: "base",
     base_model: "sample/base-1b",
     parameters: 1_000_000_000,
-    status: "available",
+    status: "down",
     created: "2026-10-25T10:00:00Z",
   },
 ];
@@ -315,21 +315,21 @@ export const previewReads = {
     prompt_tokens: 1500,
     completion_tokens: 600,
     training_seconds: 240,
-    models_loaded: ["sample-support-lora"],
+    models_loaded: ["sample-support/1"],
     requests_per_day: [
       ["2026-10-24", 6],
       ["2026-10-25", 8],
       ["2026-10-26", 10],
     ],
     requests_per_model: [
-      ["sample-support-lora", 18],
+      ["sample-support/1", 18],
       ["sample/base-1b", 6],
     ],
   },
   "/api/traces": previewRecords.map((r, i) => ({
     id: `illustrative-trace-${i + 1}`,
     time: "2026-10-26T10:00:00Z",
-    model: "sample-support-lora",
+    model: "sample-support/1",
     messages: [r.messages[0]],
     response: r.messages[1].content,
     score: 1,

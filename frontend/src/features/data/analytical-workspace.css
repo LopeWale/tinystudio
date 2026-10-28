@@ -1,3 +1,4 @@
+@reference "../../styles/globals.css";
 .analytical-workspace {
   --analytical-gap: 1rem;
 }
@@ -301,5 +302,155 @@
   }
   .training-inspector-scroll {
     max-height: calc(100dvh - 9rem);
+  }
+}
+
+/* CRM/Evals collection composition: one bounded work area, with local commands
+   beside its shared view controls. Other analysis/setup/run pages keep their own
+   natural-height contract. The canonical collection-page owns the outer chain. */
+.analytical-workspace.analytical-collection-page
+  > .data-template
+  > .studio-template__layout
+  > .studio-template__content {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.analytical-collection-page .analytical-toolbar {
+  align-items: center;
+  gap: 8px;
+}
+.analytical-collection-page .analytical-toolbar > .studio-field {
+  margin: 0;
+}
+.analytical-collection-page .analytical-toolbar > .studio-field:first-child {
+  flex: 1 1 180px;
+  max-inline-size: 320px;
+}
+.analytical-collection-page .training-directory,
+.metrics-collection-page .data-master-detail {
+  flex: 1;
+  min-block-size: 0;
+  align-items: stretch;
+  gap: 0;
+}
+.analytical-collection-page .training-directory-master,
+.metrics-collection-page .data-master {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+.metrics-collection-page .data-master-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.metrics-collection-page .data-master-detail.has-selection {
+  grid-template-columns: minmax(0, 1.6fr) minmax(20rem, 1fr);
+}
+.metrics-collection-page .data-inspector,
+.training-collection-page .training-directory-inspector {
+  position: relative;
+  inset-block-start: auto;
+  block-size: 100%;
+  min-block-size: 0;
+  max-block-size: none;
+  margin: 0;
+  border: 0;
+  border-inline-start: 1px solid var(--color-separator-border);
+  border-radius: 0;
+  overflow: hidden;
+}
+.metrics-collection-page .data-inspector {
+  display: flex;
+  flex-direction: column;
+}
+.metrics-collection-page .data-inspector-heading,
+.training-collection-page .training-inspector-heading {
+  flex: none;
+}
+.metrics-collection-page .data-inspector-content,
+.training-collection-page .training-inspector-scroll-wrap {
+  flex: 1;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.metrics-collection-page .data-inspector-content {
+  padding: 0;
+}
+.training-collection-page .training-inspector-scroll {
+  block-size: 100%;
+  max-block-size: none;
+  overscroll-behavior: contain;
+}
+.analytical-inspector-scroll-wrap {
+  position: relative;
+  block-size: 100%;
+  min-block-size: 0;
+}
+.analytical-inspector-scroll {
+  block-size: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+}
+.analytical-inspector-fade {
+  pointer-events: none;
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  block-size: 24px;
+  z-index: 1;
+}
+.analytical-inspector-fade span {
+  position: absolute;
+  inset: 0;
+  opacity: var(--analytical-inspector-fade, 0);
+}
+.analytical-inspector-fade span:first-child {
+  backdrop-filter: blur(1px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.analytical-inspector-fade span:nth-child(2) {
+  block-size: 16px;
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.analytical-inspector-fade span:last-child {
+  background: linear-gradient(
+    to bottom,
+    var(--color-background-primary-default),
+    transparent
+  );
+}
+.analytical-autopilot {
+  flex: none;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.analytical-autopilot > summary {
+  @apply text-body-2-medium;
+  padding: 12px 16px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.analytical-autopilot-table {
+  block-size: min(16rem, 35dvh);
+}
+@media (max-width: 850px) {
+  .metrics-collection-page .data-master-detail.has-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .metrics-collection-page .data-master-detail.has-selection > .data-master {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .training-collection-page .training-directory-inspector {
+    position: fixed;
+    inset: 1rem;
+    block-size: auto;
+    max-block-size: calc(100dvh - 2rem);
+    border: 1px solid var(--color-separator-border);
+    border-radius: 0.375rem;
   }
 }

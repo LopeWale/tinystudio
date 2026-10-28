@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { ModelsPage } from "../src/features/workspace/models";
@@ -81,7 +82,13 @@ describe("model controls use real API contracts", () => {
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith("/api/models/job~1/up", {}),
     );
-    fireEvent.change(screen.getByLabelText("Hub access token"), {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discover & manage Hub models" }),
+    );
+    const hub = screen.getByRole("dialog", {
+      name: "Discover & manage Hub models",
+    });
+    fireEvent.change(within(hub).getByLabelText("Hub access token"), {
       target: { value: "hf_private-test-fixture" },
     });
     fireEvent.click(screen.getByText("Save token"));
@@ -93,6 +100,7 @@ describe("model controls use real API contracts", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Hub access token")).toHaveValue(""),
     );
+    fireEvent.click(within(hub).getByRole("button", { name: "Close dialog" }));
     fireEvent.click(screen.getByText("Upload to Hub"));
     fireEvent.change(screen.getByLabelText("Repository ID (user/name)"), {
       target: { value: "tester/weights" },
@@ -141,6 +149,12 @@ describe("model controls use real API contracts", () => {
     };
     wrap(<ModelsPage />, runtime(api));
     await screen.findByText("Tuned");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discover & manage Hub models" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Discover & manage Hub models" }),
+    ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search the Hugging Face Hub"), {
       target: { value: "tiny model" },
     });
@@ -204,12 +218,25 @@ describe("review traces", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByText("Add scored ≥ 0.9 to dataset"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Promote reviewed responses" }),
+    );
+    const promotion = screen.getByRole("dialog", {
+      name: "Promote reviewed responses",
+    });
+    fireEvent.click(
+      within(promotion).getByRole("button", {
+        name: "Add scored ≥ 0.9 to dataset",
+      }),
+    );
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith("/api/traces/promote", {
         dataset: "training",
         min_score: 0.9,
       }),
+    );
+    fireEvent.click(
+      within(promotion).getByRole("button", { name: "Close dialog" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() =>

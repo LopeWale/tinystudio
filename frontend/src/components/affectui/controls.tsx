@@ -1,3 +1,5 @@
+import { cx } from "../boardui/utils/cx";
+import "./controls.css";
 import {
   FilterMenu as SourceFilterMenu,
   type FilterMenuProps,
@@ -36,5 +38,15 @@ export type ControlledSegmentedControlProps<T extends string = string> = Omit<
 export function SegmentedControl<T extends string = string>(
   props: ControlledSegmentedControlProps<T>,
 ) {
-  return <SourceSegmentedControl {...props} />;
+  // TinyStudio adapts the source tab contrast and target size to its app surfaces.
+  return (
+    <SourceSegmentedControl
+      {...props}
+      className={cx(
+        "studio-segmented-control",
+        props.kind === "tabs" && "studio-tabs",
+        props.className,
+      )}
+    />
+  );
 }

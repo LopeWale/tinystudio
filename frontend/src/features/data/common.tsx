@@ -227,59 +227,7 @@ export function Messages({ messages }: any) {
     </>
   );
 }
-export function Histogram({
-  label,
-  counts,
-  bins,
-  onSelect,
-  selected,
-  data,
-}: any) {
-  const max = Math.max(1, ...counts);
-  return (
-    <Evidence
-      as="svg"
-      label={label}
-      data={data || { counts, bins }}
-      viewBox="0 0 400 130"
-      role="img"
-      aria-label={label}
-      className="data-histogram"
-    >
-      {counts.map((n: number, i: number) => (
-        <g
-          key={i}
-          role={onSelect ? "button" : undefined}
-          tabIndex={onSelect ? 0 : undefined}
-          aria-label={`${bins[i]}–${bins[i + 1]}: ${n}`}
-          onClick={() => onSelect?.(i)}
-          onKeyDown={(e: any) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onSelect?.(i);
-            }
-          }}
-        >
-          <rect
-            x={(i * 390) / counts.length + 5}
-            y={105 - (n / max) * 95}
-            width={Math.max(1, 390 / counts.length - 3)}
-            height={(n / max) * 95}
-            fill={selected === i ? "var(--color-accent-600)" : "currentColor"}
-            opacity={selected == null || selected === i ? 0.9 : 0.35}
-          />
-          <title>{`${bins[i]}–${bins[i + 1]}: ${n}`}</title>
-        </g>
-      ))}
-      <text x="5" y="125" fill="currentColor">
-        {bins[0]}
-      </text>
-      <text x="390" y="125" textAnchor="end" fill="currentColor">
-        {bins[bins.length - 1]}
-      </text>
-    </Evidence>
-  );
-}
+export { Histogram } from "./histogram";
 export function scopedDownload(project: string, path: string) {
   return path.replace("/api/", `/api/p/${enc(project)}/`);
 }

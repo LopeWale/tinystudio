@@ -18,6 +18,7 @@ export type RecordTableSnapshot<T> = Readonly<{
   filtered: number;
   page: number;
   pageSize: number;
+  pageSizeMode: "manual" | "fit";
   pageCount: number;
   density: TableDensity;
   visibleColumns: readonly string[];
@@ -48,6 +49,7 @@ export class RecordTableController<T> {
   private listeners = new Set<() => void>();
   private page = 0;
   private pageSize = 25;
+  private pageSizeMode: "manual" | "fit";
   private density: TableDensity = "comfortable";
   private hidden = new Set<string>();
   private filters: Record<string, readonly string[]> = {};
@@ -58,7 +60,9 @@ export class RecordTableController<T> {
     private columns: readonly RecordColumn<T>[],
     private getRowId: (row: T) => string,
     private pagination: TablePagination = "client",
+    private initialPageSizeMode: "manual" | "fit" = "manual",
   ) {
+    this.pageSizeMode = initialPageSizeMode;
     this.rebuild();
   }
   subscribe = (listener: () => void) => {
@@ -182,10 +186,27 @@ export class RecordTableController<T> {
     this.density = density;
     this.rebuild();
   }
-  setPageSize(size: number) {
-    if (![10, 25, 50, 100].includes(size)) return;
-    this.pageSize = size;
+  setPageSize(size: number | "fit") {
+    if (size !== "fit" && ![10, 25, 50, 100].includes(size)) return;
+    this.pageSizeMode = size === "fit" ? "fit" : "manual";
+    if (size !== "fit") this.pageSize = size;
     this.page = 0;
+    this.rebuild();
+  }
+  /** Capacity changes keep the previous first row on the resized page when possible. */
+  setFittedPageSize(size: number) {
+    if (
+      this.pagination !== "client" ||
+      this.pageSizeMode !== "fit" ||
+      !Number.isFinite(size) ||
+      size < 1
+    )
+      return;
+    const capacity = Math.floor(size);
+    if (capacity === this.pageSize) return;
+    const firstRow = this.page * this.pageSize;
+    this.pageSize = capacity;
+    this.page = Math.floor(firstRow / capacity);
     this.rebuild();
   }
   setPage(page: number) {
@@ -196,6 +217,7 @@ export class RecordTableController<T> {
   reset() {
     this.page = 0;
     this.pageSize = 25;
+    this.pageSizeMode = this.initialPageSizeMode;
     this.density = "comfortable";
     this.hidden.clear();
     this.filters = {};
@@ -259,6 +281,7 @@ export class RecordTableController<T> {
       filtered: rows.length,
       page: this.page,
       pageSize: this.pageSize,
+      pageSizeMode: this.pageSizeMode,
       pageCount,
       density: this.density,
       visibleColumns: Object.freeze(

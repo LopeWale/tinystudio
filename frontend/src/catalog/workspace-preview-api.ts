@@ -1,3 +1,4 @@
+import { previewQuality } from "./workspace-preview-quality";
 import type { ApiClient } from "../api/client";
 import {
   isWorkspacePreviewReadPath,
@@ -61,7 +62,13 @@ export function createWorkspacePreviewApi(): ApiClient {
           (item) =>
             pathname === `/api/evals/${encodeURIComponent(item.summary.name)}`,
         );
-        if (dataset) {
+        const qualityDataset = previewDatasets.find(
+          (item) =>
+            pathname ===
+            `/api/datasets/${encodeURIComponent(item.name)}/quality`,
+        );
+        if (qualityDataset) value = previewQuality;
+        else if (dataset) {
           const bucket = params.get("bucket");
           const rows = previewRecords.filter(
             (record) => !bucket || record.bucket === bucket,

@@ -1,7 +1,7 @@
+import { CollectionToolbar } from "../../components/studio/collection-toolbar";
 import { AdvancedTable, DataTable } from "../../components/studio/data-table";
 import { CollectionTemplate } from "../../components/studio/templates";
 import { useComponentAction } from "../assistant/actions";
-import { WorkspaceDisclosure } from "../../components/studio/workspace";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
 import {
@@ -74,6 +74,7 @@ export function ModelsPage() {
     models = useRetainedResource<Model[]>("/api/models"),
     hub = useResource<HubInfo>("/api/hub/models");
   const [hubOpen, setHubOpen] = useState(false);
+  const [apiOpen, setApiOpen] = useState(false);
   const [inventoryQuery, setInventoryQuery] = useState(""),
     [inspectedId, inspect] = useState<string | null>(null),
     [checked, setChecked] = useState<Model[]>([]),
@@ -98,6 +99,8 @@ export function ModelsPage() {
     );
   useEffect(() => {
     setInventoryQuery("");
+    setHubOpen(false);
+    setApiOpen(false);
     inspect(null);
     setChecked([]);
     compare(false);
@@ -244,46 +247,24 @@ export function ModelsPage() {
   }
   return (
     <Page
-      className="models-workspace data-workspace records-page serving-records-page"
+      className="models-workspace data-workspace records-page serving-records-page collection-page"
       title="Models"
       description="Manage trained checkpoints, serve a model, and find compatible models on the Hugging Face Hub."
-      actions={<Button onClick={reload}>Refresh</Button>}
+      actions={
+        <div className="data-actions">
+          <Button onClick={() => setHubOpen(true)}>
+            Discover & manage Hub models
+          </Button>
+          <Button onClick={() => setApiOpen(true)}>
+            Use the inference API
+          </Button>
+          <Button onClick={reload}>Refresh</Button>
+        </div>
+      }
     >
       <CollectionTemplate
+        className="data-template"
         label="Model inventory workspace"
-        toolbar={
-          <div className="records-toolbar">
-            <Input
-              label="Find an inventory model"
-              type="search"
-              value={inventoryQuery}
-              onChange={setInventoryQuery}
-            />
-            <span className="records-count">
-              {visibleModels.length} models · {hub.data?.free_disk_gb ?? "—"} GB
-              free
-            </span>
-            <span className="records-selection" role="status">
-              {checked.length} selected
-            </span>
-            <Button
-              disabled={checked.length < 2}
-              onClick={(event) => {
-                compareFocus.current = event.currentTarget;
-                compare(true);
-              }}
-            >
-              Compare selected
-            </Button>
-            <Button
-              disabled={!checked.length}
-              variant="ghost"
-              onClick={() => setChecked([])}
-            >
-              Clear selection
-            </Button>
-          </div>
-        }
       >
         {(error || models.error || hub.error) && (
           <p role="alert">
@@ -328,24 +309,25 @@ export function ModelsPage() {
             if (event.key === "Escape") closeInspector();
           }}
         >
-          <RecordsScroll label="Model collection">
+          <div className="records-table-host">
             {models.loading && !models.data ? (
               <p role="status">Loading models…</p>
-            ) : !visibleModels.length ? (
-              <EmptyState>
-                {inventoryQuery ? (
-                  <>
-                    No models match “{inventoryQuery}”.{" "}
-                    <Button onClick={() => setInventoryQuery("")}>
-                      Clear search
-                    </Button>
-                  </>
-                ) : (
-                  "No models available. Download a model or finish a training experiment."
-                )}
-              </EmptyState>
             ) : (
               <AdvancedTable
+                layout="fill"
+                toolbarContent={
+                  <CollectionToolbar
+                    label="Find an inventory model"
+                    query={inventoryQuery}
+                    onQueryChange={setInventoryQuery}
+                    selectedCount={checked.length}
+                    onCompare={(event) => {
+                      compareFocus.current = event.currentTarget;
+                      compare(true);
+                    }}
+                    onClearSelection={() => setChecked([])}
+                  />
+                }
                 label="Model inventory"
                 rows={visibleModels}
                 getRowId={(model) => model.id}
@@ -505,7 +487,7 @@ export function ModelsPage() {
                 ]}
               />
             )}
-          </RecordsScroll>
+          </div>
           {selected && (
             <DetailInspector title={selected.alias} onClose={closeInspector}>
               <Evidence label="Inspected model" data={selected}>
@@ -543,11 +525,11 @@ export function ModelsPage() {
             Previous results remain visible.
           </p>
         )}
-        <WorkspaceDisclosure
-          title="Discover & manage Hub models"
+        <Modal
           open={hubOpen}
-          onToggle={setHubOpen}
-          summary={`${hub.data?.models.length ?? 0} cached · search, download, and connection settings`}
+          wide
+          title="Discover & manage Hub models"
+          onClose={() => setHubOpen(false)}
         >
           <p>
             {hub.data?.models.length ?? 0} models cached · Token:{" "}
@@ -857,40 +839,44 @@ export function ModelsPage() {
           ) : (
             <EmptyState>No downloaded models yet.</EmptyState>
           )}
-        </WorkspaceDisclosure>
-        {!!tasks.length && (
-          <Panel title="Hub activity">
-            {tasks.map((t) => (
-              <article key={t.id}>
-                <strong>{t.kind}</strong> <Badge>{t.state}</Badge>
-                <pre>{(t.log_tail ?? []).slice(-8).join("\n")}</pre>
-                {t.error && <p role="alert">{t.error}</p>}
-                {["queued", "running"].includes(t.state) && (
-                  <Button
-                    size="sm"
-                    onClick={() =>
-                      void action("stop", async () => {
-                        await studio.api.post(
-                          `/api/tasks/${enc(t.id)}/stop`,
-                          {},
-                        );
-                        const next = await studio.api.get(
-                          `/api/tasks/${enc(t.id)}`,
-                        );
-                        setTasks((rows) =>
-                          rows.map((row) => (row.id === t.id ? next : row)),
-                        );
-                      })
-                    }
-                  >
-                    Stop task
-                  </Button>
-                )}
-              </article>
-            ))}
-          </Panel>
-        )}
-        <WorkspaceDisclosure title="Use the inference API">
+          {!!tasks.length && (
+            <Panel title="Hub activity">
+              {tasks.map((t) => (
+                <article key={t.id}>
+                  <strong>{t.kind}</strong> <Badge>{t.state}</Badge>
+                  <pre>{(t.log_tail ?? []).slice(-8).join("\n")}</pre>
+                  {t.error && <p role="alert">{t.error}</p>}
+                  {["queued", "running"].includes(t.state) && (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        void action("stop", async () => {
+                          await studio.api.post(
+                            `/api/tasks/${enc(t.id)}/stop`,
+                            {},
+                          );
+                          const next = await studio.api.get(
+                            `/api/tasks/${enc(t.id)}`,
+                          );
+                          setTasks((rows) =>
+                            rows.map((row) => (row.id === t.id ? next : row)),
+                          );
+                        })
+                      }
+                    >
+                      Stop task
+                    </Button>
+                  )}
+                </article>
+              ))}
+            </Panel>
+          )}
+        </Modal>
+        <Modal
+          open={apiOpen}
+          title="Use the inference API"
+          onClose={() => setApiOpen(false)}
+        >
           <p>
             OpenAI-compatible endpoint:{" "}
             <code>{window.location.origin}/v1/chat/completions</code>.
@@ -899,7 +885,7 @@ export function ModelsPage() {
             alias. Downloaded Transformers models can be used as fine-tuning
             base models.
           </p>
-        </WorkspaceDisclosure>
+        </Modal>
         {upload && (
           <HubUpload
             model={upload}

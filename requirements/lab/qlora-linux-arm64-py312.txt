@@ -1,0 +1,13 @@
+# Qualified target overlay: Linux aarch64, Python 3.12, CPU float32.
+# Framework stack is pinned; the qualification fixture also records its image
+# digest, which fixes inherited application and transitive dependencies.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+transformers==5.21.0
+peft==0.21.2
+trl==1.16.0
+accelerate==1.15.0
+tokenizers==0.23.3
+safetensors==0.8.0
+bitsandbytes==0.50.2
+datasets==5.1.0

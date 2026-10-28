@@ -65,7 +65,9 @@ function JobDialogForm({ onClose, snapshot = "" }: JobDialogProps) {
     resource = useResource<any[]>("/api/snapshots"),
     snaps = resource.data || [];
   const [name, N] = useState(""),
-    [selection, setSelection] = useState<string | undefined>(snapshot || undefined),
+    [selection, setSelection] = useState<string | undefined>(
+      snapshot || undefined,
+    ),
     [reasoning, R] = useState(false);
   const requested = selection ?? snaps[0]?.name ?? "",
     snap = snaps.some((item) => item.name === requested) ? requested : "",
@@ -411,7 +413,7 @@ export function FinetuningPage() {
 
   return (
     <Page
-      className="data-workspace analytical-workspace"
+      className="data-workspace analytical-workspace collection-page analytical-collection-page training-collection-page"
       title="Finetuning"
       description="Turn snapshots into experiments and compare what improves."
       actions={
@@ -447,286 +449,294 @@ export function FinetuningPage() {
               {(r.data || []).reduce((n, j) => n + j.experiments.length, 0)}{" "}
               experiments
             </span>
+            <span>Inspect a row or select jobs to compare.</span>
             <a href="#/evaluations">Review evaluations →</a>
-          </div>
-        }
-        toolbar={
-          <div className="analytical-toolbar">
-            <Input
-              ref={searchInput}
-              label="Find a training job"
-              type="search"
-              value={query}
-              onChange={setQuery}
-            />
-            <Select
-              label="Run state"
-              value={state}
-              onChange={setState}
-              options={[
-                { value: "", label: "All jobs" },
-                { value: "running", label: "Running" },
-                { value: "failed", label: "Has failures" },
-                { value: "succeeded", label: "Has completed runs" },
-              ]}
-            />
-            <Button
-              size="sm"
-              disabled={comparedJobs.length < 2}
-              onClick={(event) => {
-                returnFocus.current = event.currentTarget;
-                compare(true);
-              }}
-            >
-              Compare selected ({comparedJobs.length})
-            </Button>
-            {!!checked.length && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  selectJobs([]);
-                  compare(false);
-                }}
-              >
-                Clear selection
-              </Button>
-            )}
           </div>
         }
       >
         <ErrorNotice error={r.error || pilots.error || a.error} />
         {!!pilots.data?.length && (
-          <Panel title="Autopilot">
-            <SimpleTable
-              scopeKey={s.scopeKey + ":" + s.route}
-              label="Autopilot"
-              rows={pilots.data}
-              getRowId={(p: any) => String(p.name)}
-              pagination="none"
-              columns={[
-                {
-                  id: "col-0",
-                  label: "Name",
-                  value: (p: any) => p.name,
-                  render: (p: any) => <>{p.name}</>,
-                },
-                {
-                  id: "col-1",
-                  label: "Dataset",
-                  value: (p: any) => p.dataset,
-                  render: (p: any) => <>{p.dataset}</>,
-                },
-                {
-                  id: "col-2",
-                  label: "Cycles",
-                  value: (p: any) => p.cycles,
-                  render: (p: any) => <>{p.cycles}</>,
-                },
-                {
-                  id: "col-3",
-                  label: "Winner",
-                  value: (p: any) => p.winner,
-                  render: (p: any) => <>{p.winner || "—"}</>,
-                },
-                {
-                  id: "col-4",
-                  label: "Actions",
-                  value: (p: any) => p.name,
-                  sortable: false,
-                  filterable: false,
-                  hideable: false,
-                  render: (p: any) => (
-                    <>
-                      <Button
-                        onClick={() =>
-                          a.run(async () => {
-                            H(
-                              await s.api.get<any[]>(
-                                `/api/autopilot/${enc(p.name)}`,
-                              ),
-                            );
-                            P(p);
-                          })
-                        }
-                      >
-                        History
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          a.clearError();
-                          P(p);
-                          O("autopilot");
-                        }}
-                      >
-                        Next cycle
-                      </Button>
-                    </>
-                  ),
-                },
-              ]}
-              renderRow={(p: any, { key, ...props }, cells) => (
-                <Evidence
-                  as="tr"
-                  {...props}
-                  key={key}
-                  label="Autopilot"
-                  data={p}
-                >
-                  {cells}
-                </Evidence>
-              )}
-            />
-          </Panel>
-        )}
-        {r.loading && <p role="status">Loading jobs…</p>}
-        <div
-          className={`training-directory ${inspected || comparison ? "has-inspector" : ""}`}
-        >
-          <div className="training-directory-master">
-            <div className="data-table">
-              <DataTable
+          <details className="analytical-autopilot">
+            <summary>Autopilot ({pilots.data.length})</summary>
+            <div className="analytical-autopilot-table">
+              <SimpleTable
                 scopeKey={s.scopeKey + ":" + s.route}
-                label="Finetuning jobs"
-                rows={matching}
-                getRowId={(item: any) => item.job.name}
+                label="Autopilot"
+                layout="fill"
+                rows={pilots.data}
+                getRowId={(p: any) => String(p.name)}
+                pagination="none"
                 columns={[
                   {
-                    id: "Select",
-                    label: "Select",
-                    value: ({ job, experiments }: any) =>
-                      checked.includes(job.name),
+                    id: "col-0",
+                    label: "Name",
+                    value: (p: any) => p.name,
+                    render: (p: any) => <>{p.name}</>,
+                  },
+                  {
+                    id: "col-1",
+                    label: "Dataset",
+                    value: (p: any) => p.dataset,
+                    render: (p: any) => <>{p.dataset}</>,
+                  },
+                  {
+                    id: "col-2",
+                    label: "Cycles",
+                    value: (p: any) => p.cycles,
+                    render: (p: any) => <>{p.cycles}</>,
+                  },
+                  {
+                    id: "col-3",
+                    label: "Winner",
+                    value: (p: any) => p.winner,
+                    render: (p: any) => <>{p.winner || "—"}</>,
+                  },
+                  {
+                    id: "col-4",
+                    label: "Actions",
+                    value: (p: any) => p.name,
                     sortable: false,
                     filterable: false,
                     hideable: false,
-                    render: ({ job, experiments }: any) => (
-                      <>
-                        <Check
-                          label={`Select ${job.name} for comparison`}
-                          checked={checked.includes(job.name)}
-                          onChange={(on: boolean) =>
-                            selectJobs(
-                              on
-                                ? [...checked, job.name]
-                                : checked.filter((name) => name !== job.name),
-                            )
-                          }
-                        />
-                      </>
-                    ),
-                  },
-                  {
-                    id: "Job",
-                    label: "Job",
-                    value: ({ job, experiments }: any) => job.name,
-                    render: ({ job, experiments }: any) => (
-                      <>
-                        <a
-                          className="data-record-link"
-                          href={`#/finetuning/${enc(job.name)}`}
-                        >
-                          {job.name}
-                        </a>
-                      </>
-                    ),
-                  },
-                  {
-                    id: "Snapshot",
-                    label: "Snapshot",
-                    value: ({ job, experiments }: any) => job.snapshot,
-                    render: ({ job, experiments }: any) => <>{job.snapshot}</>,
-                  },
-                  {
-                    id: "Experiments",
-                    label: "Experiments",
-                    value: ({ job, experiments }: any) => experiments.length,
-                    render: ({ job, experiments }: any) => (
-                      <>{experiments.length}</>
-                    ),
-                  },
-                  {
-                    id: "Reasoning",
-                    label: "Reasoning",
-                    value: ({ job, experiments }: any) => !!job.reasoning,
-                    render: ({ job, experiments }: any) => (
-                      <>{job.reasoning ? "Enabled" : "—"}</>
-                    ),
-                  },
-                  {
-                    id: "State",
-                    label: "State",
-                    value: ({ job, experiments }: any) => jobState(experiments),
-                    render: ({ job, experiments }: any) => (
-                      <>
-                        <Badge>{jobState(experiments)}</Badge>
-                      </>
-                    ),
-                  },
-                  {
-                    id: "Inspect",
-                    label: "Inspect",
-                    value: ({ job, experiments }: any) => job.name,
-                    sortable: false,
-                    filterable: false,
-                    hideable: false,
-                    render: ({ job, experiments }: any) => (
+                    render: (p: any) => (
                       <>
                         <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label={`Inspect ${job.name}`}
-                          onClick={(event) =>
-                            inspectJob(job.name, event.currentTarget)
+                          onClick={() =>
+                            a.run(async () => {
+                              H(
+                                await s.api.get<any[]>(
+                                  `/api/autopilot/${enc(p.name)}`,
+                                ),
+                              );
+                              P(p);
+                            })
                           }
                         >
-                          Inspect
+                          History
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            a.clearError();
+                            P(p);
+                            O("autopilot");
+                          }}
+                        >
+                          Next cycle
                         </Button>
                       </>
                     ),
                   },
                 ]}
-                rowProps={({ job, experiments }: any) => ({
-                  tabIndex: 0,
-                  "aria-label": `Training job ${job.name}`,
-                  "aria-selected": inspected === job.name,
-                  className: "training-inspectable-row",
-                  onClick: (event: any) => {
-                    if (
-                      (event.target as Element).closest(
-                        "a,button,input,select,label",
-                      )
-                    )
-                      return;
-                    inspectJob(job.name, event.currentTarget);
-                  },
-                  onKeyDown: (event: any) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      inspectJob(job.name, event.currentTarget);
-                    }
-                  },
-                })}
-                renderRow={(item: any, { key, ...props }, cells) => (
+                renderRow={(p: any, { key, ...props }, cells) => (
                   <Evidence
                     as="tr"
                     {...props}
                     key={key}
-                    label="Finetuning job"
-                    data={item}
+                    label="Autopilot"
+                    data={p}
                   >
                     {cells}
                   </Evidence>
                 )}
               />
             </div>
-            {!r.loading && !!r.data?.length && !matching.length && (
-              <EmptyState>No jobs match these filters.</EmptyState>
-            )}
-            <p className="data-muted">
-              {matching.length} matching jobs · Inspect a row for experiments,
-              or check jobs to compare.
-            </p>
+          </details>
+        )}
+        <div
+          className={`training-directory ${inspected || comparison ? "has-inspector" : ""}`}
+        >
+          <div className="training-directory-master">
+            <DataTable
+              scopeKey={s.scopeKey + ":" + s.route}
+              label="Finetuning jobs"
+              layout="fill"
+              toolbarContent={
+                <div className="analytical-toolbar">
+                  <Input
+                    ref={searchInput}
+                    label="Find a training job"
+                    type="search"
+                    value={query}
+                    onChange={setQuery}
+                  />
+                  <Select
+                    label="Run state"
+                    value={state}
+                    onChange={setState}
+                    options={[
+                      { value: "", label: "All jobs" },
+                      { value: "running", label: "Running" },
+                      { value: "failed", label: "Has failures" },
+                      { value: "succeeded", label: "Has completed runs" },
+                    ]}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={comparedJobs.length < 2}
+                    onClick={(event) => {
+                      returnFocus.current = event.currentTarget;
+                      compare(true);
+                    }}
+                  >
+                    Compare selected ({comparedJobs.length})
+                  </Button>
+                  {!!checked.length && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        selectJobs([]);
+                        compare(false);
+                      }}
+                    >
+                      Clear selection
+                    </Button>
+                  )}
+                </div>
+              }
+              empty={
+                r.loading ? (
+                  "Loading jobs…"
+                ) : r.data?.length ? (
+                  "No jobs match these filters."
+                ) : (
+                  <>
+                    No finetuning jobs yet.{" "}
+                    <a href="#/datasets">Create a dataset snapshot.</a>
+                  </>
+                )
+              }
+              rows={matching}
+              getRowId={(item: any) => item.job.name}
+              columns={[
+                {
+                  id: "Select",
+                  label: "Select",
+                  value: ({ job, experiments }: any) =>
+                    checked.includes(job.name),
+                  sortable: false,
+                  filterable: false,
+                  hideable: false,
+                  render: ({ job, experiments }: any) => (
+                    <>
+                      <Check
+                        label={`Select ${job.name} for comparison`}
+                        checked={checked.includes(job.name)}
+                        onChange={(on: boolean) =>
+                          selectJobs(
+                            on
+                              ? [...checked, job.name]
+                              : checked.filter((name) => name !== job.name),
+                          )
+                        }
+                      />
+                    </>
+                  ),
+                },
+                {
+                  id: "Job",
+                  label: "Job",
+                  value: ({ job, experiments }: any) => job.name,
+                  render: ({ job, experiments }: any) => (
+                    <>
+                      <a
+                        className="data-record-link"
+                        href={`#/finetuning/${enc(job.name)}`}
+                      >
+                        {job.name}
+                      </a>
+                    </>
+                  ),
+                },
+                {
+                  id: "Snapshot",
+                  label: "Snapshot",
+                  value: ({ job, experiments }: any) => job.snapshot,
+                  render: ({ job, experiments }: any) => <>{job.snapshot}</>,
+                },
+                {
+                  id: "Experiments",
+                  label: "Experiments",
+                  value: ({ job, experiments }: any) => experiments.length,
+                  render: ({ job, experiments }: any) => (
+                    <>{experiments.length}</>
+                  ),
+                },
+                {
+                  id: "Reasoning",
+                  label: "Reasoning",
+                  value: ({ job, experiments }: any) => !!job.reasoning,
+                  render: ({ job, experiments }: any) => (
+                    <>{job.reasoning ? "Enabled" : "—"}</>
+                  ),
+                },
+                {
+                  id: "State",
+                  label: "State",
+                  value: ({ job, experiments }: any) => jobState(experiments),
+                  render: ({ job, experiments }: any) => (
+                    <>
+                      <Badge>{jobState(experiments)}</Badge>
+                    </>
+                  ),
+                },
+                {
+                  id: "Inspect",
+                  label: "Inspect",
+                  value: ({ job, experiments }: any) => job.name,
+                  sortable: false,
+                  filterable: false,
+                  hideable: false,
+                  render: ({ job, experiments }: any) => (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Inspect ${job.name}`}
+                        onClick={(event) =>
+                          inspectJob(job.name, event.currentTarget)
+                        }
+                      >
+                        Inspect
+                      </Button>
+                    </>
+                  ),
+                },
+              ]}
+              rowProps={({ job, experiments }: any) => ({
+                tabIndex: 0,
+                "aria-label": `Training job ${job.name}`,
+                "aria-selected": inspected === job.name,
+                className: "training-inspectable-row",
+                onClick: (event: any) => {
+                  if (
+                    (event.target as Element).closest(
+                      "a,button,input,select,label",
+                    )
+                  )
+                    return;
+                  inspectJob(job.name, event.currentTarget);
+                },
+                onKeyDown: (event: any) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    inspectJob(job.name, event.currentTarget);
+                  }
+                },
+              })}
+              renderRow={(item: any, { key, ...props }, cells) => (
+                <Evidence
+                  as="tr"
+                  {...props}
+                  key={key}
+                  label="Finetuning job"
+                  data={item}
+                >
+                  {cells}
+                </Evidence>
+              )}
+            />
           </div>
           {comparison ? (
             <TrainingInspector
@@ -909,12 +919,6 @@ export function FinetuningPage() {
             </TrainingInspector>
           ) : null}
         </div>
-        {!r.loading && !r.error && !r.data?.length && (
-          <EmptyState>
-            No finetuning jobs yet.{" "}
-            <a href="#/datasets">Create a dataset snapshot.</a>
-          </EmptyState>
-        )}
         {open === "job" && <JobDialog onClose={() => O("")} />}{" "}
         {open === "autopilot" && (
           <AutopilotDialog

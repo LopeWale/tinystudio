@@ -1,0 +1,65 @@
+/* TinyStudio's application adaptation of AffectUI tabs. The extra root
+   specificity keeps these tokens authoritative after the source injects CSS.
+   Radio controls retain the source density and appearance. */
+.ui-segc.studio-segmented-control.studio-tabs {
+  --ui-segc-h: 32px;
+  --ui-segc-ink: var(--color-text-primary);
+  --ui-segc-text: var(--color-text-secondary);
+  --ui-segc-hover-text: var(--color-text-primary);
+  --ui-segc-line: var(--color-separator-border);
+  --ui-segc-wash: var(--color-background-secondary-hover);
+  --ui-segc-fill: var(--color-background-secondary-hover);
+  --ui-segc-track: var(--color-background-tertiary-default);
+  --ui-segc-card: var(--color-background-primary-default);
+  --ui-segc-card-shadow:
+    inset 0 0 0 1px var(--color-border-button-default),
+    0 1px 2px color-mix(in srgb, var(--color-text-primary) 16%, transparent);
+}
+.ui-segc.studio-segmented-control.studio-tabs[data-variant="tray"] {
+  /* Source tray height subtracts its padding, leaving a 32px target. */
+  --ui-segc-h: 36px;
+  --ui-segc-ink: var(--color-accent-600);
+  --ui-segc-card-shadow:
+    inset 0 0 0 1px var(--color-accent-600),
+    0 1px 2px color-mix(in srgb, var(--color-text-primary) 16%, transparent);
+}
+.ui-segc.studio-segmented-control.studio-tabs[data-variant="buttons"]
+  .ui-segc__pill {
+  box-shadow: inset 0 0 0 1px var(--color-border-button-default);
+}
+.ui-segc.studio-segmented-control.studio-tabs[data-variant="underline"]
+  .ui-segc__pill {
+  height: 3px;
+  border-start-start-radius: 3px;
+  border-start-end-radius: 3px;
+  background: var(--color-accent-600);
+}
+.ui-segc.studio-segmented-control.studio-tabs[data-variant="underline"]
+  .ui-segc__opt[data-active] {
+  color: var(--color-accent-600);
+}
+/* Focus is an outline around the target; selection remains the pill or line. */
+.ui-segc.studio-segmented-control.studio-tabs .ui-segc__opt:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+}
+@media (hover: none) and (pointer: coarse) {
+  .ui-segc.studio-segmented-control.studio-tabs {
+    --ui-segc-h: 40px;
+  }
+  .ui-segc.studio-segmented-control.studio-tabs[data-variant="tray"] {
+    --ui-segc-h: 44px;
+  }
+  .ui-segc.studio-segmented-control.studio-tabs[data-size="lg"] {
+    --ui-segc-h: 44px;
+  }
+}
+@media (forced-colors: active) {
+  .ui-segc.studio-segmented-control.studio-tabs .ui-segc__opt[data-active] {
+    outline: 2px solid Highlight;
+    outline-offset: -3px;
+    color: Highlight;
+  }
+  .ui-segc.studio-segmented-control.studio-tabs .ui-segc__opt:focus-visible {
+    outline-style: dashed;
+  }
+}

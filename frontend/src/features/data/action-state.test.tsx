@@ -103,6 +103,44 @@ async function failSnapshot(post: any) {
   );
 }
 describe("operation-owned errors", () => {
+  it("prevents switching into auto-label while the vocabulary save is pending", async () => {
+    let reject!: (error: Error) => void;
+    const pending = new Promise((_, no) => {
+      reject = no;
+    });
+    const { api } = mountDataset(vi.fn());
+    Object.assign(api, { put: vi.fn(() => pending) });
+    fireEvent.click(await screen.findByText("Dataset actions"));
+    fireEvent.click(
+      within(screen.getByText("Dataset actions").closest("details")!).getByRole(
+        "button",
+        { name: "Labels" },
+      ),
+    );
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Save",
+      }),
+    );
+    const autoLabel = screen.getByRole("button", {
+      name: "Auto-label with helper LLM",
+    });
+    expect(autoLabel).toBeDisabled();
+    fireEvent.click(autoLabel);
+    expect(
+      screen.queryByRole("button", { name: "Save labels & auto-label" }),
+    ).toBeNull();
+    await act(async () => reject(Error("Vocabulary save failed")));
+    expect(autoLabel).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Vocabulary save failed",
+    );
+    fireEvent.click(autoLabel);
+    expect(
+      screen.getByRole("button", { name: "Save labels & auto-label" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
   it.each(["success", "failure"])(
     "ignores late snapshot %s after changing project while preserving the new dialog",
     async (outcome) => {

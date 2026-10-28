@@ -173,8 +173,8 @@ def test_cancellation_never_publishes_partial_pretrained_model(tmp_path, local_p
     def emit(row):
         if boundary == "step" and row.get("step") == 1:
             state["cancel"] = True
-    def load(path):
-        result = original_train(path)
+    def load(path, **kwargs):
+        result = original_train(path, **kwargs)
         if boundary == "saved":
             state["cancel"] = True
         return result
@@ -230,6 +230,7 @@ def test_authored_model_path_cannot_bypass_artifact_binding(tmp_path, local_pret
 
 def test_cpu_qlora_is_rejected_before_artifact_access_on_cuda_host(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr("tinystudio.training.quantization.cpu_pack_compatible", lambda: False)
     experiment = {"definition": {"learning": {"update_strategy": "qlora", "device": "cpu", "dtype": "float32"}}}
     with pytest.raises(ValueError, match="requires a CUDA target"):
         execute_pretrained(experiment, tmp_path / "must-stay-absent", lambda row: None, lambda: False)

@@ -227,7 +227,7 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
         if grants.network_endpoints or grants.kubernetes_secrets:
             raise ValueError("Docker endpoint ACLs require a separately qualified managed network; endpoint grants are not silently broadened")
         argv=['docker','create','--pull=never','--name',name,'--label',f'{_LABEL}={owner}','--label',f'tinystudio.attempt={request.attempt_id}',
-              '--read-only','--log-driver','local','--log-opt','max-size=16m','--log-opt','max-file=1','--security-opt','no-new-privileges=true','--cap-drop','ALL','--pids-limit',str(request.limits.pids),
+              '--read-only','--log-driver','local','--log-opt','max-size=16m','--log-opt','max-file=1','--log-opt','compress=false','--security-opt','no-new-privileges=true','--cap-drop','ALL','--pids-limit',str(request.limits.pids),
               '--cpus',str(request.limits.cpu),'--memory',str(request.limits.memory_bytes),'--memory-swap',str(request.limits.memory_bytes),
               '--network',grants.docker_network or 'none','--user',f'{max(1,os.getuid())}:{max(1,os.getgid())}',
               '--mount',f'type=bind,src={root},dst={root},readonly', '--mount',f'type=bind,src={output},dst={output}', '--workdir',str(output)]

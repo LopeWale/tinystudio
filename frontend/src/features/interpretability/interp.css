@@ -901,3 +901,28 @@
     padding: 0;
   }
 }
+
+/* Evals-inspired peer collections use the shared tab/table owners. Detailed
+   neuron, token and spatial evidence pages retain their existing scroll model. */
+.interp-overview-page
+  > .data-template
+  > .studio-template__layout
+  > .studio-template__content {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.interp-overview-panel,
+.interp-overview-table {
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+.interp-overview-panel:not([hidden]),
+.interp-overview-table {
+  display: flex;
+  flex-direction: column;
+}
+.interp-overview-page .studio-template__toolbar {
+  flex: none;
+}

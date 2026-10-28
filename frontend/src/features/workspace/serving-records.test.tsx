@@ -46,6 +46,60 @@ function mount(component: React.ReactNode, get: any) {
   return studio;
 }
 describe("model and trace collection workspaces", () => {
+  it.each(["models", "traces"] as const)(
+    "keeps %s no-match search mounted and clearable without losing focus",
+    async (kind) => {
+      const model = {
+        id: "org/one",
+        alias: "One",
+        kind: "base",
+        base_model: "org/one",
+        status: "down",
+      };
+      const trace = {
+        id: "first",
+        model: "base",
+        messages: [{ role: "user", content: "First prompt" }],
+        response: "First answer",
+      };
+      const get = vi.fn(async (path: string) =>
+        path === "/api/models"
+          ? [model]
+          : path.startsWith("/api/traces")
+            ? [trace]
+            : path === "/api/hub/models"
+              ? { models: [], token: { configured: false } }
+              : [],
+      );
+      mount(kind === "models" ? <ModelsPage /> : <TracesPage />, get);
+      const label =
+        kind === "models"
+          ? "Find an inventory model"
+          : "Find a trace on this page";
+      const rowLabel =
+        kind === "models" ? "Select model One" : "Select trace first";
+      await screen.findByRole("checkbox", { name: rowLabel });
+      const search = screen.getByRole("searchbox", { name: label });
+      const table = screen.getByRole("table", {
+        name: kind === "models" ? "Model inventory" : "Recent inference traces",
+      });
+      const user = userEvent.setup();
+      await user.type(search, "missing-record");
+      expect(screen.queryByRole("checkbox", { name: rowLabel })).toBeNull();
+      expect(screen.getByRole("searchbox", { name: label })).toBe(search);
+      expect(search).toHaveFocus();
+      expect(within(table).getAllByRole("row")).toHaveLength(1);
+      const fetchesBeforeClear = get.mock.calls.length;
+      await user.clear(search);
+      expect(search).toHaveValue("");
+      expect(search).toHaveFocus();
+      expect(
+        screen.getByRole("checkbox", { name: rowLabel }),
+      ).toBeInTheDocument();
+      expect(get).toHaveBeenCalledTimes(fetchesBeforeClear);
+    },
+  );
+
   it("distinguishes model selection from inspection and preserves the collection DOM and scroll across comparison", async () => {
     mount(
       <ModelsPage />,
@@ -85,7 +139,9 @@ describe("model and trace collection workspaces", () => {
       ).checked,
     ).toBe(false);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select model Two" }));
-    const collection = screen.getByRole("region", { name: "Model collection" });
+    const collection = screen.getByRole("region", {
+      name: "Model inventory rows",
+    });
     collection.scrollTop = 75;
     fireEvent.scroll(collection);
     fireEvent.click(screen.getByRole("button", { name: "Compare selected" }));
@@ -94,7 +150,7 @@ describe("model and trace collection workspaces", () => {
     expect(within(params).getByText("1.0 M")).toBeTruthy();
     expect(within(params).getByText("—")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to collection" }));
-    expect(screen.getByRole("region", { name: "Model collection" })).toBe(
+    expect(screen.getByRole("region", { name: "Model inventory rows" })).toBe(
       collection,
     );
     expect(collection.scrollTop).toBe(75);

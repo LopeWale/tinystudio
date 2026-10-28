@@ -792,7 +792,7 @@ function LabWorkspace() {
                                     ? "Every row needs a prompt, a final assistant answer and a distinct rejected answer. Full updates use a separate frozen reference model."
                                     : "Snapshot rows use conversational messages. The retained model tokenizer supplies the chat template."}
                                 {
-                                  " QLoRA currently requires a compatible CUDA execution target."
+                                  " QLoRA requires CUDA with bitsandbytes, or the pinned Linux ARM64 CPU NF4 pack."
                                 }
                               </p>
                             </>

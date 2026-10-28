@@ -12,6 +12,8 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioContext, type StudioRuntime } from "../../app/StudioContext";
 import { EvidenceRegistry } from "../../app/evidence";
+import { ComponentActionRegistry } from "../../controllers/componentActions";
+import { ComponentActionsProvider } from "../assistant/actions";
 import { CapturePage, ComparisonPage, InterpretabilityPage } from "./index";
 
 const capture = "smol-lora-1--commands";
@@ -222,6 +224,225 @@ afterEach(() => {
 });
 
 describe("interpretability artifact collections", () => {
+  it("switches peer collections with the keyboard while retaining independent search/sort and revoking hidden table actions", async () => {
+    const captures = [
+      {
+        name: "small",
+        model_id: "model-a",
+        source: "commands",
+        rows: 2,
+        layers: [1],
+      },
+      {
+        name: "large",
+        model_id: "model-b",
+        source: "commands",
+        rows: 100,
+        layers: [1, 2],
+      },
+    ];
+    const comparisons = [
+      {
+        name: "diff-a",
+        experiment: "job/1",
+        base: "model-a",
+        source: "commands",
+        rows: 2,
+      },
+      {
+        name: "diff-b",
+        experiment: "job/2",
+        base: "model-b",
+        source: "commands",
+        rows: 3,
+      },
+    ];
+    const api = captureApi((path) =>
+      path === "/api/interp"
+        ? Promise.resolve({ captures, comparisons })
+        : undefined,
+    );
+    const registry = new ComponentActionRegistry();
+    registry.setScope({ user: "alice", project: "home", route: "/interp" });
+    render(
+      <MemoryRouter>
+        <StudioContext.Provider value={runtime(api)}>
+          <ComponentActionsProvider registry={registry}>
+            <InterpretabilityPage />
+          </ComponentActionsProvider>
+        </StudioContext.Provider>
+      </MemoryRouter>,
+    );
+    const captureTable = await screen.findByRole("table", {
+      name: "Activation captures",
+    });
+    const captureSearch = screen.getByRole("searchbox", {
+      name: "Find a capture",
+    });
+    expect(captureTable.closest(".data-table")).toHaveAttribute(
+      "data-table-layout",
+      "fill",
+    );
+    fireEvent.change(captureSearch, { target: { value: "small" } });
+    fireEvent.click(
+      within(captureTable).getByRole("button", { name: "Datapoints" }),
+    );
+    const capturesTab = screen.getByRole("tab", { name: "Captures" });
+    const comparisonsTab = screen.getByRole("tab", { name: "Comparisons" });
+    const oldCaptureAction = registry
+      .inspect()
+      .actions.find(
+        (action) => action.label === "Activation captures: row density",
+      )!.ref;
+    expect(
+      screen.queryByRole("table", { name: "Model comparisons" }),
+    ).toBeNull();
+    fireEvent.keyDown(capturesTab, { key: "ArrowRight" });
+    expect(comparisonsTab).toHaveAttribute("aria-selected", "true");
+    const comparisonPanel = screen.getByRole("tabpanel", {
+      name: "Comparisons",
+    });
+    expect(comparisonsTab).toHaveAttribute("aria-controls", comparisonPanel.id);
+    expect(captureTable.closest('[role="tabpanel"]')).toHaveAttribute("hidden");
+    expect(captureTable.closest('[role="tabpanel"]')).toHaveAttribute("inert");
+    await expect(
+      registry.execute(oldCaptureAction, "compact", false),
+    ).rejects.toThrow("stale");
+    expect(
+      registry
+        .inspect()
+        .actions.some((action) =>
+          action.label.startsWith("Activation captures:"),
+        ),
+    ).toBe(false);
+    const comparisonTable = screen.getByRole("table", {
+      name: "Model comparisons",
+    });
+    expect(comparisonTable.closest(".data-table")).toHaveAttribute(
+      "data-table-layout",
+      "fill",
+    );
+    const comparisonSearch = screen.getByRole("searchbox", {
+      name: "Find a comparison",
+    });
+    fireEvent.change(comparisonSearch, { target: { value: "missing" } });
+    expect(
+      screen.getByText("No comparisons match this search."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Find a comparison" })).toBe(
+      comparisonSearch,
+    );
+    fireEvent.change(comparisonSearch, { target: { value: "diff-b" } });
+    expect(
+      within(comparisonTable).getByRole("link", { name: "diff-b" }),
+    ).toHaveAttribute("href", "/interp/d/diff-b");
+    fireEvent.keyDown(comparisonsTab, { key: "ArrowLeft" });
+    expect(screen.getByRole("table", { name: "Activation captures" })).toBe(
+      captureTable,
+    );
+    expect(
+      screen.getByRole("searchbox", { name: "Find a capture" }),
+    ).toHaveValue("small");
+    expect(
+      within(captureTable).getByRole("columnheader", { name: "Datapoints" }),
+    ).toHaveAttribute("aria-sort", "ascending");
+    expect(
+      within(captureTable).queryByRole("link", { name: "large" }),
+    ).toBeNull();
+    fireEvent.click(comparisonsTab);
+    expect(comparisonSearch).toHaveValue("diff-b");
+    fireEvent.click(
+      within(comparisonTable).getByRole("button", { name: "Delete" }),
+    );
+    await waitFor(() =>
+      expect(api.del).toHaveBeenCalledWith("/api/interp/diffs/diff-b"),
+    );
+  });
+  it("retains exact capture and comparison submission contracts through the overview actions", async () => {
+    const api = captureApi((path) =>
+      path === "/api/interp"
+        ? Promise.resolve({ captures: [], comparisons: [] })
+        : path === "/api/jobs"
+          ? Promise.resolve([
+              {
+                job: { name: "job" },
+                experiments: [
+                  { number: 1, state: "succeeded", checkpoints: [] },
+                ],
+              },
+            ])
+          : undefined,
+    );
+    api.post.mockResolvedValue({ id: "queued-artifact", state: "queued" });
+    const studio = runtime(api);
+    studio.overview = {
+      tree: {
+        datasets: [
+          {
+            name: "commands",
+            datapoints: 2,
+            snapshots: [{ name: "commands-snap" }],
+          },
+        ],
+      },
+    } as any;
+    mount(studio, "/interp");
+    await screen.findByText(
+      "Capture a model on a dataset to begin exploring its neurons.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "New capture" }));
+    const captureDialog = screen.getByRole("dialog", {
+      name: "Capture model activations",
+    });
+    fireEvent.change(within(captureDialog).getByLabelText("Model"), {
+      target: { value: "base/model" },
+    });
+    fireEvent.change(within(captureDialog).getByLabelText("Source"), {
+      target: { value: "snapshot:commands-snap" },
+    });
+    fireEvent.change(within(captureDialog).getByLabelText("Layers"), {
+      target: { value: "1,3" },
+    });
+    fireEvent.click(
+      within(captureDialog).getByRole("button", { name: "Capture" }),
+    );
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/api/interp/captures", {
+        model: "base/model",
+        snapshot: "commands-snap",
+        layers: [1, 3],
+        topk: 40,
+        name: null,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("tab", { name: "Comparisons" }));
+    fireEvent.click(screen.getByRole("button", { name: "Compare models" }));
+    const comparisonDialog = screen.getByRole("dialog", {
+      name: "Compare base and experiment",
+    });
+    expect(
+      within(comparisonDialog).getByLabelText("Compare against").tagName,
+    ).toBe("INPUT");
+    await waitFor(() =>
+      expect(
+        within(comparisonDialog).getByRole("button", { name: "Compare" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      within(comparisonDialog).getByRole("button", { name: "Compare" }),
+    );
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/api/interp/diffs", {
+        experiment: "job/1",
+        dataset: "commands",
+        layers: "all",
+        base: null,
+      }),
+    );
+    expect(studio.trackTask).toHaveBeenCalledTimes(2);
+  });
+
   it("sorts numeric datapoints while retaining artifact links, evidence identity and deletion", async () => {
     const captures = [
       {

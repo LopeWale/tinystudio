@@ -408,7 +408,11 @@ describe("linked evaluation records", () => {
       </StudioContext.Provider>,
     );
     await screen.findByText("High answer");
-    fireEvent.click(screen.getByRole("button", { name: "10–20: 1" }));
+    const lowBin = screen.getByRole("button", {
+      name: "10 ≤ value < 20: 1 observation (50.0%)",
+    });
+    fireEvent.click(lowBin);
+    expect(lowBin).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("High answer")).toBeNull();
     expect(screen.getByText("Low answer")).toBeTruthy();
     fireEvent.click(

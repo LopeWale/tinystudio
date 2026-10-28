@@ -355,8 +355,9 @@ export function RepositoriesPage() {
             if (event.key === "Escape") closeInspector();
           }}
         >
-          <RecordsScroll label="Repository collection">
+          <div className="records-table-host">
             <AdvancedTable
+              layout="fill"
               empty={
                 r.loading ? (
                   "Loading records…"
@@ -471,7 +472,7 @@ export function RepositoriesPage() {
                 ),
               })}
             />
-          </RecordsScroll>
+          </div>
         </div>
       </CollectionTemplate>
       {inspected && (
@@ -498,6 +499,7 @@ export function RepositoriesPage() {
           }
         >
           <AdvancedTable
+            layout="fill"
             scopeKey={s.scopeKey + ":" + s.route + ":" + inspected.name}
             label={`Documents in ${inspected.name}`}
             toolbarContent={

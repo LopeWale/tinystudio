@@ -9,6 +9,7 @@ and the fused AdamW is replaced by the plain one. On CUDA the run uses bf16 and 
 from __future__ import annotations
 
 import json
+import gc
 import os
 import re
 import shutil
@@ -73,7 +74,11 @@ class TrainConfig:
         return cls(**{k: v for k, v in value.items() if k in known})
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.update_strategy == "qlora":
+            from .quantization import POLICY_FORMAT
+            result["quantization_format"] = POLICY_FORMAT
+        return result
 
 
 def alias_for(job: str, number: int) -> str:
@@ -148,17 +153,22 @@ def _checkpoint_args(config: "TrainConfig") -> dict[str, Any]:
 
 
 def qlora_support(device: str | None = None) -> tuple[bool, str]:
-    """Whether 4-bit QLoRA can run here: it needs a CUDA GPU and the bitsandbytes package."""
+    """Eligibility is target-specific; a successful fixture establishes qualification."""
     import importlib.util
 
     import torch
 
     try:
-        selected_cuda = device is None or torch.device(device).type == "cuda"
+        from tinystudio.serving.runner import pick_device
+        selected = torch.device(device or pick_device()).type
     except (RuntimeError, TypeError, ValueError):
         return False, f"Invalid training device {device!r}; select cpu, mps or cuda[:index] on a compatible target"
-    if not selected_cuda or not torch.cuda.is_available():
-        return False, "TinyStudio's current QLoRA trainer requires a CUDA target and bitsandbytes; CPU/Apple execution of this path is unqualified. Select lora/full or a compatible CUDA target."
+    if selected == "cpu":
+        from .quantization import cpu_pack_compatible
+        if cpu_pack_compatible():
+            return True, "pinned Linux ARM64 CPU NF4 pack"
+    if selected != "cuda" or not torch.cuda.is_available():
+        return False, "QLoRA requires a CUDA target with bitsandbytes, or the pinned Linux ARM64 Python 3.12 CPU NF4 pack. Native Apple execution remains unqualified; select lora/full or a compatible execution target."
     if importlib.util.find_spec("bitsandbytes") is None:
         return False, "QLoRA needs the bitsandbytes package: pip install bitsandbytes"
     return True, "ok"
@@ -174,7 +184,7 @@ def _load_4bit(source: str, device: str, progress: Any, dtype=None) -> Any:
 
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=dtype or torch.bfloat16)
     progress("loading the base model in 4-bit NF4 (QLoRA)")
-    model = AutoModelForCausalLM.from_pretrained(source, quantization_config=quant, device_map={"": device})
+    model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype or torch.bfloat16, quantization_config=quant, device_map={"": device}, local_files_only=True)
     return prepare_model_for_kbit_training(model)
 
 
@@ -213,16 +223,29 @@ def _cancellation_callback(check_cancel):
 
 
 def _parameter_digest(model, *, base_only=False):
-    import hashlib
-    import torch
-    digest = hashlib.sha256()
-    for name, parameter in model.named_parameters():
-        if base_only and "lora_" in name:
-            continue
-        digest.update(name.encode())
-        digest.update(str((tuple(parameter.shape), parameter.dtype)).encode())
-        digest.update(parameter.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes())
-    return digest.hexdigest()
+    from .quantization import state_digest
+    return state_digest(model, base_only=base_only)
+
+
+def _quantized_trainer_setup(trainer, retained, runtime, progress):
+    if retained is None:
+        return
+    from .quantization import prepare_adapter_precision, state_digest
+    retained["precision"] = prepare_adapter_precision(trainer, runtime)
+    if state_digest(trainer.model, base_only=True) != retained["state_sha256"]:
+        raise ProjectError("trainer setup changed the retained quantized starting base")
+    progress(f"NF4 compute and adapter precision: {runtime.dtype_name}; retained base verified")
+
+
+def _quantized_training_result(trainer, retained, tokenizer, directory, runtime, context):
+    if retained is None:
+        return {}
+    from .quantization import assert_adapter_optimizer, state_digest, capture_probes
+    assert_adapter_optimizer(trainer)
+    if state_digest(trainer.model, base_only=True) != retained["state_sha256"]:
+        raise ProjectError("QLoRA changed frozen base or quantization state")
+    return {"quantization": retained,
+            "reload_probes": capture_probes(trainer.model, tokenizer, directory, runtime.device, context)}
 
 
 def raw_sequence_rows(rows, tokenizer, max_length):
@@ -281,6 +304,10 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
         raise ProjectError("DPO requires a complete immutable starting model; merge and retain any existing adapter first")
     model = (_load_4bit(source, device, progress, dtype) if config.update_strategy == "qlora" else
              AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device))
+    quantized = None
+    if config.update_strategy == "qlora":
+        from .quantization import retain_base
+        quantized = retain_base(model, exp_dir, runtime, check_cancel)
     reference = None
     if config.update_strategy == "full":
         reference = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
@@ -320,6 +347,7 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
     class PlacedDPOTrainer(CheckedPlacementMixin, DPOTrainer):
         pass
     trainer = PlacedDPOTrainer(model=model, ref_model=reference, args=args, train_dataset=train_ds, eval_dataset=eval_ds, processing_class=tokenizer, peft_config=peft_config, callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log), _cancellation_callback(check_cancel)])
+    _quantized_trainer_setup(trainer, quantized, runtime, progress)
     trainer.tinystudio_placement = runtime
     runtime.check_device(trainer.args.device)
     runtime.check_model(trainer.model)
@@ -339,20 +367,27 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
     if reference_after != reference_before:
         raise ProjectError("DPO reference weights changed during policy optimization")
     optimizer_ids = {id(parameter) for group in trainer.optimizer.param_groups for parameter in group["params"]}
+    if optimizer_ids != {id(parameter) for parameter in trainer.model.parameters() if parameter.requires_grad}:
+        raise ProjectError("DPO optimizer differs from the selected trainable parameters")
+    if base_only and any(parameter.requires_grad and "lora_" not in name for name, parameter in trainer.model.named_parameters()):
+        raise ProjectError("adapter DPO cannot update frozen reference parameters")
     if trainer.ref_model is not None and any(id(parameter) in optimizer_ids for parameter in trainer.ref_model.parameters()):
         raise ProjectError("DPO reference parameters entered the policy optimizer")
     final_eval: dict[str, float] = {}
     if eval_ds is not None:
         final_eval = {k: float(v) for k, v in trainer.evaluate().items() if isinstance(v, (int, float))}
     check_cancel()
+    quantized_result = _quantized_training_result(trainer, quantized, tokenizer, exp_dir, runtime, config.max_length)
+    check_cancel()
     out = exp_dir / ("model" if config.update_strategy == "full" else "adapter")
     trainer.model.save_pretrained(str(out))
     tokenizer.save_pretrained(str(out))
-    return {
+    result = {
         "output": str(out),
         "device": device,
         "objective": config.objective, "update_strategy": config.update_strategy,
-        "output_kind": "model" if config.update_strategy == "full" else "adapter",
+        "output_kind": "quantized_adapter" if quantized is not None else "model" if config.update_strategy == "full" else "adapter",
+        **quantized_result,
         "placement": runtime.report(),
         "reference": {"kind": "separate_frozen_model" if reference is not None else "adapter_disabled_starting_model",
             "sha256_before": reference_before, "sha256_after": reference_after, "unchanged": True,
@@ -364,6 +399,9 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
         "preference_pairs": {"train": len(train_pairs), "validation": len(val_pairs)},
         "metrics": {**{k: float(v) for k, v in train_output.metrics.items() if isinstance(v, (int, float))}, **final_eval},
     }
+    del trainer, model, reference, reference_model
+    gc.collect()
+    return result
 
 
 def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]], val_rows: list[dict[str, Any]], progress: Any, weights: Path | None, on_log: Any, runtime: TrainingPlacement, check_cancel) -> dict[str, Any]:
@@ -390,6 +428,10 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         model = _load_4bit(source, device, progress, dtype)
     else:
         model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
+    quantized = None
+    if config.update_strategy == "qlora":
+        from .quantization import retain_base
+        quantized = retain_base(model, exp_dir, runtime, check_cancel)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -461,6 +503,7 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         peft_config=peft_config,
         callbacks=[_loss_logger(exp_dir, progress, on_log), _checkpoint_logger(exp_dir, progress, on_log), _cancellation_callback(check_cancel)],
     )
+    _quantized_trainer_setup(trainer, quantized, runtime, progress)
     trainer.tinystudio_placement = runtime
     runtime.check_device(trainer.args.device)
     runtime.check_model(trainer.model)
@@ -476,15 +519,18 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
 
     runtime.check_model(trainer.model)
     check_cancel()
+    quantized_result = _quantized_training_result(trainer, quantized, tokenizer, exp_dir, runtime, config.max_length)
+    check_cancel()
     out = exp_dir / ("adapter" if config.update_strategy in ("lora", "qlora") else "model")
     trainer.model.save_pretrained(str(out))
     tokenizer.save_pretrained(str(out))
 
-    return {
+    result = {
         "output": str(out),
         "device": device,
         "objective": config.objective, "update_strategy": config.update_strategy,
-        "output_kind": "model" if config.update_strategy == "full" else "adapter",
+        "output_kind": "quantized_adapter" if quantized is not None else "model" if config.update_strategy == "full" else "adapter",
+        **quantized_result,
         "placement": runtime.report(), "data_contract": data_contract,
         "trainable_parameters": trainable,
         "total_parameters": total,
@@ -492,6 +538,9 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         "train_loss": float(train_output.training_loss),
         "metrics": {**{k: float(v) for k, v in train_output.metrics.items() if isinstance(v, (int, float))}, **final_eval},
     }
+    del trainer, model
+    gc.collect()
+    return result
 
 
 def _count_parameters(model: Any) -> tuple[int, int]:
@@ -512,6 +561,9 @@ def export_merged(exp_dir: Path, destination: Path, base_model: str, weights_sou
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    from .quantization import has_quantized_marker
+    if has_quantized_marker(exp_dir):
+        raise ProjectError("Quantized policy merged export is not qualified; retain its laboratory model bundle with the NF4 base and adapter instead")
     if destination.exists() and any(destination.iterdir()):
         raise ProjectError(f"{destination} is not empty")
     if (exp_dir / "model").exists():

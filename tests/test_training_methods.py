@@ -131,6 +131,7 @@ def test_shared_trainer_rejects_cpu_qlora_on_a_cuda_capable_host(tmp_path, monke
     import torch
     from tinystudio.training.train import train_experiment
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr("tinystudio.training.quantization.cpu_pack_compatible", lambda: False)
     config = TrainConfig(base_model="must-not-open", update_strategy="qlora", device="cpu", dtype="float32")
     with pytest.raises(ProjectError, match="requires a CUDA target"):
         train_experiment(tmp_path, config, [], [])

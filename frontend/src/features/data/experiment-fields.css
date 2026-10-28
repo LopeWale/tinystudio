@@ -1,0 +1,78 @@
+@reference "../../styles/globals.css";
+.experiment-fields {
+  display: grid;
+  gap: 1.5rem;
+  min-inline-size: 0;
+}
+.experiment-fields-group {
+  display: grid;
+  gap: 1rem;
+  min-inline-size: 0;
+}
+.experiment-fields-group + .experiment-fields-group {
+  border-block-start: 1px solid var(--color-separator-border);
+  padding-block-start: 1.5rem;
+}
+.experiment-fields-group header {
+  display: grid;
+  gap: 0.25rem;
+}
+.experiment-fields-group h3,
+.experiment-fields-checkpoints h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+  @apply text-body-medium;
+}
+.experiment-fields-group header p,
+.experiment-fields-hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  @apply text-body-2-regular;
+}
+.experiment-fields-pair,
+.experiment-fields-triple {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.experiment-fields-triple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.experiment-fields-select {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-inline-size: 0;
+}
+.experiment-fields-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: start;
+  @apply text-body-medium;
+}
+.experiment-fields-disclosure:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 4px;
+}
+.experiment-fields-disclosure[disabled] {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+.experiment-fields-disclosure[aria-expanded="true"] span {
+  transform: rotate(180deg);
+}
+.experiment-fields-hint {
+  padding-block-end: 1rem;
+}
+@media (max-width: 640px) {
+  .experiment-fields-pair,
+  .experiment-fields-triple {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

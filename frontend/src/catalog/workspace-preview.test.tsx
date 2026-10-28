@@ -42,6 +42,20 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", clearTimeout);
 });
 describe("isolated illustrative workspace transport", () => {
+  it("serves a cloned quality profile only for known fixture datasets", async () => {
+    const api = createWorkspacePreviewApi();
+    const path = "/api/datasets/Sample%20support/quality";
+    const profile = await api.get<any>(path);
+    expect(profile.count).toBe(3);
+    profile.count = 999;
+    expect((await api.get<any>(path)).count).toBe(3);
+    await expect(api.get("/api/datasets/unknown/quality")).rejects.toThrow(
+      "No server request was sent",
+    );
+    await expect(
+      api.post("/api/datasets/Sample%20support/clean", {}),
+    ).rejects.toThrow(previewRefusal);
+  });
   it("matches the production Interpretability overview keys and clones its collections", async () => {
     const api = createWorkspacePreviewApi();
     const overview = await api.get<{

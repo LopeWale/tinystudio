@@ -165,9 +165,14 @@ def _merged_cache_paths(exp: Experiment) -> tuple[Path, ...]:
 def parent_weights(db: Session, project: Project, reference: str) -> Path:
     """Weights of a finished experiment to continue from: its full model, or its adapter merged once into the base (cached)."""
     parent = find_experiment(db, project, reference)
+    from tinystudio.training.quantization import is_retained_quantized, has_quantized_marker
+    if is_retained_quantized(parent.config, parent.status or {}):
+        raise ProjectError("Quantized policy refinement through a merged float base is not qualified; use its retained laboratory bundle")
     if parent.state != "succeeded":
         raise ProjectError(f"refinetune_from: experiment {reference!r} has not succeeded")
     path = ensure_experiment_artifacts(parent)
+    if has_quantized_marker(path):
+        raise ProjectError("Quantized policy refinement through a merged float base is not qualified; use its retained laboratory bundle")
     if (path / "model").exists():
         return path / "model"
     merged = path.parent / f"{parent.id}-merged" if (parent.status or {}).get("artifact_prefix") else path / "merged"
@@ -205,7 +210,8 @@ def run_experiment(experiment_id: str, progress: Any = print, task_id: str | Non
         out_dir = exp_path(exp)
         artifact_prefix = project_key(project.id, "models", exp.id)
     started = time.perf_counter()
-    _set_state(experiment_id, "running", started_at=iso(datetime.now(timezone.utc)), weights_source=str(weights) if weights else cfg.base_model)
+    _set_state(experiment_id, "running", started_at=iso(datetime.now(timezone.utc)), weights_source=str(weights) if weights else cfg.base_model,
+        **({"quantization_format": cfg.as_dict()["quantization_format"]} if cfg.update_strategy == "qlora" else {}))
 
     def on_log(kind: str, row: dict[str, Any]) -> None:
         checkpoint = None

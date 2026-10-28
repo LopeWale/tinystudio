@@ -43,7 +43,7 @@ def secret_hash(value: str) -> str:
 
 def runtime_versions() -> dict[str, str]:
     result = {"python": platform.python_version(), "os": platform.system(), "machine": platform.machine()}
-    for name in ("numpy", "torch", "transformers", "pyarrow", "tokenizers", "peft", "trl", "accelerate",
+    for name in ("numpy", "torch", "transformers", "pyarrow", "tokenizers", "peft", "trl", "accelerate", "bitsandbytes", "safetensors", "datasets",
                  "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt"):
         try:
             result[name] = importlib.metadata.version(name)

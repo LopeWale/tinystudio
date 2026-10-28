@@ -129,3 +129,83 @@ describe("RecordTableController view invariants", () => {
     expect(listener).toHaveBeenCalledTimes(calls);
   });
 });
+
+describe("workspace-fitted table paging", () => {
+  const many = Array.from({ length: 61 }, (_, index) => ({
+    ...rows[0],
+    id: String(index),
+  }));
+  const fit = () =>
+    new RecordTableController(many, columns, (row) => row.id, "client", "fit");
+  it("retains the previous first row within the resized page and clamps after data shrinks", () => {
+    const c = fit();
+    c.setFittedPageSize(10);
+    c.setPage(2);
+    expect(c.getSnapshot().rowIds[0]).toBe("20");
+    c.setFittedPageSize(6);
+    expect(c.getSnapshot().page).toBe(3);
+    expect(c.getSnapshot().rowIds).toEqual([
+      "18",
+      "19",
+      "20",
+      "21",
+      "22",
+      "23",
+    ]);
+    c.update(many.slice(0, 7), columns, (row) => row.id);
+    expect(c.getSnapshot().page).toBe(1);
+    expect(c.getSnapshot().rowIds).toEqual(["6"]);
+    c.update([], columns, (row) => row.id);
+    expect(c.getSnapshot()).toMatchObject({ page: 0, pageCount: 1, rows: [] });
+  });
+  it("partitions all rows across capacity-based pages without omissions or duplicates", () => {
+    const c = fit();
+    c.setFittedPageSize(7);
+    const visited: string[] = [];
+    for (let page = 0; page < c.getSnapshot().pageCount; page++) {
+      c.setPage(page);
+      visited.push(...c.getSnapshot().rowIds);
+    }
+    expect(visited).toEqual(many.map((row) => row.id));
+  });
+  it("ignores repeated capacity, invalid capacities and measurements after manual override", () => {
+    const c = fit();
+    const changed = vi.fn();
+    c.subscribe(changed);
+    c.setFittedPageSize(6);
+    expect(changed).toHaveBeenCalledTimes(1);
+    for (const size of [6, 0, -1, NaN, Infinity]) c.setFittedPageSize(size);
+    expect(changed).toHaveBeenCalledTimes(1);
+    c.setPageSize(10);
+    c.setFittedPageSize(3);
+    expect(c.getSnapshot()).toMatchObject({
+      pageSizeMode: "manual",
+      pageSize: 10,
+    });
+    c.reset();
+    expect(c.getSnapshot().pageSizeMode).toBe("fit");
+    c.setFittedPageSize(3);
+    expect(c.getSnapshot().pageSize).toBe(3);
+  });
+  it.each(["external", "none"] as const)(
+    "never capacity-pages %s records",
+    (pagination) => {
+      const c = new RecordTableController(
+        many,
+        columns,
+        (row) => row.id,
+        pagination,
+        "fit",
+      );
+      c.setFittedPageSize(3);
+      c.setPage(8);
+      expect(c.getSnapshot().rowIds).toEqual(many.map((row) => row.id));
+      expect(c.getSnapshot()).toMatchObject({
+        page: 0,
+        pageCount: 1,
+        total: 61,
+        filtered: 61,
+      });
+    },
+  );
+});

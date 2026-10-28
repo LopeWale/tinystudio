@@ -1,3 +1,4 @@
+import { CollectionToolbar } from "../../components/studio/collection-toolbar";
 import { AdvancedTable } from "../../components/studio/data-table";
 import { CollectionTemplate } from "../../components/studio/templates";
 import { useComponentAction } from "../assistant/actions";
@@ -53,7 +54,8 @@ export function TracesPage() {
     [error, setError] = useState("");
   const [query, setQuery] = useState(""),
     [checked, setChecked] = useState<Trace[]>([]),
-    [comparing, compare] = useState(false);
+    [comparing, compare] = useState(false),
+    [promoting, setPromoting] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null),
     compareFocus = useRef<HTMLElement | null>(null);
   const closeInspector = () => {
@@ -75,6 +77,7 @@ export function TracesPage() {
     inspect(null);
     setChecked([]);
     compare(false);
+    setPromoting(false);
     setQuery("");
     setOffset(0);
   }, [studio.scopeKey]);
@@ -144,54 +147,31 @@ export function TracesPage() {
   });
   return (
     <Page
-      className="traces-workspace data-workspace records-page serving-records-page"
+      className="traces-workspace data-workspace records-page serving-records-page collection-page"
       title="Traces"
       description="Review recent inferences, score responses, and turn reviewed examples into training data."
-      actions={<Button onClick={traces.reload}>Refresh</Button>}
+      actions={
+        <div className="data-actions">
+          <Button onClick={() => setPromoting(true)}>
+            Promote reviewed responses
+          </Button>
+          <Button onClick={traces.reload}>Refresh</Button>
+        </div>
+      }
     >
       <CollectionTemplate
+        className="data-template"
         label="Trace review workspace"
-        toolbar={
-          <div className="records-toolbar">
-            <Input
-              label="Find a trace on this page"
-              type="search"
-              value={query}
-              onChange={setQuery}
-            />
-            <span className="records-count">
-              {visibleTraces.length} traces on this page
-            </span>
-            <span className="records-selection" role="status">
-              {checked.length} selected
-            </span>
-            <Button
-              disabled={checked.length < 2}
-              onClick={(event) => {
-                compareFocus.current = event.currentTarget;
-                compare(true);
-              }}
-            >
-              Compare selected
-            </Button>
-            <Button
-              disabled={!checked.length}
-              variant="ghost"
-              onClick={() => setChecked([])}
-            >
-              Clear selection
-            </Button>
-          </div>
-        }
       >
         {(error || traces.error || datasets.error) && (
           <p role="alert">
             {error || traces.error?.message || datasets.error?.message}
           </p>
         )}
-        <WorkspaceDisclosure
+        <Modal
+          open={promoting}
           title="Promote reviewed responses"
-          summary="Add approved corrections to a training dataset"
+          onClose={() => setPromoting(false)}
         >
           <div className="trace-promotion">
             <Field label="Add to dataset">
@@ -233,7 +213,7 @@ export function TracesPage() {
             become the training response.
             {!choices.length && " Create a dataset before adding traces."}
           </p>
-        </WorkspaceDisclosure>
+        </Modal>
 
         {comparing && (
           <RecordComparison
@@ -328,28 +308,26 @@ export function TracesPage() {
               )
             }
           >
-            <RecordsScroll label="Trace collection">
+            <div className="trace-table-host">
               <Panel title="Recent inference traces">
                 {traces.loading && !traces.data ? (
                   <p role="status">Loading traces…</p>
-                ) : !visibleTraces.length ? (
-                  <EmptyState>
-                    {query ? (
-                      <>
-                        No traces match “{query}”.{" "}
-                        <Button onClick={() => setQuery("")}>
-                          Clear search
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        No traces on this page. Chat in the{" "}
-                        <a href="#/playground">Playground</a> or call the API.
-                      </>
-                    )}
-                  </EmptyState>
                 ) : (
                   <AdvancedTable
+                    layout="fill"
+                    toolbarContent={
+                      <CollectionToolbar
+                        label="Find a trace on this page"
+                        query={query}
+                        onQueryChange={setQuery}
+                        selectedCount={checked.length}
+                        onCompare={(event) => {
+                          compareFocus.current = event.currentTarget;
+                          compare(true);
+                        }}
+                        onClearSelection={() => setChecked([])}
+                      />
+                    }
                     label="Recent inference traces"
                     rows={visibleTraces}
                     getRowId={(trace) => trace.id}
@@ -552,7 +530,7 @@ export function TracesPage() {
                   </Button>
                 </div>
               </Panel>
-            </RecordsScroll>
+            </div>
           </InspectionWorkspace>
         </div>
         {traces.isStale && (

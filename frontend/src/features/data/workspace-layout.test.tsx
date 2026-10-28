@@ -54,6 +54,74 @@ function mount(
   return Object.assign(view, { registry, studio });
 }
 describe("compact data workspaces", () => {
+  it("keeps the inspector and assistant aligned with the table's displayed order and filters", async () => {
+    const view = mount(
+      <DatasetPage />,
+      "/datasets/alpha",
+      "/datasets/:name",
+      vi.fn(async (path: string) =>
+        path === "/api/snapshots"
+          ? []
+          : {
+              total: 3,
+              meta: { buckets: { training: 2, validation: 1 } },
+              rows: [
+                {
+                  id: 1,
+                  bucket: "training",
+                  labels: [],
+                  messages: [{ role: "user", content: "Zulu" }],
+                },
+                {
+                  id: 2,
+                  bucket: "validation",
+                  labels: [],
+                  messages: [{ role: "user", content: "Alpha" }],
+                },
+                {
+                  id: 3,
+                  bucket: "training",
+                  labels: [],
+                  messages: [{ role: "user", content: "Bravo" }],
+                },
+              ],
+            },
+      ),
+    );
+    const table = await screen.findByRole("table", { name: "Dataset records" });
+    fireEvent.click(
+      within(table).getByRole("button", { name: "User message" }),
+    );
+    fireEvent.click(
+      within(table).getByRole("button", { name: "Inspect datapoint 2: Alpha" }),
+    );
+    expect(screen.getByText("1 of 3 on this page")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Next record" }));
+    expect(screen.getByRole("heading", { name: "Datapoint 3" })).toBeVisible();
+    const controls = screen.getByRole("group", {
+      name: "Dataset records table controls",
+    });
+    fireEvent.click(within(controls).getByRole("button", { name: "Filters" }));
+    const filters = screen.getByRole("dialog", {
+      name: "Dataset records filters",
+    });
+    fireEvent.click(within(filters).getByRole("button", { name: /^Bucket/ }));
+    fireEvent.click(
+      within(filters).getByRole("checkbox", { name: "training" }),
+    );
+    expect(screen.getByText("1 of 2 on this page")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Previous record" }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Next record" }));
+    expect(screen.getByRole("heading", { name: "Datapoint 1" })).toBeVisible();
+    expect(
+      view.registry
+        .inspect()
+        .actions.find((item) => item.id === "dataset.select")
+        ?.options?.map((item) => item.value),
+    ).toEqual(["3", "1"]);
+  });
   it("keeps dataset search in a real table with working detail links", async () => {
     const view = mount(
       <DatasetsPage />,

@@ -244,28 +244,6 @@
   min-block-size: 280px;
   max-block-size: none;
 }
-.collection-page .records-workbench > .records-scroll-wrap > .records-scroll {
-  overflow: hidden;
-}
-.collection-page
-  .records-workbench
-  > .records-scroll-wrap
-  > .records-scroll
-  > .data-table {
-  display: flex;
-  flex-direction: column;
-  block-size: 100%;
-  min-block-size: 0;
-}
-.collection-page .records-workbench .data-table__scroll {
-  flex: 1;
-  min-block-size: 0;
-  overflow: auto;
-}
-.collection-page .data-table__toolbar,
-.collection-page .data-table__footer {
-  flex: none;
-}
 .collection-page .data-table__footer {
   padding-inline-end: 76px;
 }
@@ -303,16 +281,9 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
-.repository-detail .data-table {
-  display: flex;
-  flex-direction: column;
+.repository-detail .data-table[data-table-layout="fill"] {
   flex: 1;
   min-block-size: 0;
-}
-.repository-detail .data-table__scroll {
-  flex: 1;
-  min-block-size: 0;
-  overflow: auto;
 }
 .repository-detail .data-table td:first-child {
   inline-size: 55%;
@@ -388,36 +359,17 @@
   max-block-size: none;
   min-block-size: 280px;
 }
-.dataset-detail-page
-  .records-collection
-  > .records-scroll-wrap
-  > .records-scroll {
-  overflow: hidden;
-}
-.dataset-detail-page
-  .records-collection
-  > .records-scroll-wrap
-  > .records-scroll
-  > .data-table,
-.dataset-snapshots .data-table {
-  display: flex;
-  flex-direction: column;
-  block-size: 100%;
-  min-block-size: 0;
-  flex: 1;
-}
-.dataset-detail-page .data-table__scroll {
+.dataset-snapshots .data-table[data-table-layout="fill"] {
   flex: 1;
   min-block-size: 0;
-  overflow: auto;
 }
 .dataset-detail-page .data-table__toolbar,
 .dataset-detail-page .data-table__footer,
-.dataset-detail-page .data-pager {
+.dataset-detail-page .data-template .data-pager {
   flex: none;
 }
 .dataset-detail-page .data-table__footer,
-.dataset-detail-page .data-pager {
+.dataset-detail-page .data-template .data-pager {
   padding-inline-end: 76px;
 }
 .dataset-detail-page .data-template .records-workbench .data-table table {
@@ -443,7 +395,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  flex: 1 1 100%;
+  flex: 1 1 auto;
   min-inline-size: 0;
 }
 .dataset-record-controls:focus-visible {
@@ -476,4 +428,57 @@
   padding: 0;
   color: var(--color-text-primary);
   @apply text-body-2-regular;
+}
+
+.dataset-detail-page .data-template .data-pager {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dataset-detail-page .records-inspector-body {
+  padding-block-end: 64px;
+}
+@media (min-width: 851px) {
+  .dataset-detail-page .records-workbench-inspecting {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 40%);
+  }
+}
+@media (max-width: 600px) {
+  .dataset-detail-page .data-pager > span {
+    flex-basis: 100%;
+  }
+}
+
+/* Explicit collection hosts delegate row overflow and footer placement to the
+   shared fill table. No nested collection scroller can swallow its controls. */
+.records-table-host {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  flex: 1;
+}
+.records-table-host > .data-table[data-table-layout="fill"] {
+  flex: 1;
+  min-block-size: 0;
+}
+.records-table-host > [role="status"] {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+}
+.collection-page .records-workbench,
+.dataset-detail-page .records-workbench {
+  min-block-size: 0;
+}
+.data-table__context:has(.dataset-record-controls) {
+  flex: 1 1 460px;
+}
+.dataset-record-controls {
+  gap: 8px 16px;
+}
+@media (min-width: 1100px) {
+  .dataset-record-controls .ui-segc {
+    flex: none;
+  }
 }

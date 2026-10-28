@@ -283,12 +283,13 @@ def test_hydration_prunes_stale_files_and_reuploads_missing_objects(backend, tmp
 
 
 @pytest.mark.parametrize('fail', [False, True])
-def test_worker_publishes_before_success_and_fails_when_remote_upload_fails(backend, tmp_path, monkeypatch, fail):
+@pytest.mark.parametrize('strategy', ['lora', 'qlora'])
+def test_worker_publishes_before_success_and_fails_when_remote_upload_fails(backend, tmp_path, monkeypatch, fail, strategy):
     from tinystudio.db.models import Experiment
     from tinystudio.services import jobs
     from tinystudio.training.train import TrainConfig
 
-    cfg = TrainConfig(base_model='base', checkpoint_every_steps=5)
+    cfg = TrainConfig(base_model='base', update_strategy=strategy, checkpoint_every_steps=5)
     exp = SimpleNamespace(id='exp', state='pending', alias='ft-job-1', config=cfg.as_dict(), status={}, artifact_dir='projects/p/experiments/j/1', job=SimpleNamespace(project_id='p', snapshot_name='frozen'))
     class DB:
         def get(self, cls, id):
@@ -310,6 +311,8 @@ def test_worker_publishes_before_success_and_fails_when_remote_upload_fails(back
         return {'state': value, **extra}
     monkeypatch.setattr(jobs, '_set_state', state)
     def train(directory, cfg, train, val, progress, weights, on_log):
+        from tinystudio.training.quantization import POLICY_FORMAT
+        assert exp.status.get('quantization_format') == (POLICY_FORMAT if strategy == 'qlora' else None)
         checkpoint = directory / 'checkpoints' / 'checkpoint-5'
         checkpoint.mkdir(parents=True)
         (checkpoint / 'adapter_config.json').write_text('{}')

@@ -90,6 +90,59 @@ function trainingDirectory() {
   return { ...view, get };
 }
 describe("operational training directory", () => {
+  it("uses the shared fill table with search, state and comparison in its fixed command row", async () => {
+    const view = trainingDirectory();
+    const table = await screen.findByRole("table", { name: "Finetuning jobs" });
+    const root = table.closest(".data-table")!;
+    expect(root).toHaveAttribute("data-table-layout", "fill");
+    expect(
+      view.container.querySelector(".training-collection-page"),
+    ).toHaveClass("collection-page");
+    expect(root.querySelector(".data-table")).toBeNull();
+    const commands = within(
+      screen.getByRole("group", { name: "Finetuning jobs table controls" }),
+    );
+    expect(
+      commands.getByRole("searchbox", { name: "Find a training job" }),
+    ).toBeInTheDocument();
+    expect(commands.getByLabelText("Run state")).toBeInTheDocument();
+    expect(
+      commands.getByRole("button", { name: "Compare selected (0)" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Finetuning jobs rows per page")).toHaveValue(
+      "fit",
+    );
+    expect(root.querySelector(".data-table__footer")?.parentElement).toBe(root);
+  });
+  it("keeps optional autopilot actions reachable in their bounded disclosure", async () => {
+    const get = vi.fn(async (path: string) =>
+      path === "/api/jobs"
+        ? jobRows
+        : path === "/api/autopilot"
+          ? [{ name: "cycle-a", dataset: "source", cycles: 1 }]
+          : [],
+    );
+    render(
+      <StudioContext.Provider value={studio(get)}>
+        <FinetuningPage />
+      </StudioContext.Provider>,
+    );
+    const summary = await screen.findByText("Autopilot (1)");
+    expect(summary.closest("details")?.open).toBe(false);
+    fireEvent.click(summary);
+    expect(summary.closest("details")?.open).toBe(true);
+    const table = screen.getByRole("table", { name: "Autopilot" });
+    expect(table.closest(".data-table")).toHaveAttribute(
+      "data-table-layout",
+      "fill",
+    );
+    expect(
+      within(table).getByRole("button", { name: "Next cycle" }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole("button", { name: "History" }));
+    await screen.findByRole("dialog", { name: "Autopilot · cycle-a" });
+    expect(get).toHaveBeenCalledWith("/api/autopilot/cycle-a");
+  });
   it("inspects a whole row and expands its actual experiment evidence", async () => {
     const { get } = trainingDirectory();
     const row = await screen.findByRole("row", { name: "Training job alpha" });
@@ -355,8 +408,37 @@ describe("analytical evidence workspace", () => {
         <MetricsPage />
       </StudioContext.Provider>,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Safety" }));
+    const metric = await screen.findByRole("button", { name: "Safety" });
+    const table = screen.getByRole("table", { name: "Metrics" });
+    expect(table.closest(".data-table")).toHaveAttribute(
+      "data-table-layout",
+      "fill",
+    );
+    expect(screen.getByLabelText("Metrics rows per page")).toHaveValue("fit");
+    expect(screen.queryByRole("complementary")).toBeNull();
+    const controls = within(
+      screen.getByRole("group", { name: "Metrics table controls" }),
+    );
+    expect(
+      controls.getByRole("searchbox", { name: "Find a metric" }),
+    ).toBeInTheDocument();
+    expect(controls.getByLabelText("Metric kind")).toBeInTheDocument();
+    fireEvent.click(metric);
     const inspector = screen.getByRole("complementary", { name: "Safety" });
+    const scroll = inspector.querySelector(".analytical-inspector-scroll")!;
+    expect(scroll).toBeInTheDocument();
+    fireEvent.scroll(scroll, { target: { scrollTop: 12 } });
+    expect(
+      (scroll.parentElement as HTMLElement).style.getPropertyValue(
+        "--analytical-inspector-fade",
+      ),
+    ).toBe("0.5");
+    fireEvent.scroll(scroll, { target: { scrollTop: 0 } });
+    expect(
+      (scroll.parentElement as HTMLElement).style.getPropertyValue(
+        "--analytical-inspector-fade",
+      ),
+    ).toBe("0");
     expect(within(inspector).getByText("Use the supplied facts")).toBeTruthy();
     expect(within(inspector).getByText("Invent a source")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();

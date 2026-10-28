@@ -1,4 +1,6 @@
 import { DataTable, SimpleTable } from "../../components/studio/data-table";
+import { SegmentedControl } from "../../components/affectui/controls";
+import { CollectionToolbar } from "../../components/studio/collection-toolbar";
 import { useComponentAction } from "../assistant/actions";
 import {
   useEffect,
@@ -264,12 +266,12 @@ function ActionDialog({
                   list="capture-models"
                   placeholder="job/1 or a Hub model ID"
                 />
-                <datalist id="capture-models">
-                  {choices.map((id) => (
-                    <option key={String(id)} value={String(id)} />
-                  ))}
-                </datalist>
               </Field>
+              <datalist id="capture-models">
+                {choices.map((id) => (
+                  <option key={String(id)} value={String(id)} />
+                ))}
+              </datalist>
               <Field label="Source">
                 <select name="source" required>
                   {datasets.map((d: any) => (
@@ -306,12 +308,12 @@ function ActionDialog({
                 hint="Leave empty to use the experiment's base weights."
               >
                 <input name="base" list="comparison-models" />
-                <datalist id="comparison-models">
-                  {choices.map((id) => (
-                    <option key={String(id)} value={String(id)} />
-                  ))}
-                </datalist>
               </Field>
+              <datalist id="comparison-models">
+                {choices.map((id) => (
+                  <option key={String(id)} value={String(id)} />
+                ))}
+              </datalist>
             </>
           )}
           <Field label="Layers" hint="Comma-separated numbers or all.">
@@ -367,7 +369,47 @@ function ActionDialog({
 export function InterpretabilityPage() {
   const studio = useStudio(),
     resource = useResource<any>("/api/interp"),
-    [dialog, setDialog] = useState<"capture" | "compare" | null>(null);
+    [dialog, setDialog] = useState<"capture" | "compare" | null>(null),
+    [view, setView] = useState<"captures" | "comparisons">("captures"),
+    [queries, setQueries] = useState({ captures: "", comparisons: "" });
+  const panelId = useId();
+  useEffect(() => {
+    setView("captures");
+    setQueries({ captures: "", comparisons: "" });
+    setDialog(null);
+  }, [studio.scopeKey]);
+  useComponentAction({
+    id: "interp.collection.view",
+    label: "Choose interpretability collection",
+    kind: "select",
+    state: view,
+    options: [
+      { value: "captures", label: "Captures" },
+      { value: "comparisons", label: "Comparisons" },
+    ],
+    run: (value) => setView(value as "captures" | "comparisons"),
+  });
+  const matchingCaptures = (resource.data?.captures || []).filter(
+    (capture: any) =>
+      [capture.name, capture.model_id, capture.source].some((value) =>
+        String(value || "")
+          .toLowerCase()
+          .includes(queries.captures.trim().toLowerCase()),
+      ),
+  );
+  const matchingComparisons = (resource.data?.comparisons || []).filter(
+    (comparison: any) =>
+      [
+        comparison.name,
+        comparison.experiment,
+        comparison.base,
+        comparison.source,
+      ].some((value) =>
+        String(value || "")
+          .toLowerCase()
+          .includes(queries.comparisons.trim().toLowerCase()),
+      ),
+  );
   const remove = async (kind: "captures" | "diffs", name: string) => {
     if (
       !(await studio.confirm(
@@ -385,7 +427,7 @@ export function InterpretabilityPage() {
   };
   return (
     <Page
-      className="interp-page"
+      className="interp-page data-workspace collection-page interp-overview-page"
       title="Interpretability"
       description="Follow model behavior from the layer overview to the tokens that explain it."
       actions={
@@ -399,13 +441,30 @@ export function InterpretabilityPage() {
     >
       <CollectionTemplate
         label="Interpretability artifacts"
-        summary={
-          resource.data ? (
-            <div className="interp-collection-summary">
-              <Badge>{resource.data.captures.length} captures</Badge>
-              <Badge>{resource.data.comparisons.length} comparisons</Badge>
-            </div>
-          ) : null
+        className="data-template"
+        toolbar={
+          <SegmentedControl
+            kind="tabs"
+            variant="underline"
+            size="sm"
+            aria-label="Interpretability collections"
+            value={view}
+            onChange={setView}
+            options={[
+              {
+                value: "captures",
+                label: `Captures (${resource.data?.captures.length ?? "—"})`,
+                ariaLabel: "Captures",
+                controls: `${panelId}-captures`,
+              },
+              {
+                value: "comparisons",
+                label: `Comparisons (${resource.data?.comparisons.length ?? "—"})`,
+                ariaLabel: "Comparisons",
+                controls: `${panelId}-comparisons`,
+              },
+            ]}
+          />
         }
       >
         {resource.error && (
@@ -418,14 +477,36 @@ export function InterpretabilityPage() {
         )}
         {resource.data && (
           <>
-            <Panel title="Activation captures">
-              <div className="interp-artifact-table">
+            <section
+              id={`${panelId}-captures`}
+              role="tabpanel"
+              aria-label="Captures"
+              className="interp-overview-panel"
+              hidden={view !== "captures"}
+              inert={view !== "captures"}
+            >
+              <div className="interp-overview-table">
                 <DataTable<any>
                   label="Activation captures"
-                  rows={resource.data.captures}
+                  layout="fill"
+                  assistantActionsEnabled={view === "captures"}
+                  toolbarContent={
+                    <CollectionToolbar
+                      label="Find a capture"
+                      query={queries.captures}
+                      onQueryChange={(captures) =>
+                        setQueries((current) => ({ ...current, captures }))
+                      }
+                    />
+                  }
+                  rows={matchingCaptures}
                   getRowId={(capture) => capture.name}
                   scopeKey={studio.scopeKey}
-                  empty=""
+                  empty={
+                    resource.data.captures.length
+                      ? "No captures match this search."
+                      : "Capture a model on a dataset to begin exploring its neurons."
+                  }
                   renderRow={(capture, { key, ...props }, cells) => (
                     <Evidence
                       {...props}
@@ -505,20 +586,37 @@ export function InterpretabilityPage() {
                   ]}
                 />
               </div>
-              {!resource.data.captures.length && (
-                <EmptyState>
-                  Capture a model on a dataset to begin exploring its neurons.
-                </EmptyState>
-              )}
-            </Panel>
-            <Panel title="Before / after training">
-              <div className="interp-artifact-table">
+            </section>
+            <section
+              id={`${panelId}-comparisons`}
+              role="tabpanel"
+              aria-label="Comparisons"
+              className="interp-overview-panel"
+              hidden={view !== "comparisons"}
+              inert={view !== "comparisons"}
+            >
+              <div className="interp-overview-table">
                 <DataTable<any>
                   label="Model comparisons"
-                  rows={resource.data.comparisons}
+                  layout="fill"
+                  assistantActionsEnabled={view === "comparisons"}
+                  toolbarContent={
+                    <CollectionToolbar
+                      label="Find a comparison"
+                      query={queries.comparisons}
+                      onQueryChange={(comparisons) =>
+                        setQueries((current) => ({ ...current, comparisons }))
+                      }
+                    />
+                  }
+                  rows={matchingComparisons}
                   getRowId={(comparison) => comparison.name}
                   scopeKey={studio.scopeKey}
-                  empty=""
+                  empty={
+                    resource.data.comparisons.length
+                      ? "No comparisons match this search."
+                      : "Compare a completed experiment with its base model to find the neurons that changed."
+                  }
                   renderRow={(comparison, { key, ...props }, cells) => (
                     <Evidence
                       {...props}
@@ -602,13 +700,7 @@ export function InterpretabilityPage() {
                   ]}
                 />
               </div>
-              {!resource.data.comparisons.length && (
-                <EmptyState>
-                  Compare a completed experiment with its base model to find the
-                  neurons that changed.
-                </EmptyState>
-              )}
-            </Panel>
+            </section>
           </>
         )}
       </CollectionTemplate>

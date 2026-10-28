@@ -1,0 +1,115 @@
+.histogram-figure {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-text-primary);
+}
+.histogram-axis-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+}
+.histogram-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.histogram-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+  font-family: inherit;
+}
+.histogram-chart text {
+  fill: var(--color-text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.histogram-grid line {
+  stroke: var(--color-border-button-default);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.histogram-hit-area {
+  fill: transparent;
+}
+.histogram-bar {
+  fill: var(--color-accent-600);
+  opacity: 0.68;
+}
+.histogram-chart .histogram-bar-count {
+  fill: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.histogram-bin:focus {
+  outline: none;
+}
+.histogram-bin:focus-visible .histogram-hit-area {
+  stroke: var(--color-accent-600);
+  stroke-width: 1.5;
+  rx: 3;
+}
+.histogram-bin:hover .histogram-bar,
+.histogram-bin:focus .histogram-bar,
+.histogram-bin.is-selected .histogram-bar {
+  opacity: 1;
+}
+.histogram-bin[role="button"] {
+  cursor: pointer;
+}
+.histogram-caption {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+}
+.histogram-unit {
+  text-align: center;
+  text-transform: capitalize;
+}
+.histogram-readout {
+  min-height: 1.1rem;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.histogram-note {
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+.histogram-data {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+}
+.histogram-data summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--color-text-secondary);
+}
+.histogram-data-scroll {
+  overflow-x: auto;
+  max-height: 14rem;
+  margin-top: 0.5rem;
+}
+.histogram-data table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.histogram-data th,
+.histogram-data td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-button-default);
+  text-align: left;
+}
+.histogram-data tbody th {
+  font-weight: 400;
+}
+.histogram-data td {
+  text-align: right;
+}
+.histogram-empty {
+  color: var(--color-text-tertiary);
+  font-size: 0.8rem;
+}

@@ -159,3 +159,69 @@
   background: var(--color-background-primary-default);
   color: var(--color-text-secondary);
 }
+
+/* Inventory and trace review are bounded collection tasks. Ancillary model
+   discovery and trace promotion open in focused dialogs, outside this plane. */
+.serving-records-page.collection-page .serving-inspection-frame {
+  display: flex;
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+.serving-records-page.collection-page .serving-inspection-frame[hidden] {
+  display: none;
+}
+.serving-records-page.collection-page
+  .serving-inspection-frame
+  .inspection-workspace {
+  flex: 1;
+  block-size: auto;
+  min-block-size: 0;
+  max-block-size: none;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+.trace-table-host,
+.trace-table-host > .studio-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+}
+.trace-table-host > .studio-panel {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.trace-table-host > .studio-panel > .panel-heading {
+  display: none;
+}
+.trace-table-host .data-table[data-table-layout="fill"] {
+  flex: 1;
+  min-block-size: 0;
+}
+.trace-table-host > .studio-panel > .actions {
+  flex: none;
+  margin: 0;
+  padding: 8px 76px 8px 12px;
+  border-block-start: 1px solid var(--color-separator-border);
+}
+.serving-records-page.collection-page .data-table td {
+  vertical-align: middle;
+}
+.serving-records-page.collection-page .data-table td .actions {
+  gap: 4px;
+  margin: 0;
+}
+.serving-records-page.collection-page .data-table td small {
+  margin-block-start: 2px;
+}
+
+.serving-records-page.collection-page .data-table td .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+}

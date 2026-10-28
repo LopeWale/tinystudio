@@ -1,3 +1,4 @@
+@reference "../../styles/globals.css";
 .data-table {
   min-inline-size: 0;
   border: 1px solid var(--color-separator-border);
@@ -23,7 +24,7 @@
   justify-content: space-between;
   border-block-start: 1px solid var(--color-separator-border);
   color: var(--color-text-secondary);
-  font-size: 12px;
+  @apply text-caption-1-regular;
 }
 .data-table__scroll {
   overflow-x: auto;
@@ -44,12 +45,12 @@
   padding: 10px 12px;
   border-block-end: 1px solid var(--color-separator-border);
   text-align: start;
-  font-size: 13px;
+  @apply text-body-2-regular;
   vertical-align: middle;
 }
 .data-table th {
   color: var(--color-text-secondary);
-  font-weight: 500;
+  @apply text-body-2-medium;
   white-space: nowrap;
 }
 .data-table th .ui-buttonc {
@@ -90,7 +91,7 @@
 }
 .data-table__column-dialog legend {
   margin-block-end: 10px;
-  font-size: 12px;
+  @apply text-caption-1-regular;
   color: var(--color-text-secondary);
 }
 .data-table__filter-popover {
@@ -114,7 +115,7 @@
 .data-table__empty {
   padding: 24px 12px;
   color: var(--color-text-secondary);
-  font-size: 14px;
+  @apply text-body-regular;
 }
 .data-table__paging select {
   border: 1px solid var(--color-border-button-default);
@@ -163,4 +164,72 @@
   margin-block-start: 4px;
   color: var(--color-text-secondary);
   overflow-wrap: anywhere;
+}
+
+/* Opt-in viewport contract: controls remain outside the one vertical rows scroller. */
+.data-table__viewport {
+  position: relative;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+.data-table[data-table-layout="fill"] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.data-table[data-table-layout="fill"][data-table-variant="simple"] {
+  grid-template-rows: minmax(0, 1fr);
+}
+.data-table[data-table-layout="fill"] .data-table__scroll {
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block-start: var(--data-table-header-height, 0px);
+}
+.data-table[data-table-layout="fill"] table {
+  block-size: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.data-table[data-table-layout="fill"] th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+  background: var(--color-background-primary-default);
+}
+.data-table__scroll-fade {
+  position: absolute;
+  inset-block-start: var(--data-table-header-height, 0px);
+  inset-inline: 0;
+  block-size: 24px;
+  z-index: 3;
+  pointer-events: none;
+}
+.data-table__scroll-fade i {
+  position: absolute;
+  inset: 0;
+  opacity: var(--data-table-scroll-fade, 0);
+}
+.data-table__scroll-fade i:nth-child(1) {
+  backdrop-filter: blur(1px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.data-table__scroll-fade i:nth-child(2) {
+  block-size: 16px;
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.data-table__scroll-fade i:nth-child(3) {
+  background: linear-gradient(
+    to bottom,
+    var(--color-background-primary-default),
+    transparent
+  );
+}
+.data-table[data-table-layout="fill"] .data-table__scroll {
+  /* Keep wrapping and measured capacity stable when a tall page needs scrolling. */
+  scrollbar-gutter: stable;
 }

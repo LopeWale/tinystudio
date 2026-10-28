@@ -15,6 +15,7 @@ from tinystudio.serving.runner import ModelRunner, ResolvedModel
 from tinystudio.services.jobs import ensure_experiment_artifacts, parent_weights
 from tinystudio.training.train import parse_alias
 from tinystudio.training.recommend import catalog_as_dicts
+from tinystudio.training.quantization import is_retained_quantized, has_quantized_marker
 
 
 def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedModel:
@@ -30,6 +31,8 @@ def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedMode
         if number.isdigit() and SAFE_NAME.match(job_name):
             exp = db.scalar(select(Experiment).join(Job).where(Job.project_id == project.id, Job.name == job_name, Experiment.number == int(number)))
             if exp is not None:
+                if is_retained_quantized(exp.config, exp.status or {}):
+                    raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
                 parent = exp.config.get("refinetune_from")
                 source = str(parent_weights(db, project, parent)) if parent else None
                 return _resolve_experiment(exp, model_id, step, source)
@@ -41,7 +44,11 @@ def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedMode
 def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_source: str | None = None) -> ResolvedModel:
     if step and not step.isdigit():
         raise ProjectError(f"{model_id}: a checkpoint reference is job/number@step")
+    if is_retained_quantized(exp.config, exp.status or {}):
+        raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
     path = ensure_experiment_artifacts(exp, step)
+    if has_quantized_marker(path):
+        raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
     base = weights_source or (exp.status or {}).get("weights_source") or exp.config["base_model"]
     if step:
         ck = path / "checkpoints" / f"checkpoint-{step}"

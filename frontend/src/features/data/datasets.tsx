@@ -1,3 +1,6 @@
+import { QualityDialog } from "./dataset-quality";
+export { resolveQuality } from "./dataset-quality";
+import { DatasetEditFields } from "./dataset-editor";
 import { SegmentedControl } from "../../components/affectui/controls";
 import { Input as StyledInput } from "../../components/boardui/base/input/input";
 import "../../components/studio/form-controls.css";
@@ -447,8 +450,9 @@ export function DatasetsPage() {
             if (event.key === "Escape") closeInspection();
           }}
         >
-          <RecordsScroll label="Dataset collection">
+          <div className="records-table-host">
             <AdvancedTable
+              layout="fill"
               empty={
                 r.loading ? (
                   "Loading records…"
@@ -582,7 +586,7 @@ export function DatasetsPage() {
                 ),
               })}
             />
-          </RecordsScroll>
+          </div>
           {inspected && (
             <DetailInspector title={inspected.name} onClose={closeInspection}>
               <Evidence label="Inspected dataset" data={inspected}>
@@ -624,6 +628,7 @@ export function DatasetPage() {
   const s = useStudio(),
     a = useAction();
   const [view, setView] = useState("records");
+  const [visibleRows, setVisibleRows] = useState<readonly any[]>([]);
   const panelId = useId();
   const recordsFocus = useRef<HTMLDivElement>(null);
   const dialogGeneration = useRef(0);
@@ -723,6 +728,25 @@ export function DatasetPage() {
     );
   }
   useComponentAction({
+    id: "dataset.view",
+    label: "Switch dataset view",
+    kind: "select",
+    state: view,
+    options: [
+      { value: "records", label: "Records" },
+      { value: "snapshots", label: "Snapshots" },
+    ],
+    disabled: Boolean(dialog),
+    run: (value) => {
+      if (value !== "records" && value !== "snapshots")
+        throw Error("Choose a dataset view");
+      setView(value);
+      requestAnimationFrame(() =>
+        document.getElementById(panelId + "-" + value)?.focus(),
+      );
+    },
+  });
+  useComponentAction({
     id: "dataset.bucket",
     label: "Filter datapoints by bucket",
     kind: "filter",
@@ -747,14 +771,14 @@ export function DatasetPage() {
     label: "Inspect a visible datapoint",
     kind: "select",
     state: selected?.id == null ? "" : String(selected.id),
-    options: rows.map((row: any) => ({
+    options: visibleRows.map((row: any) => ({
       value: String(row.id),
       label: `Datapoint ${row.id}`,
     })),
     disabled:
-      !rows.length || view !== "records" || comparing || Boolean(dialog),
+      !visibleRows.length || view !== "records" || comparing || Boolean(dialog),
     run: (value) => {
-      const row = rows.find((item: any) => String(item.id) === value);
+      const row = visibleRows.find((item: any) => String(item.id) === value);
       if (!row) throw Error("Choose a visible datapoint");
       a.clearError();
       S(row);
@@ -1020,7 +1044,7 @@ export function DatasetPage() {
             }}
           >
             <div className="records-collection">
-              <RecordsScroll label="Datapoint collection">
+              <div className="records-table-host">
                 {r.loading && (
                   <p role="status">
                     {r.isStale
@@ -1029,8 +1053,10 @@ export function DatasetPage() {
                   </p>
                 )}
                 <AdvancedTable
+                  layout="fill"
                   scopeKey={s.scopeKey + ":" + s.route}
                   label="Dataset records"
+                  onVisibleRowsChange={setVisibleRows}
                   assistantActionsEnabled={
                     view === "records" && !comparing && !dialog
                   }
@@ -1219,7 +1245,7 @@ export function DatasetPage() {
                     )}
                   </EmptyState>
                 )}
-              </RecordsScroll>
+              </div>
               <Pager
                 offset={offset}
                 limit={15}
@@ -1236,20 +1262,23 @@ export function DatasetPage() {
               >
                 <div className="records-inspector-navigation">
                   <span>
-                    {rows.some((row: any) => row.id === selected.id)
-                      ? `${rows.findIndex((row: any) => row.id === selected.id) + 1} of ${rows.length} on this page`
+                    {visibleRows.some((row: any) => row.id === selected.id)
+                      ? `${visibleRows.findIndex((row: any) => row.id === selected.id) + 1} of ${visibleRows.length} on this page`
                       : "Outside the current page"}
                   </span>
                   <Button
                     size="sm"
                     disabled={
-                      rows.findIndex((row: any) => row.id === selected.id) <= 0
+                      visibleRows.findIndex(
+                        (row: any) => row.id === selected.id,
+                      ) <= 0
                     }
                     onClick={() =>
                       S(
-                        rows[
-                          rows.findIndex((row: any) => row.id === selected.id) -
-                            1
+                        visibleRows[
+                          visibleRows.findIndex(
+                            (row: any) => row.id === selected.id,
+                          ) - 1
                         ],
                       )
                     }
@@ -1259,16 +1288,20 @@ export function DatasetPage() {
                   <Button
                     size="sm"
                     disabled={
-                      rows.findIndex((row: any) => row.id === selected.id) <
-                        0 ||
-                      rows.findIndex((row: any) => row.id === selected.id) >=
-                        rows.length - 1
+                      visibleRows.findIndex(
+                        (row: any) => row.id === selected.id,
+                      ) < 0 ||
+                      visibleRows.findIndex(
+                        (row: any) => row.id === selected.id,
+                      ) >=
+                        visibleRows.length - 1
                     }
                     onClick={() =>
                       S(
-                        rows[
-                          rows.findIndex((row: any) => row.id === selected.id) +
-                            1
+                        visibleRows[
+                          visibleRows.findIndex(
+                            (row: any) => row.id === selected.id,
+                          ) + 1
                         ],
                       )
                     }
@@ -1332,6 +1365,7 @@ export function DatasetPage() {
             </p>
           )}
           <AdvancedTable
+            layout="fill"
             scopeKey={s.scopeKey + ":" + s.route}
             label="Snapshots"
             rows={ownSnaps}
@@ -1415,6 +1449,7 @@ export function DatasetPage() {
       </div>
       {dialog === "quality" && (
         <QualityDialog
+          key={s.scopeKey + ":" + name}
           name={name}
           onClose={() => {
             closeDialog();
@@ -1429,6 +1464,7 @@ export function DatasetPage() {
         <Modal
           open
           wide={dialog !== "create-snapshot" && dialog !== "split"}
+          className="dataset-edit-dialog"
           title={
             {
               "create-snapshot": "Create snapshot",
@@ -1442,9 +1478,14 @@ export function DatasetPage() {
           onClose={closeDialog}
           footer={
             <div className="data-actions">
+              <Button variant="ghost" onClick={closeDialog}>
+                Cancel
+              </Button>
               {dialog === "labels" && (
                 <Button
+                  disabled={a.busy}
                   onClick={() => {
+                    dialogGeneration.current++;
                     a.clearError();
                     D("auto-label");
                   }}
@@ -1463,432 +1504,17 @@ export function DatasetPage() {
           }
         >
           <ErrorNotice error={a.error} />
-          {dialog === "create-snapshot" ? (
-            <>
-              <p>Snapshots freeze current training and validation buckets.</p>
-              <StyledInput
-                fieldClassName="studio-form-control"
-                label="New snapshot name"
-                value={v.name}
-                onChange={field("name")}
-                placeholder={`${name}-v${ownSnaps.length + 1}`}
-              />
-            </>
-          ) : dialog === "split" ? (
-            <>
-              <p>Assign uncategorized rows; existing assignments are kept.</p>
-              <Input
-                label="Training percentage"
-                type="number"
-                min={1}
-                max={99}
-                value={v.train_pct}
-                onChange={field("train_pct")}
-              />
-              <Check
-                label="Allow synthetic data in validation"
-                checked={v.synthetic_in_validation}
-                onChange={field("synthetic_in_validation")}
-              />
-            </>
-          ) : dialog === "enrich" ? (
-            <>
-              <Input
-                label="New datapoints"
-                type="number"
-                min={1}
-                max={2000}
-                value={v.count}
-                onChange={field("count")}
-              />
-              <Input
-                label="Temperature"
-                type="number"
-                min={0}
-                max={1.5}
-                step={0.1}
-                value={v.temperature}
-                onChange={field("temperature")}
-              />
-              <Text
-                label="Instructions"
-                value={v.instructions}
-                onChange={field("instructions")}
-              />
-              <Text label="Avoid" value={v.avoid} onChange={field("avoid")} />
-            </>
-          ) : dialog === "add" ? (
-            <>
-              {["system", "user", "assistant"].map((k) => (
-                <Text key={k} label={k} value={v[k]} onChange={field(k)} />
-              ))}
-              <Select
-                label="Bucket"
-                value={v.bucket}
-                onChange={field("bucket")}
-                options={["uncategorized", "training", "validation"]}
-              />
-            </>
-          ) : (
-            <>
-              <p>
-                Define a vocabulary; helper auto-labeling assigns one label per
-                datapoint.
-              </p>
-              {labels.map((x, i) => (
-                <div className="data-grid" key={i}>
-                  <Input
-                    label={`Label ${i + 1} name`}
-                    value={x.name}
-                    onChange={(name: string) =>
-                      L(labels.map((l, j) => (j === i ? { ...l, name } : l)))
-                    }
-                  />
-                  <Input
-                    label={`Label ${i + 1} description`}
-                    value={x.description}
-                    onChange={(description: string) =>
-                      L(
-                        labels.map((l, j) =>
-                          j === i ? { ...l, description } : l,
-                        ),
-                      )
-                    }
-                  />
-                  <Button onClick={() => L(labels.filter((_, j) => j !== i))}>
-                    Remove label {i + 1}
-                  </Button>
-                </div>
-              ))}
-              <Button
-                onClick={() => L([...labels, { name: "", description: "" }])}
-              >
-                Add label
-              </Button>
-            </>
-          )}
+          <DatasetEditFields
+            mode={dialog}
+            values={v}
+            onChange={(key, value) => field(key)(value)}
+            labels={labels}
+            onLabelsChange={L}
+            disabled={a.busy}
+            snapshotPlaceholder={`${name}-v${ownSnaps.length + 1}`}
+          />
         </Modal>
       )}
     </Page>
-  );
-}
-export async function resolveQuality(
-  api: any,
-  path: string,
-  signal: AbortSignal,
-  onTask: (t: any) => void,
-  wait = (ms: number) =>
-    new Promise<void>((resolve, reject) => {
-      const stop = () => {
-        clearTimeout(timer);
-        reject(new DOMException("Cancelled", "AbortError"));
-      };
-      const timer = setTimeout(() => {
-        signal.removeEventListener("abort", stop);
-        resolve();
-      }, ms);
-      signal.addEventListener("abort", stop, { once: true });
-    }),
-) {
-  if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-  let profile = await api.get(path, signal);
-  if (profile.queued) {
-    let task = profile.task;
-    onTask(task);
-    for (;;) {
-      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-      if (task.state === "succeeded") {
-        profile = task.result;
-        break;
-      }
-      if (["failed", "stopped"].includes(task.state))
-        throw Error(task.error || `Profiling ${task.state}`);
-      await wait(2500);
-      task = await api.get(`/api/tasks/${enc(task.id)}`, signal);
-      onTask(task);
-    }
-  }
-  if (!profile || profile.truncated)
-    throw Error("The profiling task did not return a complete result.");
-  return profile;
-}
-function QualityDialog({
-  name,
-  onClose,
-}: {
-  name: string;
-  onClose: () => void;
-}) {
-  const s = useStudio(),
-    a = useAction();
-  const [p, P] = useState<any>(),
-    [error, E] = useState(""),
-    [task, T] = useState<any>(),
-    [chosen, C] = useState<string[]>([]),
-    [selected, S] = useState<any>(null),
-    [v, V] = useState<any>({
-      min_total_chars: "",
-      max_total_chars: "",
-      min_rating: "",
-      drop_labels: "",
-    }),
-    [result, R] = useState("");
-  useEffect(() => {
-    const c = new AbortController();
-    Promise.resolve()
-      .then(() =>
-        resolveQuality(
-          s.api,
-          `/api/datasets/${enc(name)}/quality`,
-          c.signal,
-          (t) => {
-            T(t);
-            s.trackTask(t);
-          },
-        ),
-      )
-      .then(P)
-      .catch((e) => {
-        if (e.name !== "AbortError") E(e.message);
-      });
-    return () => c.abort();
-  }, [name, s.project, s.user?.id, s.api]);
-  const opts = [
-    "dedupe_user",
-    "dedupe_conversation",
-    "drop_near_duplicates",
-    "drop_empty",
-    "trim_whitespace",
-    "require_json_answer",
-    "redact_pii",
-  ];
-  const field = (k: string) => (x: any) => V((p: any) => ({ ...p, [k]: x }));
-  const dist = (title: string, pairs: any[]) => (
-    <Panel title={title}>
-      <SimpleTable
-        scopeKey={s.scopeKey + ":" + s.route}
-        label={title}
-        rows={pairs}
-        getRowId={([label, n]: any) => String(label)}
-        pagination="none"
-        columns={[
-          {
-            id: "col-0",
-            label: "Value",
-            value: ([label, n]: any) => label,
-            render: ([label, n]: any) => <>{label}</>,
-          },
-          {
-            id: "col-1",
-            label: "Count",
-            value: ([label, n]: any) => n,
-            render: ([label, n]: any) => <>{n}</>,
-          },
-        ]}
-        renderRow={([label, n]: any, { key, ...props }, cells) => (
-          <Evidence
-            as="tr"
-            {...props}
-            key={key}
-            label={title}
-            data={{ label, count: n }}
-          >
-            {cells}
-          </Evidence>
-        )}
-      />
-    </Panel>
-  );
-  return (
-    <Modal open wide title={`Data quality · ${name}`} onClose={onClose}>
-      <AnalysisTemplate
-        className="data-template data-setup"
-        label="Dataset quality evidence"
-      >
-        <ErrorNotice error={error || a.error} />
-        {!p && !error && (
-          <p role="status">
-            {task
-              ? `Profiling ${task.state} in the background. You can close this dialog; the task continues.`
-              : "Profiling…"}
-          </p>
-        )}
-        {p && (
-          <Evidence label="Dataset quality profile" data={p}>
-            <div className="data-grid">
-              {Object.entries({
-                Datapoints: p.count,
-                "Approx. tokens": p.approx_tokens.total,
-                "Mean turns": p.turns.mean,
-                "With system prompt": p.turns.with_system_prompt,
-                "Exact duplicate user turns": p.duplicates.exact_user_rows,
-                "Near duplicate pairs": p.duplicates.near_pair_count,
-                "Empty-like rows": p.outliers.empty_like.length,
-                "Length outliers":
-                  p.outliers.too_short.length + p.outliers.too_long.length,
-                "JSON answers": `${p.format.answers_json_pct}%`,
-                ...(p.ratings.count ? { "Mean rating": p.ratings.mean } : {}),
-              }).map(([k, n]) => (
-                <Evidence key={k} label={k} data={{ value: n }}>
-                  <div className="data-card">
-                    <p>{k}</p>
-                    <strong className="data-stat">{String(n)}</strong>
-                  </div>
-                </Evidence>
-              ))}
-            </div>
-            <div className="data-grid">
-              {[
-                ["user_chars", "User message length (chars)"],
-                ["answer_chars", "Assistant response length (chars)"],
-              ].map(([key, title]) => (
-                <Panel key={key} title={title}>
-                  <p>
-                    Median {p[key].summary.median} · p95 {p[key].summary.p95} ·
-                    Max {p[key].summary.max}
-                  </p>
-                  <Histogram label={title} {...p[key].histogram} />
-                  <p className="data-muted">
-                    Aggregate profile; this chart does not identify individual
-                    records.
-                  </p>
-                </Panel>
-              ))}
-              {dist("Labels", p.labels)}
-              {dist("Sources", p.sources)}
-              {dist("Buckets", Object.entries(p.buckets))}
-              {p.ratings.count > 0 && (
-                <Panel title="Curation ratings">
-                  <Histogram
-                    label="Curation ratings"
-                    {...p.ratings.histogram}
-                  />
-                </Panel>
-              )}
-            </div>
-            <Panel title="Duplicates and outliers">
-              <p>
-                Duplicate examples:{" "}
-                {p.duplicates.examples
-                  .map((g: any) => g.join(" · "))
-                  .join("; ") || "none"}
-              </p>
-              <div className="data-actions">
-                {p.duplicates.near_pairs
-                  .slice(0, 20)
-                  .map((x: any, i: number) => (
-                    <Button
-                      key={i}
-                      onClick={() =>
-                        S({ a: x.a, b: x.b, similarity: x.similarity })
-                      }
-                    >
-                      #{x.a + 1} ≈ #{x.b + 1} ({x.similarity})
-                    </Button>
-                  ))}
-              </div>
-              <p>
-                Near-duplicate positions refer to the profile ordering. Exact
-                record lookup is not exposed by this API; no row drilldown is
-                offered.
-              </p>
-              {selected && (
-                <pre className="data-prose">
-                  {JSON.stringify(selected, null, 2)}
-                </pre>
-              )}
-            </Panel>
-            <Panel title="Clean">
-              <p>
-                Applies in place and is logged to cleaning history. Snapshots
-                are not affected.
-              </p>
-              <Chips items={opts} chosen={chosen} onChange={C} />
-              <div className="data-grid">
-                <Input
-                  label={`Min total chars (short below ${p.outliers.fences.low})`}
-                  type="number"
-                  min={0}
-                  value={v.min_total_chars}
-                  onChange={field("min_total_chars")}
-                />
-                <Input
-                  label={`Max total chars (long above ${p.outliers.fences.high})`}
-                  type="number"
-                  min={0}
-                  value={v.max_total_chars}
-                  onChange={field("max_total_chars")}
-                />
-                <Input
-                  label="Min rating (1–10)"
-                  type="number"
-                  min={0}
-                  max={10}
-                  step={0.5}
-                  value={v.min_rating}
-                  onChange={field("min_rating")}
-                />
-                <Input
-                  label="Drop labels (comma separated)"
-                  value={v.drop_labels}
-                  onChange={field("drop_labels")}
-                />
-              </div>
-              <Button
-                variant="primary"
-                loading={a.busy}
-                onClick={() =>
-                  a.run(async () => {
-                    const spec: any = Object.fromEntries(
-                      chosen.map((k) => [k, true]),
-                    );
-                    for (const k of [
-                      "min_total_chars",
-                      "max_total_chars",
-                      "min_rating",
-                    ])
-                      spec[k] = v[k] === "" ? null : Number(v[k]);
-                    spec.drop_labels = v.drop_labels
-                      .split(",")
-                      .map((x: string) => x.trim())
-                      .filter(Boolean);
-                    if (
-                      !chosen.length &&
-                      spec.min_total_chars === null &&
-                      spec.max_total_chars === null &&
-                      spec.min_rating === null &&
-                      !spec.drop_labels.length
-                    )
-                      throw Error("Pick at least one cleaning rule");
-                    if (
-                      !(await s.confirm(
-                        "Apply cleaning in place? Snapshots remain unchanged.",
-                        "Clean dataset",
-                      ))
-                    )
-                      return;
-                    const res = await s.api.post<any>(
-                      `/api/datasets/${enc(name)}/clean`,
-                      spec,
-                    );
-                    if (track(s, res)) {
-                      R("Cleaning queued as a background task");
-                      return;
-                    }
-                    R(
-                      `${res.before} → ${res.after} datapoints; removed ${JSON.stringify(res.removed)}${res.redacted_rows ? `; redacted PII in ${res.redacted_rows} rows` : ""}`,
-                    );
-                    await s.refreshOverview();
-                  })
-                }
-              >
-                Apply cleaning
-              </Button>
-              <p role="status">{result}</p>
-            </Panel>
-          </Evidence>
-        )}
-      </AnalysisTemplate>
-    </Modal>
   );
 }

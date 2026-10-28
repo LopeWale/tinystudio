@@ -76,6 +76,11 @@ def test_docker_is_digest_pinned_readonly_bounded_and_credential_free(request_):
     assert PINNED in args and '--privileged' not in args
     assert 'no-new-privileges=true' in args
     assert '--env-file' not in args
+    logging = [args[index+1] for index, value in enumerate(args) if value == '--log-opt']
+    # Docker 29 rejects its default rotated-file compression with one file.
+    # Keep the 16 MiB single-file bound explicit and independently runnable.
+    assert args[args.index('--log-driver')+1] == 'local'
+    assert set(logging) == {'max-size=16m', 'max-file=1', 'compress=false'}
     with pytest.raises(ValueError,match='image@sha256'):
         build_profile(replace(container(request_),image='python:latest'))
     with pytest.raises(ValueError,match='Linux runtime'):

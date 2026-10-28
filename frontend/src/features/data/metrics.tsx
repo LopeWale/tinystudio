@@ -9,7 +9,6 @@ import {
   Button,
   Modal,
   Evidence,
-  EmptyState,
 } from "../../components/studio/primitives";
 import {
   enc,
@@ -88,7 +87,7 @@ export function MetricsPage() {
     });
   return (
     <Page
-      className="data-workspace analytical-workspace"
+      className="data-workspace analytical-workspace collection-page analytical-collection-page metrics-collection-page"
       title="Metrics"
       description="Define good answers with rules, code checks, or your evaluator."
       actions={
@@ -114,30 +113,8 @@ export function MetricsPage() {
             <a href="#/evaluations">Review evaluation evidence →</a>
           </div>
         }
-        toolbar={
-          <div className="analytical-toolbar">
-            <Input
-              label="Find a metric"
-              type="search"
-              value={query}
-              onChange={setQuery}
-            />
-            <Select
-              label="Metric kind"
-              value={filter}
-              onChange={setFilter}
-              options={[
-                { value: "", label: "All kinds" },
-                "rubric",
-                "code",
-                "webhook",
-              ]}
-            />
-          </div>
-        }
       >
         <ErrorNotice error={r.error} />
-        {r.loading && <p role="status">Loading metrics…</p>}
 
         <div
           className={`data-master-detail ${selected ? "has-selection" : ""}`}
@@ -146,6 +123,35 @@ export function MetricsPage() {
             <DataTable
               scopeKey={s.scopeKey + ":" + s.route}
               label="Metrics"
+              layout="fill"
+              toolbarContent={
+                <div className="analytical-toolbar">
+                  <Input
+                    label="Find a metric"
+                    type="search"
+                    value={query}
+                    onChange={setQuery}
+                  />
+                  <Select
+                    label="Metric kind"
+                    value={filter}
+                    onChange={setFilter}
+                    options={[
+                      { value: "", label: "All kinds" },
+                      "rubric",
+                      "code",
+                      "webhook",
+                    ]}
+                  />
+                </div>
+              }
+              empty={
+                r.loading
+                  ? "Loading metrics…"
+                  : r.data?.length
+                    ? "No metrics match these filters."
+                    : "No metrics yet."
+              }
               rows={matching}
               getRowId={(me: any) => String(me.name)}
               pagination="client"
@@ -203,102 +209,115 @@ export function MetricsPage() {
                 </Evidence>
               )}
             />
-            {!r.loading && !r.error && !r.data?.length && (
-              <EmptyState>No metrics yet.</EmptyState>
-            )}
-            {!r.loading && !!r.data?.length && !matching.length && (
-              <EmptyState>No metrics match these filters.</EmptyState>
-            )}
           </div>
           {selected ? (
             <DetailInspector
               title={selected.name}
               onClose={() => inspect(null)}
             >
-              <div className="analytical-definition">
-                <div className="data-actions">
-                  <Button size="sm" onClick={() => open(selected)}>
-                    {selected.kind === "rubric"
-                      ? "Edit rules"
-                      : "Manage metric"}
-                  </Button>
-                  <span className="data-muted">{selected.kind}</span>
+              <div
+                className="analytical-inspector-scroll-wrap"
+                key={selected.name}
+              >
+                <div className="analytical-inspector-fade" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
                 </div>
-                <Evidence label="Metric definition" data={selected}>
-                  <p>{selected.description || "No description supplied."}</p>
-                  {selected.kind === "rubric" ? (
-                    <>
-                      <section>
-                        <h3>Should follow</h3>
-                        {selected.rules?.should?.length ? (
-                          <ul>
-                            {selected.rules.should.map(
-                              (rule: string, i: number) => (
-                                <li key={i}>{rule}</li>
-                              ),
+                <div
+                  className="analytical-inspector-scroll"
+                  onScroll={(event) =>
+                    event.currentTarget.parentElement?.style.setProperty(
+                      "--analytical-inspector-fade",
+                      String(
+                        Math.min(
+                          1,
+                          Math.max(0, event.currentTarget.scrollTop) / 24,
+                        ),
+                      ),
+                    )
+                  }
+                >
+                  <div className="analytical-definition">
+                    <div className="data-actions">
+                      <Button size="sm" onClick={() => open(selected)}>
+                        {selected.kind === "rubric"
+                          ? "Edit rules"
+                          : "Manage metric"}
+                      </Button>
+                      <span className="data-muted">{selected.kind}</span>
+                    </div>
+                    <Evidence label="Metric definition" data={selected}>
+                      <p>
+                        {selected.description || "No description supplied."}
+                      </p>
+                      {selected.kind === "rubric" ? (
+                        <>
+                          <section>
+                            <h3>Should follow</h3>
+                            {selected.rules?.should?.length ? (
+                              <ul>
+                                {selected.rules.should.map(
+                                  (rule: string, i: number) => (
+                                    <li key={i}>{rule}</li>
+                                  ),
+                                )}
+                              </ul>
+                            ) : (
+                              <p className="data-muted">
+                                No positive rules defined.
+                              </p>
                             )}
-                          </ul>
-                        ) : (
-                          <p className="data-muted">
-                            No positive rules defined.
-                          </p>
-                        )}
-                      </section>
-                      <section>
-                        <h3>Should not follow</h3>
-                        {selected.rules?.should_not?.length ? (
-                          <ul>
-                            {selected.rules.should_not.map(
-                              (rule: string, i: number) => (
-                                <li key={i}>{rule}</li>
-                              ),
+                          </section>
+                          <section>
+                            <h3>Should not follow</h3>
+                            {selected.rules?.should_not?.length ? (
+                              <ul>
+                                {selected.rules.should_not.map(
+                                  (rule: string, i: number) => (
+                                    <li key={i}>{rule}</li>
+                                  ),
+                                )}
+                              </ul>
+                            ) : (
+                              <p className="data-muted">
+                                No negative rules defined.
+                              </p>
                             )}
-                          </ul>
-                        ) : (
+                          </section>
                           <p className="data-muted">
-                            No negative rules defined.
+                            Rubrics require the configured helper model to score
+                            predictions.
                           </p>
-                        )}
-                      </section>
-                      <p className="data-muted">
-                        Rubrics require the configured helper model to score
-                        predictions.
-                      </p>
-                    </>
-                  ) : selected.kind === "code" ? (
-                    <section>
-                      <h3>Deterministic check</h3>
-                      <code>{selected.check}</code>
-                      <p className="data-muted">
-                        Scores use this check against each prediction and its
-                        reference.
-                      </p>
-                    </section>
-                  ) : (
-                    <section>
-                      <h3>Evaluator endpoint</h3>
-                      <code>
-                        {selected.webhook?.url || "No endpoint supplied"}
-                      </code>
-                      <p className="data-muted">
-                        The external evaluator supplies the score and optional
-                        reasoning.
-                      </p>
-                    </section>
-                  )}
-                </Evidence>
-                <a href="#/evaluations">Open evaluations →</a>
+                        </>
+                      ) : selected.kind === "code" ? (
+                        <section>
+                          <h3>Deterministic check</h3>
+                          <code>{selected.check}</code>
+                          <p className="data-muted">
+                            Scores use this check against each prediction and
+                            its reference.
+                          </p>
+                        </section>
+                      ) : (
+                        <section>
+                          <h3>Evaluator endpoint</h3>
+                          <code>
+                            {selected.webhook?.url || "No endpoint supplied"}
+                          </code>
+                          <p className="data-muted">
+                            The external evaluator supplies the score and
+                            optional reasoning.
+                          </p>
+                        </section>
+                      )}
+                    </Evidence>
+                    <a href="#/evaluations">Open evaluations →</a>
+                  </div>
+                </div>
               </div>
             </DetailInspector>
-          ) : (
-            <aside className="data-inspector data-inspector-empty">
-              <h2>Metric definition</h2>
-              <p>
-                Select a metric to inspect its rules, code check, or evaluator
-                endpoint.
-              </p>
-            </aside>
-          )}
+          ) : null}
         </div>
         {editing && (
           <Modal

@@ -1,0 +1,192 @@
+@reference "../../styles/globals.css";
+.dataset-quality-dialog {
+  block-size: min(760px, calc(100dvh - 32px));
+}
+.dataset-quality-dialog .modal-content {
+  min-block-size: 0;
+  overflow: hidden;
+  display: flex;
+  flex: 1;
+  padding-block-start: 0;
+}
+.quality-workspace,
+.quality-evidence,
+.quality-pane {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  flex: 1;
+}
+.quality-pane[hidden] {
+  display: none !important;
+}
+.quality-navigation {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-block-end: 12px;
+  border-block-end: 1px solid var(--color-separator-border);
+}
+.quality-pane > .records-scroll-wrap {
+  flex: 1;
+  min-block-size: 0;
+}
+.quality-pane .records-scroll {
+  padding-block: 16px;
+}
+.quality-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-block-end: 16px;
+}
+.quality-stat {
+  padding: 16px;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+}
+.quality-stat > span {
+  color: var(--color-text-tertiary);
+  @apply text-body-2-regular;
+}
+.quality-stat > strong {
+  @apply text-title-2-medium;
+}
+.quality-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+}
+.quality-chart-grid,
+.quality-cleaning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.quality-distribution-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-block: 16px;
+}
+.quality-workspace .studio-panel {
+  min-inline-size: 0;
+  padding: 16px;
+  border-radius: 12px;
+  margin: 0;
+}
+.quality-workspace .studio-panel h2 {
+  @apply text-body-medium;
+}
+.quality-workspace .studio-panel > header {
+  margin-block-end: 12px;
+}
+.quality-workspace p {
+  @apply text-body-2-regular;
+}
+.quality-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin: 0;
+  @apply text-body-2-regular;
+}
+.quality-facts dt {
+  color: var(--color-text-tertiary);
+}
+.quality-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.quality-help {
+  color: var(--color-text-tertiary);
+}
+.quality-examples {
+  margin-block-start: 20px;
+  border-block-start: 1px solid var(--color-separator-border);
+  padding-block-start: 12px;
+}
+.quality-examples summary {
+  cursor: pointer;
+  @apply text-body-2-medium;
+}
+.quality-examples summary:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 4px;
+}
+.quality-examples .studio-panel {
+  padding: 12px 0;
+  border: 0;
+}
+.quality-rules {
+  display: grid;
+  gap: 16px;
+  margin-block-start: 20px;
+}
+.quality-thresholds {
+  display: grid;
+  gap: 16px;
+}
+.quality-cleaning-actions,
+.quality-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.quality-cleaning-actions {
+  margin-block-start: 16px;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--color-separator-border);
+}
+.quality-footer {
+  inline-size: 100%;
+}
+.quality-footer > span {
+  color: var(--color-text-tertiary);
+  @apply text-caption-1-regular;
+}
+.quality-notice {
+  margin-block: 8px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--color-background-secondary-default);
+}
+.quality-loading {
+  padding-block: 24px;
+}
+.quality-workspace .data-table th,
+.quality-workspace .data-table td {
+  padding: 8px 10px;
+  @apply text-body-2-regular;
+}
+.quality-workspace .data-table {
+  min-inline-size: 0;
+}
+.quality-workspace .data-table table {
+  min-inline-size: 0;
+}
+@media (max-width: 760px) {
+  .quality-overview-grid,
+  .quality-chart-grid,
+  .quality-cleaning-grid,
+  .quality-distribution-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .quality-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .quality-cleaning-actions,
+  .quality-footer {
+    align-items: start;
+    flex-wrap: wrap;
+  }
+  .quality-navigation {
+    align-items: start;
+  }
+}

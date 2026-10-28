@@ -17,25 +17,10 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+from tinystudio.core.file_manifest import directory_manifest
+
 from .learning import artifact
 from .partitioning import isolation_groups, partition_labels
-
-
-def directory_manifest(path: str | Path) -> dict:
-    """Hash regular files by relative name, rejecting links and empty bundles."""
-    path = Path(path)
-    if not path.is_dir() or path.is_symlink():
-        raise ValueError("a server-resolved regular model directory is required")
-    files = {}
-    for source in sorted(path.rglob("*")):
-        if source.is_symlink():
-            raise ValueError("model artifacts must not contain symbolic links")
-        if source.is_file():
-            files[source.relative_to(path).as_posix()] = hashlib.sha256(source.read_bytes()).hexdigest()
-    if not files:
-        raise ValueError("model directory is empty")
-    digest = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return {"sha256": digest, "files": files}
 
 
 def extract_model_archive(source: str | Path, destination: Path, *, max_bytes: int = 8 * 1024 ** 3,
@@ -263,12 +248,51 @@ def partition_snapshot(rows: list[dict], seed: int, validation_fraction: float, 
             "excluded_test": split["test"], "tokenizer_fitted": False}
 
 
-def load_pretrained_output(path: str | Path):
+def load_pretrained_output(path: str | Path, *, device: str | None = None):
     """Load final full or adapter output using the retained local source model."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     root = Path(path)
     manifest = json.loads((root / "pretrained.json").read_text())
+    quantized = manifest.get("output_kind") == "quantized_adapter" or manifest.get("format") == "tinystudio.pretrained.v2"
+    if quantized:
+        if (manifest.get("format"), manifest.get("output_kind"), manifest.get("update_strategy"), manifest.get("training_type")) != (
+                "tinystudio.pretrained.v2", "quantized_adapter", "qlora", "qlora"):
+            raise ValueError("inconsistent quantized output format, kind or update strategy")
+        from tinystudio.training.quantization import retained_base_path, nf4_settings, state_digest, dependency_versions, verify_probes
+        from tinystudio.training.runtime import TrainingPlacement
+        from tinystudio.training.train import qlora_support
+        import platform
+        receipt = manifest.get("quantization")
+        base_path = retained_base_path(root, receipt)
+        target_runtime = receipt.get("runtime", {})
+        if (target_runtime.get("os"), target_runtime.get("machine"), target_runtime.get("dependencies")) != (platform.system(), platform.machine(), dependency_versions()):
+            raise ValueError("quantized model reload requires its compatible retained runtime/dependency pack")
+        placement = TrainingPlacement.resolve(device or target_runtime.get("device"), target_runtime.get("dtype"))
+        if placement.device != target_runtime.get("device"):
+            raise ValueError("quantized reload target differs from its retained inference contract")
+        eligible, reason = qlora_support(placement.device)
+        if not eligible:
+            raise ValueError(reason)
+        if manifest.get("trained_directory") != "adapter" or directory_manifest(root / "adapter") != manifest.get("trained_files"):
+            raise ValueError("retained quantized adapter checksum mismatch")
+        if not isinstance(manifest.get("reload_probes"), dict):
+            raise ValueError("quantized output requires live-policy reload probes")
+        from peft import PeftModel, prepare_model_for_kbit_training
+        tokenizer = AutoTokenizer.from_pretrained(root / "adapter", local_files_only=True)
+        base = AutoModelForCausalLM.from_pretrained(base_path, local_files_only=True, dtype=torch.float32,
+                                                  device_map={"": placement.device})
+        base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
+        if nf4_settings(base) != receipt.get("settings") or state_digest(base, base_only=True) != receipt.get("state_sha256"):
+            raise ValueError("restored quantized base state differs from the retained starting base")
+        model = PeftModel.from_pretrained(base, root / "adapter", is_trainable=False, local_files_only=True,
+                                         autocast_adapter_dtype=False)
+        for name, parameter in model.named_parameters():
+            if "lora_" in name:
+                parameter.data = parameter.data.to(placement.dtype)
+        model.eval()
+        verify_probes(model, root, manifest["reload_probes"], placement.device)
+        return model, tokenizer, manifest
     target = root / manifest["trained_directory"]
     tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
     if manifest.get("output_kind", "model" if manifest["training_type"] == "full" else "adapter") == "model":
@@ -408,9 +432,9 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     config.base_model = str(source)
     records = []
     def cancellation_result():
-        for name in ("model", "adapter", "checkpoints"):
+        for name in ("model", "adapter", "checkpoints", "quantized-base"):
             shutil.rmtree(output_dir / name, ignore_errors=True)
-        for name in ("pretrained.json", "pretrained-model.tar"):
+        for name in ("pretrained.json", "pretrained-model.tar", "reload-probes.safetensors", "nf4-policy.json"):
             (output_dir / name).unlink(missing_ok=True)
         return {"records": records, "metrics": {}, "artifacts": [],
                 "qualification": {"status": "cancelled", "trainer": "existing TinyStudio train_experiment",
@@ -433,8 +457,9 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     except _Cancelled:
         return cancellation_result()
     trained = Path(result["output"])
-    manifest = {"format": "tinystudio.pretrained.v1", "training_type": strategy,
+    manifest = {"format": "tinystudio.pretrained.v2" if result.get("quantization") else "tinystudio.pretrained.v1", "training_type": strategy,
         "objective": objective, "update_strategy": strategy, "output_kind": result["output_kind"],
+        **({"quantization": result["quantization"], "reload_probes": result["reload_probes"]} if result.get("quantization") else {}),
         "data_format": method.data_format,
         "axes": {**axes, "objective": objective, "architecture": dimensions, "architecture_source": "immutable pretrained artifact", "tokenizer_source": "immutable pretrained artifact",
                  "context_semantics": "training sequence cap; source positional embeddings are not resized", "source_context_capacity": capacity},
@@ -449,8 +474,9 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     manifest_path.write_text(json.dumps(manifest, indent=2))
     # Explicit reloading proves the final saved output is consumable; the fixture
     # independently compares predictions and changed parameters as well.
-    reloaded, tokenizer, _ = load_pretrained_output(output_dir)
-    probe = tokenizer("user: pressure", return_tensors="pt")
+    reloaded, tokenizer, _ = load_pretrained_output(output_dir, device=actual_device)
+    probe_device = next(reloaded.parameters()).device
+    probe = {key: value.to(probe_device) for key, value in tokenizer("user: pressure", return_tensors="pt").items()}
     with torch.no_grad():
         logits = reloaded(**probe).logits
     if not torch.isfinite(logits).all():
@@ -459,7 +485,10 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     target = output_dir / "pretrained-model.tar"
     if cancelled():
         return cancellation_result()
-    _bundle(output_dir, [source, trained, manifest_path, split_path], target)
+    retained_paths = [source, trained, manifest_path, split_path]
+    if result.get("quantization"):
+        retained_paths.extend([output_dir / "quantized-base", output_dir / "reload-probes.safetensors", output_dir / "nf4-policy.json"])
+    _bundle(output_dir, retained_paths, target)
     if cancelled():
         return cancellation_result()
     return {"records": records, "metrics": {**result.get("metrics", {}), "steps": result["steps"],
@@ -473,6 +502,7 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
             "requested_axes_honored": True, "structural_architecture_source": "immutable pretrained artifact",
             "validation_bindings": "evaluator-only map; never used for tokenizer fitting or optimizer updates",
             "trainer": "existing TinyStudio train_experiment", "saved_model_reloaded": True,
+            "live_policy_reload_equal": True if result.get("quantization") else None,
             "resume": "legacy backend saves weights; exact optimizer continuation is not provided",
             "cancellation": "checked at every optimizer step, progress/log callback and before model publication", "network_downloads": False,
             "partition_strategy": split["strategy"], "group_isolation": split["group_isolation"],

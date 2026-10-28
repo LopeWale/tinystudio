@@ -59,7 +59,11 @@ export type DataTableProps<T> = {
   scopeKey?: string;
   /** Revoke assistant controls when a retained view is not active. */
   assistantActionsEnabled?: boolean;
+  /** The displayed, filtered/sorted page, for linked inspectors and row actions. */
+  onVisibleRowsChange?: (rows: readonly T[]) => void;
   pagination?: TablePagination;
+  /** Bound rows to the available workspace; client paging defaults to measured capacity. */
+  layout?: "content" | "fill";
 };
 function TableView<T>({
   label,
@@ -72,14 +76,23 @@ function TableView<T>({
   toolbarContent,
   scopeKey,
   assistantActionsEnabled = true,
+  onVisibleRowsChange,
   pagination = "client",
+  layout = "content",
   variant,
 }: DataTableProps<T> & { variant: "simple" | "standard" | "advanced" }) {
   if (variant === "simple") pagination = "none";
   // Scope changes replace the state owner before the new scope is displayed.
   const controller = useMemo(
-    () => new RecordTableController(rows, columns, getRowId, pagination),
-    [scopeKey],
+    () =>
+      new RecordTableController(
+        rows,
+        columns,
+        getRowId,
+        pagination,
+        layout === "fill" ? "fit" : "manual",
+      ),
+    [scopeKey, layout],
   );
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -91,6 +104,89 @@ function TableView<T>({
     () => controller.update(rows, columns, getRowId, pagination),
     [controller, rows, columns, getRowId, pagination],
   );
+  const viewport = useRef<HTMLDivElement>(null);
+  const scroll = useRef<HTMLDivElement>(null);
+  const measuredRows = useRef({ key: "", height: 0 });
+  // Observations belong to one source revision and controller scope. Internal
+  // paging preserves the sample; refreshed records/columns start a new sample.
+  useLayoutEffect(() => {
+    measuredRows.current = { key: "", height: 0 };
+  }, [controller, rows, columns]);
+  useLayoutEffect(() => {
+    if (layout !== "fill") return;
+    const region = scroll.current;
+    const frame = viewport.current;
+    if (!region || !frame) return;
+    function measure() {
+      if (!region || !frame || state !== controller.getSnapshot()) return;
+      const width = region.clientWidth;
+      const height = region.clientHeight;
+      if (!width || !height) return; // Retained hidden panes cannot provide capacity.
+      const header = region.querySelector("thead");
+      const headerHeight = header?.getBoundingClientRect().height || 0;
+      frame.style.setProperty(
+        "--data-table-header-height",
+        `${headerHeight}px`,
+      );
+      if (pagination !== "client" || state.pageSizeMode !== "fit") return;
+      const key = `${width}:${state.density}:${state.visibleColumns.join(",")}`;
+      if (measuredRows.current.key !== key)
+        measuredRows.current = { key, height: 0 };
+      const heights = Array.from(
+        region.querySelectorAll("tbody tr"),
+        (row) => row.getBoundingClientRect().height,
+      );
+      // Keep the largest observed natural row for this geometry. A short last page
+      // must not inflate capacity and cause repeated page/measurement oscillation.
+      const rowHeight = Math.max(measuredRows.current.height, ...heights);
+      if (rowHeight <= 0) return;
+      measuredRows.current.height = rowHeight;
+      controller.setFittedPageSize(
+        Math.max(1, Math.floor((height - headerHeight - 1) / rowHeight)),
+      );
+    }
+    measure();
+    const fontsLoaded = () => {
+      measuredRows.current = { key: "", height: 0 };
+      measure();
+    };
+    document.fonts?.addEventListener("loadingdone", fontsLoaded);
+    const observer = new ResizeObserver(measure);
+    observer.observe(region);
+    const table = region.querySelector("table");
+    if (table) observer.observe(table);
+    return () => {
+      observer.disconnect();
+      document.fonts?.removeEventListener("loadingdone", fontsLoaded);
+    };
+  }, [
+    controller,
+    layout,
+    pagination,
+    rows,
+    columns,
+    state.density,
+    state.visibleColumns,
+    state.rows,
+    state.pageSizeMode,
+  ]);
+  useLayoutEffect(() => {
+    if (layout !== "fill" || !scroll.current) return;
+    scroll.current.scrollTop = 0;
+    viewport.current?.style.setProperty("--data-table-scroll-fade", "0");
+  }, [controller, layout, state.page]);
+  const publishedRows = useRef<readonly T[] | undefined>(undefined);
+  useLayoutEffect(() => {
+    const next = controller.getSnapshot().rows;
+    if (
+      !publishedRows.current ||
+      next.length !== publishedRows.current.length ||
+      next.some((row, index) => row !== publishedRows.current![index])
+    ) {
+      publishedRows.current = next;
+      onVisibleRowsChange?.(next);
+    }
+  }, [controller, state, onVisibleRowsChange]);
   const visible = columns.filter((column) =>
     state.visibleColumns.includes(column.id),
   );
@@ -148,6 +244,7 @@ function TableView<T>({
       className="data-table"
       data-density={state.density}
       data-table-variant={variant}
+      data-table-layout={layout}
     >
       {variant !== "simple" && assistantActionsEnabled && (
         <TableComponentActions
@@ -190,77 +287,95 @@ function TableView<T>({
           }
         />
       )}
-      <div
-        className="data-table__scroll"
-        role="region"
-        aria-label={`${label} rows`}
-        tabIndex={0}
-      >
-        <table aria-label={label}>
-          <colgroup>
-            {visible.map((column) => (
-              <col key={column.id} style={{ width: column.width }} />
-            ))}
-          </colgroup>
-          <thead>
-            <tr>
+      <div className="data-table__viewport" ref={viewport}>
+        <div
+          ref={scroll}
+          className="data-table__scroll"
+          onScroll={(event) =>
+            viewport.current?.style.setProperty(
+              "--data-table-scroll-fade",
+              String(
+                Math.min(1, Math.max(0, event.currentTarget.scrollTop) / 24),
+              ),
+            )
+          }
+          role="region"
+          aria-label={`${label} rows`}
+          tabIndex={0}
+        >
+          <table aria-label={label}>
+            <colgroup>
               {visible.map((column) => (
-                <th
-                  key={column.id}
-                  scope="col"
-                  aria-sort={
-                    state.sort?.column === column.id
-                      ? state.sort.direction
-                      : undefined
-                  }
-                >
-                  {variant === "simple" || column.sortable === false ? (
-                    column.label
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => controller.toggleSort(column.id)}
-                    >
-                      {column.label}
-                      <span aria-hidden="true">
-                        {state.sort?.column === column.id
-                          ? state.sort.direction === "ascending"
-                            ? " ↑"
-                            : " ↓"
-                          : " ↕"}
-                      </span>
-                    </Button>
-                  )}
-                </th>
+                <col key={column.id} style={{ width: column.width }} />
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {state.rows.map((row, index) => {
-              const props = { ...rowProps?.(row), key: state.rowIds[index] };
-              const cells = visible.map((column) => (
-                <td key={column.id}>
-                  {column.render
-                    ? column.render(row)
-                    : tableValueLabel(column.value(row))}
-                </td>
-              ));
-              if (renderRow) return renderRow(row, props, cells);
-              const { key, ...attributes } = props;
-              return (
-                <tr {...attributes} key={key}>
-                  {cells}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {!state.filtered && (
-          <div className="data-table__empty">
-            {rows.length
-              ? "No matching rows. Clear filters or reset the view to see loaded records."
-              : (empty ?? "No records available.")}
+            </colgroup>
+            <thead>
+              <tr>
+                {visible.map((column) => (
+                  <th
+                    key={column.id}
+                    scope="col"
+                    aria-sort={
+                      state.sort?.column === column.id
+                        ? state.sort.direction
+                        : undefined
+                    }
+                  >
+                    {variant === "simple" || column.sortable === false ? (
+                      column.label
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => controller.toggleSort(column.id)}
+                      >
+                        {column.label}
+                        <span aria-hidden="true">
+                          {state.sort?.column === column.id
+                            ? state.sort.direction === "ascending"
+                              ? " ↑"
+                              : " ↓"
+                            : " ↕"}
+                        </span>
+                      </Button>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {state.rows.map((row, index) => {
+                const props = { ...rowProps?.(row), key: state.rowIds[index] };
+                const cells = visible.map((column) => (
+                  <td key={column.id}>
+                    {column.render
+                      ? column.render(row)
+                      : tableValueLabel(column.value(row))}
+                  </td>
+                ));
+                if (renderRow) return renderRow(row, props, cells);
+                const { key, ...attributes } = props;
+                return (
+                  <tr {...attributes} key={key}>
+                    {cells}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!state.filtered && (
+            <div className="data-table__empty">
+              {rows.length
+                ? "No matching rows. Clear filters or reset the view to see loaded records."
+                : (empty ?? "No records available.")}
+            </div>
+          )}
+        </div>
+        {layout === "fill" && (
+          <div className="data-table__scroll-fade" aria-hidden="true">
+            <i />
+            <i />
+            <i />
           </div>
         )}
       </div>
@@ -277,11 +392,18 @@ function TableView<T>({
                 Rows per page{" "}
                 <select
                   aria-label={`${label} rows per page`}
-                  value={state.pageSize}
+                  value={state.pageSizeMode === "fit" ? "fit" : state.pageSize}
                   onChange={(event) =>
-                    controller.setPageSize(Number(event.target.value))
+                    controller.setPageSize(
+                      event.target.value === "fit"
+                        ? "fit"
+                        : Number(event.target.value),
+                    )
                   }
                 >
+                  {layout === "fill" && (
+                    <option value="fit">Fit workspace</option>
+                  )}
                   {[10, 25, 50, 100].map((size) => (
                     <option value={size} key={size}>
                       {size}
