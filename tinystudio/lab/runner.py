@@ -495,6 +495,11 @@ class Runner:
         return probe
 
     def execute_attempt(self, attempt: dict, root: Path):
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+            raise ValueError("attempt root must be an existing absolute non-symlink directory")
+        # macOS temporary-directory ancestors can be aliases (/var -> /private/var).
+        # Bind command arguments, inputs and mounts to one path before publication.
+        root = root.resolve(strict=True)
         # Serialize immediately: all execution-local bindings live in context.json.
         frozen = json.dumps(attempt["spec"], allow_nan=False)
         spec = json.loads(frozen)

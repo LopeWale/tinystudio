@@ -188,6 +188,10 @@ def manifest_for(row: dict) -> dict:
             "Packed/nested quantization state, adapter precision, frozen reference and optimizer membership checks.",
             "Live-policy versus extracted-bundle reload equality and wrong-float-base/missing-state counterexamples.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_qlora_workflow.py", evidence_required=[
+            "Authenticated registered-app upload, preflight, submission and actual isolated Docker execution for each objective.",
+            "Image-bound runtime, checksum-verified artifact transport and independent retained-policy reload probes.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     manifest = PluginManifest(id=id_, kinds=kinds, implemented=implemented,
         implementation_version=version if implemented else None, inputs=ports,
         outputs=[PortContract(name="artifacts", media_types=["application/json"], units="artifact_defined",

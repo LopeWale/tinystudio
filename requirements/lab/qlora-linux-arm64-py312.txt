@@ -1,6 +1,8 @@
 # Qualified target overlay: Linux aarch64, Python 3.12, CPU float32.
 # Framework stack is pinned; the qualification fixture also records its image
 # digest, which fixes inherited application and transitive dependencies.
+# Install into the execution environment (pip --no-user), not a user site:
+# isolated runners deliberately set PYTHONNOUSERSITE=1 and an attempt-owned HOME.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.15.0+cpu
 transformers==5.21.0

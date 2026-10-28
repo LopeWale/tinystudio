@@ -20,6 +20,13 @@
 
 # Changelog
 
+## 2026-10-28 — D local isolated QLoRA workflow qualification
+
+- Canonicalized runner attempt roots before constructing child arguments, input bindings and isolation mounts; final-root symlinks are rejected. Two counterexamples failed before the correction. Added registered-app qualification for independent SFT, continued-pretraining and DPO objectives with CPU float32 QLoRA, immutable inputs and downloaded retained-model reload; registered the fixture in the existing capability contract.
+- Production-like prerequisite checking exposed bitsandbytes in a disabled user site. Provisioned the same package into the image's execution environment while retaining `PYTHONNOUSERSITE`, denied network, CPU 1 / memory 2 GiB / PID 128 limits and no secret/device grants. Qualified local image: `tinystudio@sha256:2c8af1da323514b5fee5b56c724424b18fe0aeb11873de1dbc59ccd33c478443`; Linux ARM64 Python 3.12.16 and the pinned NF4 stack. A controlled helper timeout also exposed a shadowed container identity; its regression now verifies cleanup targets only the owned container.
+- Checks passed: **71 runner/profile checks** (two Kubernetes checks skipped), **101 backend checks** (four NF4 tests unavailable on native macOS), **30 storage checks**, **9 real Linux NF4 checks**, and **4 app/Docker workflow checks** including all three objectives and timeout cleanup. These exercise frozen quantization state, intended adapter updates, held-out exclusion, transport checksums, exact live-policy reload predictions and corrupt-base rejection. Fresh application TypeScript/production build passed with the existing Plotly chunk warning.
+- The authenticated packaged React application uploaded the model and preference snapshot, saved and checked DPO/QLoRA on the selected local target, and completed run `4c8423c058594b03907c69e33a3c38c8` through the outbound runner and isolated Docker child. Five retained artifacts passed independent HTTP checksum verification; the v2 manifest records seven packed NF4 modules and matching reload probes. This is disposable software qualification, not a user research result. D remains open, including quantized legacy serving/refinement, distillation, retrieval and both RL tracks; no E work, production restart or deployment occurred in this increment.
+
 ## 2026-10-28 — D pretrained objectives and weight updates
 
 - Extended the existing TRL/PEFT trainer and actual Lab form with independent SFT, raw-text continued pretraining and DPO objectives versus full/LoRA/QLoRA updates. Preserved legacy DPO configuration semantics and canonicalized both axes when editing older definitions. Added explicit full-model versus adapter output identities and backward-compatible reload.

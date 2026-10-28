@@ -73,6 +73,11 @@ The remote runner uses outbound HTTPS and its scoped token; it needs no PostgreS
 
 The long-lived runner reconnects after transient claim transport errors and HTTP 408/429/500/502/503/504, with delays from one to thirty seconds. A successful claim resets the delay. Authentication, configuration and active-attempt failures remain explicit; `--once` reports the original claim failure. A lost claim response conveys no execution authority to the client. Inspect and recover the retained attempt before explicitly retrying its run.
 
+Attempt roots must be existing absolute directories, with no symlink at the final
+component. The runner resolves ancestor aliases before constructing input paths,
+child arguments and isolation mounts. This keeps macOS `/var` aliases consistent
+with the paths visible inside Linux containers without adding filesystem grants.
+
 For a container-mounted credential, inspect the file owner as presented inside the guest and select a matching process user. The owned-file and `0600` checks still apply. A Docker guest running a trusted-native backend is a distinct target receipt; qualification of the laboratory's isolated/container execution profile requires its own fixtures.
 
 Author and inspect through the same authenticated HTTP contracts:
@@ -382,10 +387,29 @@ respective machine defaults; an omitted dtype still inherits the configured
 dtype. For example, a CPU run on a machine configured for bf16 must explicitly
 select float32 rather than receiving a hidden precision fallback. The trainer
 checks actual policy/reference and prepared-batch placement and records observed
-dtypes. The current QLoRA implementation requires a selected CUDA target plus
-bitsandbytes; CPU/Apple execution remains unqualified. A library's published
-platform support does not qualify this trainer. Retrieval composition is still
-an outstanding D task; unsupported retrieval selections fail visibly.
+dtypes. QLoRA requires compatible CUDA/bitsandbytes or the pinned Linux ARM64
+Python 3.12 CPU NF4 pack in `requirements/lab/qlora-linux-arm64-py312.txt`.
+Native Apple QLoRA remains unsupported. The CPU qualification covers float32 SFT,
+continued pretraining and DPO on the exact fixture image
+`tinystudio@sha256:2c8af1da323514b5fee5b56c724424b18fe0aeb11873de1dbc59ccd33c478443`.
+The operator must install the pack into the execution environment, using
+`python -m pip install --no-user -r requirements/lab/qlora-linux-arm64-py312.txt`;
+isolated runners disable user-site packages and replace HOME with an attempt-owned
+directory. Measure dependencies with those same settings before advertising the
+image/runtime evidence. A library's platform support or a metadata probe alone
+does not qualify training. CUDA targets require their own actual qualification.
+
+New QLoRA outputs use `tinystudio.pretrained.v2` / `quantized_adapter`: they retain
+the packed NF4 base, nested quantization state, adapter, tokenizer, checksums,
+observed precision and three live-policy prediction probes. Reload verifies the
+retained base/adapter and compatible OS, architecture, dependency and device
+contract, then checks bitwise probe equality. It never substitutes the original
+floating-point base. Legacy serving, merged export and refinement reject these
+new outputs until those consumers have a compatible quantized execution path;
+durable configuration/status markers cover running and failed checkpoints too.
+Missing retained state is an error. Existing nonquantized v1 outputs remain
+readable. Retrieval composition is still an outstanding D task; unsupported
+retrieval selections fail visibly.
 
 Native runners execute these operations in child processes. In-process trainer
 calls are serialized while they own PyTorch thread and RNG state, which is

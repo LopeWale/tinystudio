@@ -163,6 +163,37 @@ def test_frozen_spec_is_unchanged_and_child_executes_only_snapshot_without_crede
     assert transport.finish['result']['execution_receipt']['implementation_digest']==checksum(claimed['spec']['implementation'])
 
 
+def test_attempt_bindings_use_the_same_canonical_root_as_isolation_mounts(source,tmp_path,monkeypatch):
+    parent = tmp_path / 'real'
+    parent.mkdir()
+    alias = tmp_path / 'alias'
+    alias.symlink_to(parent, target_is_directory=True)
+    root = alias / 'attempt'
+    root.mkdir()
+    payload = b'{"time":0,"value":-0.125}\n'
+    transport = Transport(blocks=[payload])
+    runner(source,transport,monkeypatch).execute_attempt(attempt(source,payload=payload),root)
+    assert transport.finish['state'] == 'succeeded', transport.finish
+    record = json.loads(transport.uploads[0])
+    canonical = parent.resolve() / 'attempt'
+    assert record['input_paths']['input-one'] == str(canonical / 'inputs/input-one.jsonl')
+    assert record['env']['HOME'] == str(canonical / 'work/home')
+    assert record['env']['PYTHONPATH'] == str(canonical / 'runtime')
+    assert transport.finish['result']['execution_receipt']['source_root'] == str(canonical / 'runtime/tinystudio')
+
+
+def test_attempt_root_cannot_be_a_symlink(source,tmp_path,monkeypatch):
+    actual = tmp_path / 'actual'
+    actual.mkdir()
+    root = tmp_path / 'attempt'
+    root.symlink_to(actual, target_is_directory=True)
+    transport = Transport()
+    with pytest.raises(ValueError, match='attempt root'):
+        runner(source,transport,monkeypatch).execute_attempt(attempt(source),root)
+    assert not list(actual.iterdir())
+    assert transport.finish is None and not transport.uploads
+
+
 def test_source_mutation_after_claim_fails_before_execution(source,tmp_path,monkeypatch):
     claimed=attempt(source)
     (source/'lab/engine.py').write_text('raise RuntimeError("changed after claim")')
