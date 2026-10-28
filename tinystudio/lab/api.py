@@ -293,7 +293,10 @@ def inputs(db: DB, project: ProjectDep):
             .join(LabRun, LabAttempt.run_id == LabRun.id).where(LabArtifact.project_id == project.id,
                 LabAttempt.state == "succeeded").order_by(LabRun.created.desc()).limit(1000)):
         if artifact.id in {item["id"] for item in (run.result or {}).get("artifacts", [])}:
-            uploaded.append(svc.artifact_dict(artifact))
+            uploaded.append({**svc.artifact_dict(artifact), "origin": {
+                "run_id": run.id, "revision": run.revision,
+                "definition_name": run.spec.get("definition", {}).get("name") or run.definition_id,
+            }})
         if len(uploaded) >= 1000:
             break
     return uploaded

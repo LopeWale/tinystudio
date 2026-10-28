@@ -32,6 +32,7 @@ import {
 import "./lab.css";
 import { InputArtifacts, LabChoice as Choice } from "./inputs";
 import { DataPreparation } from "./data-preparation";
+import { LanguageLearning } from "./language-learning";
 import { DefinitionGraph } from "./graph";
 import { ReplayViews } from "./replay";
 import { dataArtifacts } from "./evidence";
@@ -83,6 +84,7 @@ function LabWorkspace() {
   const [draft, setDraft] = useState(() => json(makeDefinition()));
   const [authoringGeneration, setAuthoringGeneration] = useState(0);
   const [dataPreparationValid, setDataPreparationValid] = useState(true);
+  const [languageLearningValid, setLanguageLearningValid] = useState(true);
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [savedText, setSavedText] = useState("");
   const [area, setArea] = useState("experiment");
@@ -219,6 +221,15 @@ function LabWorkspace() {
       studio.toast(`Saved revision ${row.revision}`);
     });
   const dirty = !saved || draft !== savedText;
+  const structuredEngine = ["data.pipeline", "learning.language"].includes(
+    definition?.engine ?? "",
+  );
+  const authoringValid =
+    definition?.engine === "data.pipeline"
+      ? dataPreparationValid
+      : definition?.engine === "learning.language"
+        ? languageLearningValid
+        : true;
   const engineCatalog = [
     ...(catalog.data?.adapters ?? []),
     ...(catalog.data?.methods ?? []),
@@ -721,7 +732,7 @@ function LabWorkspace() {
                         </div>
                       </SettingsSection>
                     )}
-                    {definition && definition.engine !== "data.pipeline" && (
+                    {definition && !structuredEngine && (
                       <SettingsSection
                         title="Engine parameters"
                         className="lab-engine-parameters"
@@ -847,6 +858,14 @@ function LabWorkspace() {
                           </p>
                         </div>
                       </SettingsSection>
+                    )}
+                    {definition?.engine === "learning.language" && (
+                      <LanguageLearning
+                        key={`${authoringGeneration}:${saved?.id ?? "new-language"}`}
+                        definition={definition}
+                        onChange={change}
+                        onValidityChange={setLanguageLearningValid}
+                      />
                     )}
                     {definition?.engine === "data.pipeline" && (
                       <DataPreparation
@@ -1059,15 +1078,13 @@ function LabWorkspace() {
               <div className="lab-actions lab-primary-actions">
                 <Button
                   variant="primary"
-                  disabled={busy || !!parseError || !dataPreparationValid}
+                  disabled={busy || !!parseError || !authoringValid}
                   onClick={save}
                 >
                   {saved ? "Save revision" : "Save experiment"}
                 </Button>
                 <Button
-                  disabled={
-                    busy || !!parseError || !dataPreparationValid || !target
-                  }
+                  disabled={busy || !!parseError || !authoringValid || !target}
                   onClick={() =>
                     action(async (signal) => {
                       const result = await studio.api.post(
@@ -1087,7 +1104,7 @@ function LabWorkspace() {
                 </Button>
                 <Button
                   disabled={
-                    busy || dirty || !saved || !target || !dataPreparationValid
+                    busy || dirty || !saved || !target || !authoringValid
                   }
                   onClick={() =>
                     action(async (signal) => {

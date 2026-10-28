@@ -22,6 +22,8 @@ def specification(family="gru", steps=8, **parameters):
     for key, role in (("resume_from", "resume"), ("teacher_checkpoint", "teacher")):
         path = spec["definition"]["parameters"].pop(key, None)
         if path:
+            if role == "resume":
+                spec["definition"]["learning"]["initialization"] = "resume"
             spec["definition"].setdefault("inputs", []).append({"artifact_id": role, "role": role,
                 "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()})
             spec["input_paths"][role] = str(path)

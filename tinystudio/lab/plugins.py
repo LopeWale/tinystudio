@@ -233,8 +233,9 @@ def input_contracts(id_: str) -> list[PortContract]:
     elif id_.startswith("learning.") or id_ == "retrieval.index":
         add("source", maximum=128, media=["text/plain", "application/json", "application/x-ndjson", "application/vnd.apache.parquet"])
         if id_ != "retrieval.index":
-            add("resume")
+            add("resume", when="initialization=resume")
         if id_ == "learning.language":
+            add("initial_weights", when="initialization=weights")
             add("teacher", when="objective=distillation")
             add("validation", visibility=["evaluation"])
         if id_ == "retrieval.index":

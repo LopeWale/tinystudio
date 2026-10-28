@@ -11,6 +11,83 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("identifies same-named checkpoints by frozen run and revision before attaching", async () => {
+  const rows = [1, 2].map((revision) => ({
+    id: `checkpoint-${revision}`,
+    name: "checkpoint.pt",
+    sha256: String(revision).repeat(64),
+    size: 128,
+    media_type: "application/octet-stream",
+    origin: {
+      definition_name: "Sequence fixture",
+      revision,
+      run_id: `run-${revision}`,
+    },
+  }));
+  const controller = new AbortController();
+  function Harness() {
+    const [definition, setDefinition] = useState(
+      makeDefinition("learning.language"),
+    );
+    return (
+      <>
+        <InputArtifacts
+          definition={definition}
+          onChange={(inputs) => setDefinition({ ...definition, inputs })}
+          signal={() => controller.signal}
+        />
+        <output data-testid="selected-inputs">
+          {JSON.stringify(definition.inputs)}
+        </output>
+      </>
+    );
+  }
+  render(
+    <StudioContext.Provider
+      value={
+        {
+          api: {
+            get: vi.fn(async (path) =>
+              path === "/api/lab/inputs" ? rows : [],
+            ),
+          },
+          evidence: new EvidenceRegistry(),
+          scopeKey: "test",
+          route: "/lab",
+          project: "test",
+          user: { id: "test" },
+        } as unknown as StudioRuntime
+      }
+    >
+      <Harness />
+    </StudioContext.Provider>,
+  );
+  expect(
+    await screen.findByText("Sequence fixture · r1 · run-1"),
+  ).toBeVisible();
+  expect(screen.getByText("Sequence fixture · r2 · run-2")).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Attach checkpoint.pt from Sequence fixture revision 2 run run-2",
+    }),
+  );
+  expect(
+    JSON.parse(screen.getByTestId("selected-inputs").textContent!),
+  ).toEqual([
+    {
+      artifact_id: "checkpoint-2",
+      sha256: "2".repeat(64),
+      role: "source",
+      visibility: "model",
+    },
+  ]);
+  expect(
+    screen.getByRole("button", {
+      name: "Attach checkpoint.pt from Sequence fixture revision 1 run run-1",
+    }),
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
 it("keeps a retained binding visible and detachable when its artifact is absent from the library response", async () => {
   vi.stubGlobal(
     "ResizeObserver",

@@ -6,6 +6,7 @@ PyTorch's restricted weights-only loader and contain no executable Python object
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import random
@@ -71,7 +72,7 @@ def read_documents(spec: dict, *, include_validation=True, forced_partition=None
         raise ValueError("parameters.texts must be a list of strings")
     documents = [{"text": text, "source_record_id": f"inline:{index}"} for index, text in enumerate(supplied)]
     documents.extend(dict(row) for row in params.get("documents", []))
-    for raw in resolved_inputs(spec, {"resume", "teacher", "pretrained_model", "embedding_model"}):
+    for raw in resolved_inputs(spec, {"resume", "initial_weights", "teacher", "pretrained_model", "embedding_model"}):
         if raw.get("visibility", "model") != "model":
             raise ValueError("language learning inputs must be model-visible; truth/evaluation refs are excluded")
         path = Path(raw["path"])
@@ -103,13 +104,6 @@ def read_documents(spec: dict, *, include_validation=True, forced_partition=None
                 row.update(partition="validation", split="validation", visibility="evaluation")
             if row.get("visibility") == "truth" or any(key in row for key in ("ground_truth", "true_value", "injected_fault")):
                 raise ValueError("truth evidence must not enter language-model text")
-            partition = row.get("partition", row.get("split", row.get("bucket")))
-            if row.get("visibility") == "evaluation" and partition not in {"validation", "val", "test", "final_test", "final-test"}:
-                raise ValueError("evaluation-visible language data requires an explicit held-out partition")
-            if not isinstance(row.get("text"), str) and isinstance(row.get("messages"), list):
-                row["text"] = "\n".join(str(message.get("content", "")) for message in row["messages"])
-            if not isinstance(row.get("text"), str):
-                raise ValueError("training rows need text or messages")
             row.setdefault("source_record_id", f"{digest}:{index}")
             documents.append(row)
     if include_validation:
@@ -123,6 +117,13 @@ def read_documents(spec: dict, *, include_validation=True, forced_partition=None
                         "input_paths": {binding["artifact_id"]: binding["path"]}}
                 documents.extend(read_documents(view, include_validation=False, forced_partition="validation", min_documents=1))
     for row in documents:
+        if not isinstance(row.get("text"), str) and isinstance(row.get("messages"), list):
+            row["text"] = "\n".join(str(message.get("content", "")) for message in row["messages"])
+        if not isinstance(row.get("text"), str):
+            raise ValueError("training rows need text or messages")
+        partition = row.get("partition", row.get("split", row.get("bucket")))
+        if row.get("visibility") == "evaluation" and partition not in {"validation", "val", "test", "final_test", "final-test"}:
+            raise ValueError("evaluation-visible language data requires an explicit held-out partition")
         if row.get("visibility") == "truth" or any(key in row for key in ("ground_truth", "true_value", "injected_fault")):
             raise ValueError("truth evidence must not enter language-model text")
     documents = [row for row in documents if isinstance(row.get("text"), str) and row["text"].strip()]
@@ -140,25 +141,40 @@ class ByteTokenizer:
     """Lossless byte fallback with optional learned merges or domain lexemes."""
     def __init__(self, kind: str = "byte", merges: list[list[int]] | None = None,
                  vocabulary: list[str] | None = None):
-        self.kind = kind
-        self.merges = merges or []
-        self.vocabulary = vocabulary or []
-        self.pieces = [bytes([index]) for index in range(256)]
-        for left, right in self.merges:
-            self.pieces.append(self.pieces[left] + self.pieces[right])
-        self.pieces.extend(word.encode() for word in self.vocabulary)
-        self.eos_id = len(self.pieces)
-        self.vocab_size = self.eos_id + 1
+        if not isinstance(kind, str) or kind not in {"byte", "bpe", "engineering"}:
+            raise ValueError(f"unsupported checkpoint tokenizer kind {kind!r}")
+        merges = [] if merges is None else merges
+        vocabulary = [] if vocabulary is None else vocabulary
+        if not isinstance(merges, list) or not isinstance(vocabulary, list):
+            raise ValueError("tokenizer merges and vocabulary must be lists")
+        for offset, pair in enumerate(merges):
+            if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(type(token) is not int or not 0 <= token < 256 + offset for token in pair)):
+                raise ValueError("tokenizer merge must reference only earlier tokens")
+        if any(not isinstance(word, str) or not word for word in vocabulary) or len(set(vocabulary)) != len(vocabulary):
+            raise ValueError("tokenizer vocabulary must contain unique nonempty strings")
+        if (kind != "bpe" and merges) or (kind != "engineering" and vocabulary) or (kind == "engineering" and not vocabulary):
+            raise ValueError("tokenizer state conflicts with its kind")
+        self._kind = kind
+        self._merges = tuple(tuple(pair) for pair in merges)
+        self._vocabulary = tuple(vocabulary)
+        pieces = [bytes([index]) for index in range(256)]
+        for left, right in self._merges:
+            pieces.append(pieces[left] + pieces[right])
+        pieces.extend(word.encode() for word in self._vocabulary)
+        self._pieces = tuple(pieces)
 
     @classmethod
     def fit(cls, texts: list[str], kind: str, vocab_size: int = 320,
             vocabulary: list[str] | None = None) -> "ByteTokenizer":
+        if not isinstance(kind, str):
+            raise ValueError("representation kind must be a string")
         if kind in {"byte", "bytes", "byte_level"}:
             return cls()
         if kind in {"engineering", "domain", "engineering_vocabulary"}:
-            words = sorted(set(vocabulary or []), key=lambda word: (-len(word.encode()), word))
-            if not words or any(not isinstance(word, str) or not word for word in words):
+            if not isinstance(vocabulary, list) or not vocabulary or any(not isinstance(word, str) or not word for word in vocabulary):
                 raise ValueError("engineering representation requires a nonempty vocabulary")
+            words = sorted(set(vocabulary), key=lambda word: (-len(word.encode()), word))
             return cls("engineering", vocabulary=words)
         if kind not in {"bpe", "byte_bpe"}:
             raise ValueError(f"unsupported representation {kind!r}")
@@ -212,6 +228,30 @@ class ByteTokenizer:
     def decode(self, tokens: list[int]) -> str:
         return b"".join(self.pieces[token] for token in tokens if token != self.eos_id).decode(errors="replace")
 
+    @property
+    def kind(self):
+        return self._kind
+
+    @property
+    def pieces(self):
+        return self._pieces
+
+    @property
+    def eos_id(self):
+        return len(self._pieces)
+
+    @property
+    def vocab_size(self):
+        return self.eos_id + 1
+
+    @property
+    def merges(self):
+        return [list(pair) for pair in self._merges]
+
+    @property
+    def vocabulary(self):
+        return list(self._vocabulary)
+
     def state(self) -> dict:
         return {"kind": self.kind, "merges": self.merges, "vocabulary": self.vocabulary}
 
@@ -220,6 +260,8 @@ def build_model(architecture: dict, vocab_size: int):
     """Construct a causal model without fetching any pretrained assets."""
     import torch
     from torch import nn
+    if not isinstance(architecture.get("family"), str) or architecture.get("family") not in {"transformer", "gru"}:
+        raise ValueError("unsupported checkpoint architecture family")
 
     class CausalLanguageModel(nn.Module):
         def __init__(self):
@@ -250,11 +292,16 @@ def build_model(architecture: dict, vocab_size: int):
     return CausalLanguageModel().float()
 
 
-def load_checkpoint(path: str | Path):
+def load_checkpoint(path: str | Path, *, expected_sha256: str | None = None):
     import torch
-    state = torch.load(path, map_location="cpu", weights_only=True)
+    content = Path(path).read_bytes()
+    if expected_sha256 is not None and hashlib.sha256(content).hexdigest() != expected_sha256:
+        raise ValueError("checkpoint input checksum mismatch")
+    state = torch.load(io.BytesIO(content), map_location="cpu", weights_only=True)
     if state.get("format") != "tinystudio.learning.v1":
         raise ValueError("unsupported learning checkpoint format")
+    from .learning_initialization import validate_architecture
+    validate_architecture(state["architecture"])
     tokenizer = ByteTokenizer(**state["tokenizer"])
     model = build_model(state["architecture"], tokenizer.vocab_size)
     model.load_state_dict(state["model"])
@@ -300,34 +347,41 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
 
     definition = spec["definition"]
     params = dict(definition.get("parameters", {}))
-    if any(key in params for key in {"resume_from", "teacher_checkpoint"}):
-        raise ValueError("checkpoint sources must use immutable input artifact roles")
-    from .compatibility import resolve_role
-    for role, key in (("resume", "resume_from"), ("teacher", "teacher_checkpoint")):
-        binding = resolve_role(spec, role, required=False)
-        if binding:
-            params[key] = binding["path"]
     learning = definition.get("learning") or {}
     from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
     axes = runtime_axes(learning, params, strategies={"adamw", "full", "full_parameter", "full_finetune"},
-        default_strategy="adamw", initializations={"scratch", "from_scratch", "random", "resume"})
+        default_strategy="adamw", initializations={"scratch", "from_scratch", "random", "weights", "resume"})
     initialization = axes["initialization"]
+    from .learning_initialization import checkpoint_binding, inherited_configuration
+    binding, teacher_binding = checkpoint_binding(spec, initialization)
+    saved = None
+    restored_model = restored_tokenizer = None
+    if binding:
+        # Model construction consumes RNG, so keep validation outside the training RNG scope.
+        with torch.random.fork_rng(devices=[]):
+            restored_model, restored_tokenizer, saved = load_checkpoint(binding["path"], expected_sha256=binding["sha256"])
+        inherited_configuration(learning, params, saved["architecture"], restored_tokenizer,
+                                saved.get("tokenizer_configuration"))
     objective = selector(learning.get("objective", "causal_lm"), "objective")
     if objective not in {"causal_lm", "next_token", "cross_entropy", "distillation"}:
         raise ValueError(f"unsupported learning objective {objective!r}")
-    family = selector(learning.get("family", params.get("family", "transformer")), "family")
+    family = selector(learning.get("family", params.get("family", saved["architecture"]["family"] if saved else "transformer")), "family")
     aliases = {"tiny_transformer": "transformer", "decoder_transformer": "transformer", "rnn": "gru"}
     family = aliases.get(family, family)
-    if "family" in learning and "family" in params and aliases.get(params["family"], params["family"]) != family:
+    if "family" in learning and "family" in params and aliases.get(selector(params["family"], "family"), selector(params["family"], "family")) != family:
         raise ValueError("conflicting family axes")
     if family not in {"transformer", "gru"}:
         raise ValueError(f"unsupported scratch language family {family!r}")
     fields = {"hidden_size": (32, 4, 512), "layers": (1, 1, 8), "context": (32, 2, 512)}
     if family == "transformer":
         fields["heads"] = (2, 1, 16)
+    if saved is not None:
+        fields = {name: (saved["architecture"][name], low, high) for name, (_, low, high) in fields.items()}
     architecture = {"family": family, **requested_architecture(learning, params, fields)}
     if family == "transformer" and architecture["hidden_size"] % architecture["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
+    if saved is not None:
+        architecture = dict(saved["architecture"])
     if "batch_size" in params and params["batch_size"] != 1:
         raise ValueError("scratch language backend currently supports batch_size=1 only")
     seed = int(definition.get("seed", 42))
@@ -342,9 +396,14 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
     representation = learning.get("representation", "byte")
     rep_options = representation if isinstance(representation, dict) else {}
     representation = rep_options.get("kind", "byte") if isinstance(representation, dict) else representation
-    tokenizer = ByteTokenizer.fit([texts[index] for index in train_ids], representation,
+    tokenizer = restored_tokenizer or ByteTokenizer.fit([texts[index] for index in train_ids], representation,
         int(rep_options.get("vocab_size", params.get("vocab_size", 320))),
         rep_options.get("vocabulary", params.get("vocabulary")))
+    if saved is not None:
+        tokenizer_configuration = saved.get("tokenizer_configuration") or {"vocab_size": tokenizer.vocab_size}
+    else:
+        tokenizer_configuration = {"vocab_size": int(rep_options.get("vocab_size", params.get("vocab_size", 320)))
+                                   if tokenizer.kind == "bpe" else tokenizer.vocab_size}
     corpus_digest = _digest(documents)
     train = _windows([texts[index] for index in train_ids], tokenizer, architecture["context"])
     validation = _windows([texts[index] for index in val_ids], tokenizer, architecture["context"])
@@ -354,18 +413,26 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
     lr = learning_rate(params, 0.003)
     if not math.isfinite(lr) or not 0 < lr <= 1:
         raise ValueError("learning rate must be finite and between zero and one")
-    resume = params.get("resume_from")
-    if initialization == "resume" and not resume:
-        raise ValueError("resume initialization requires resume_from")
     temperature = float(params.get("temperature", 2.0))
     alpha = float(params.get("distillation_alpha", 0.5))
     if not math.isfinite(temperature) or temperature <= 0 or not 0 <= alpha <= 1:
         raise ValueError("distillation needs positive temperature and alpha in [0, 1]")
-    teacher_path = params.get("teacher_checkpoint")
-    if objective == "distillation" and not teacher_path:
-        raise ValueError("distillation requires a local teacher_checkpoint")
-    teacher_digest = hashlib.sha256(Path(teacher_path).read_bytes()).hexdigest() if objective == "distillation" else None
+    teacher_path = teacher_binding["path"] if teacher_binding else None
+    teacher_digest = teacher_binding["sha256"] if teacher_binding else None
     distillation = {"temperature": temperature, "alpha": alpha}
+    if initialization == "resume":
+        if (saved["corpus_sha256"] != corpus_digest or saved["split"] != {"train": train_ids, "validation": val_ids}
+            or saved["objective"] != objective or saved["learning_rate"] != lr
+            or saved["backend"] != "cpu" or saved["torch_version"] != str(torch.__version__)
+            or saved["teacher_sha256"] != teacher_digest or saved["distillation"] != distillation):
+            raise ValueError("resume checkpoint does not match corpus, split, architecture, tokenizer, objective or learning rate")
+        if steps <= saved["step"]:
+            raise ValueError("resume target steps must exceed checkpoint step")
+    lineage = (saved.get("lineage") or {"initialization": "scratch", "parent_checkpoint_sha256": None}) if initialization == "resume" else {
+        "initialization": initialization, "parent_checkpoint_sha256": binding["sha256"] if binding else None}
+    for source in (binding, teacher_binding):
+        if source and Path(source["path"]).resolve() == (output_dir / "checkpoint.pt").resolve():
+            raise ValueError("output checkpoint must not overwrite an immutable input artifact")
     output_dir.mkdir(parents=True, exist_ok=True)
     previous_threads = torch.get_num_threads()
     # fork_rng restores the shared worker's RNG state after this local experiment.
@@ -373,31 +440,21 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
         torch.manual_seed(seed)
         torch.set_num_threads(1)
         try:
-            model = build_model(architecture, tokenizer.vocab_size)
+            model = restored_model if restored_model is not None else build_model(architecture, tokenizer.vocab_size)
+            restored_model = None
             optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
             generator = torch.Generator().manual_seed(seed + 1)
             start = 0
-            if resume:
-                model, restored_tokenizer, saved = load_checkpoint(resume)
-                if (saved["architecture"] != architecture or saved["tokenizer"] != tokenizer.state()
-                    or saved["corpus_sha256"] != corpus_digest or saved["split"] != {"train": train_ids, "validation": val_ids}
-                    or saved["objective"] != objective or saved["learning_rate"] != lr
-                    or saved["backend"] != "cpu" or saved["torch_version"] != str(torch.__version__)
-                    or saved["teacher_sha256"] != teacher_digest or saved["distillation"] != distillation):
-                    raise ValueError("resume checkpoint does not match corpus, split, architecture, tokenizer, objective or learning rate")
-                tokenizer = restored_tokenizer
-                optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+            if initialization == "resume":
                 optimizer.load_state_dict(saved["optimizer"])
                 generator.set_state(saved["sampler_rng"])
                 torch.set_rng_state(saved["torch_rng"])
                 start = saved["step"]
-                if steps <= start:
-                    raise ValueError("resume target steps must exceed checkpoint step")
             initial = {key: value.detach().clone() for key, value in model.state_dict().items()}
             teacher = None
             if objective == "distillation":
                 training_rng = torch.get_rng_state()
-                teacher, teacher_tokenizer, teacher_state = load_checkpoint(teacher_path)
+                teacher, teacher_tokenizer, teacher_state = load_checkpoint(teacher_path, expected_sha256=teacher_digest)
                 torch.set_rng_state(training_rng)
                 if teacher_tokenizer.state() != tokenizer.state() or teacher_state["architecture"]["context"] < architecture["context"]:
                     raise ValueError("teacher and student must share tokenizer and compatible context")
@@ -445,6 +502,10 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
             changed = any(not torch.equal(initial[key], value) for key, value in model.state_dict().items())
             state = {"format": "tinystudio.learning.v1", "backend": "cpu", "torch_version": str(torch.__version__),
                      "architecture": architecture, "tokenizer": tokenizer.state(), "model": model.state_dict(),
+                     "tokenizer_configuration": tokenizer_configuration, "lineage": lineage,
+                     "initialization": initialization, "parent_checkpoint_sha256": lineage["parent_checkpoint_sha256"],
+                     "optimizer_state_restored": initialization == "resume",
+                     "initialization_checkpoint_sha256": binding["sha256"] if binding else None,
                      "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
                      "sampler_rng": generator.get_state(), "seed": seed, "step": completed,
                      "corpus_sha256": corpus_digest, "split": {"train": train_ids, "validation": val_ids},
@@ -475,7 +536,11 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                     "artifacts": [artifact(checkpoint, "checkpoint", "application/octet-stream"),
                                   artifact(manifest, "training_manifest"), artifact(sample_path, "generation")],
                     "qualification": {"status": "cancelled" if completed < steps else "completed",
-                        "backend": "cpu", "dtype": "float32", "from_scratch": True, "parameters_changed": changed,
+                        "backend": "cpu", "dtype": "float32", "from_scratch": initialization in {"scratch", "from_scratch", "random"},
+                        "initialization": initialization, "lineage": lineage,
+                        "parent_checkpoint_sha256": lineage["parent_checkpoint_sha256"],
+                        "initialization_checkpoint_sha256": binding["sha256"] if binding else None,
+                        "optimizer_state_restored": initialization == "resume", "parameters_changed": changed,
                         "save_unload_reload": reload_equal, "held_out_validation": True,
                         "partition_strategy": partitions["strategy"], "group_isolation": partitions["group_isolation"],
                         "final_test_excluded_from_training_and_validation": True,

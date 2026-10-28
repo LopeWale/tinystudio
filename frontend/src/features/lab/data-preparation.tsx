@@ -43,7 +43,7 @@ const codecKinds = [
 type Validity = (key: string, valid: boolean) => void;
 
 /** Preserve incomplete edits locally while explicitly blocking definition actions. */
-function DraftField({
+export function DraftField({
   label,
   value,
   onChange,

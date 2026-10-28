@@ -67,6 +67,9 @@ export const artifactRoles = [
   "pretrained_model",
   "embedding_model",
   "resume",
+  "initial_weights",
+  "teacher",
+  "validation",
   "demonstrations",
   "examples",
   "candidate",
@@ -95,6 +98,7 @@ export interface LabInput {
   sha256: string;
   size: number;
   media_type: string;
+  origin?: { run_id: string; revision: number; definition_name: string };
 }
 export function InputArtifacts({
   definition,
@@ -132,6 +136,7 @@ export function InputArtifacts({
         sha256: binding.sha256,
         size: null,
         media_type: "Retained input",
+        origin: undefined,
       })),
   ];
   const latest = useRef({ chosen, onChange, role, visibility });
@@ -277,6 +282,12 @@ export function InputArtifacts({
                   : `${row.size.toLocaleString()} bytes`}{" "}
                 · {row.media_type}
               </small>
+              {row.origin && (
+                <small className="break-words">
+                  {row.origin.definition_name} · r{row.origin.revision} ·{" "}
+                  {row.origin.run_id}
+                </small>
+              )}
               <details className="lab-input-checksum">
                 <summary>Checksum</summary>
                 <code>{row.sha256}</code>
@@ -343,6 +354,7 @@ export function InputArtifacts({
               </div>
             )}
             <Button
+              aria-label={`${chosen.some((item) => item.artifact_id === row.id) ? "Detach" : "Attach"} ${row.name}${row.origin ? ` from ${row.origin.definition_name} revision ${row.origin.revision} run ${row.origin.run_id}` : ""}`}
               aria-pressed={chosen.some((item) => item.artifact_id === row.id)}
               onClick={() =>
                 chosen.some((item) => item.artifact_id === row.id)

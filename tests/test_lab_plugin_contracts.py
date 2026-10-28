@@ -124,6 +124,20 @@ def test_pretrained_binding_declarations_agree_with_the_existing_resolver(tmp_pa
             resolve_role(spec, "snapshot")
 
 
+def test_language_initialization_and_teacher_ports_remain_distinct():
+    from tinystudio.lab.plugins import input_contracts
+
+    ports = {port.role: port for port in input_contracts("learning.language") if port.role}
+    assert ports["resume"].required_when == "initialization=resume"
+    assert ports["initial_weights"].required_when == "initialization=weights"
+    assert ports["teacher"].required_when == "objective=distillation"
+    for role in ("resume", "initial_weights", "teacher"):
+        assert ports[role].max_items == 1
+        assert ports[role].binding == "immutable_artifact"
+        assert ports[role].visibility == ["model"]
+    assert ports["validation"].visibility == ["evaluation"]
+
+
 @pytest.mark.parametrize("first", ["tinystudio.db.models", "tinystudio.lab.models"])
 def test_fresh_import_orders_register_all_laboratory_tables(first):
     import subprocess

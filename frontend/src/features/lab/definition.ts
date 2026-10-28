@@ -149,6 +149,33 @@ export const templates: Template[] = [
       update_strategy: "adamw",
       architecture: { hidden_size: 32, layers: 1, heads: 2, context: 32 },
     },
+    inputs: [
+      input(
+        "source",
+        "Text or message records; optional when the corpus is authored inline",
+        false,
+      ),
+      input(
+        "validation",
+        "Held-out validation records; evaluation-only and excluded from updates",
+        false,
+      ),
+      input(
+        "initial_weights",
+        "Saved language checkpoint; inherit weights and tokenizer with a fresh optimizer",
+        false,
+      ),
+      input(
+        "resume",
+        "Exact continuation checkpoint; identical corpus, split and configuration",
+        false,
+      ),
+      input(
+        "teacher",
+        "Frozen teacher checkpoint with a compatible tokenizer and context",
+        false,
+      ),
+    ],
   },
   {
     id: "learning.pretrained",
@@ -521,10 +548,21 @@ export function inputExpectations(
   definition: ExperimentDefinition,
 ): InputExpectation[] {
   const rows = templates.find((t) => t.id === definition.engine)?.inputs ?? [];
+  const selected = (value: unknown) =>
+    value && typeof value === "object" && "kind" in value
+      ? String(value.kind)
+      : String(value ?? "");
   return rows.map((row) => ({
     ...row,
     required:
       row.required ||
+      (definition.engine === "learning.language" &&
+        ((selected(definition.learning?.initialization) === "weights" &&
+          row.role === "initial_weights") ||
+          (selected(definition.learning?.initialization) === "resume" &&
+            row.role === "resume") ||
+          (selected(definition.learning?.objective) === "distillation" &&
+            row.role === "teacher"))) ||
       (definition.engine === "retrieval.index" &&
         ["semantic", "hybrid"].includes(String(definition.parameters.mode)) &&
         row.role === "embedding_model") ||
@@ -546,6 +584,7 @@ export function defaultVisibility(
           "baseline",
           "provenance",
           "evaluation",
+          "validation",
         ].includes(role)
       ? "evaluation"
       : "model";

@@ -1,9 +1,41 @@
+import pytest
+
 from tinystudio.lab.contracts import ExperimentDefinition
 from tinystudio.lab.preflight import execution_checks
 
 
 def body(**changes):
     return ExperimentDefinition(name="fixture", engine="synthetic.signal", execution={"profile": "trusted_native"}, **changes)
+
+
+@pytest.mark.parametrize("initialization,roles,passed", [
+    ("scratch", [], True),
+    ("weights", ["initial_weights"], True),
+    ("resume", ["resume"], True),
+    ("weights", [], False),
+    ("scratch", ["resume"], False),
+    ("resume", ["resume", "initial_weights"], False),
+    ("weights", ["initial_weights", "initial_weights"], False),
+    ("unknown", [], False),
+])
+def test_initialization_preflight_checks_the_selected_binding_contract(initialization, roles, passed):
+    definition = ExperimentDefinition(name="language", engine="learning.language", execution={"profile": "trusted_native"},
+        learning={"initialization": initialization},
+        inputs=[{"artifact_id": f"input-{i}", "role": role, "sha256": "a" * 64} for i, role in enumerate(roles)])
+    caps = {"engines": ["learning.language"], "runtime": {"python": "3.12"}}
+    checks = {item["code"]: item for item in execution_checks(definition, caps)}
+    assert checks["model_initialization"]["passed"] is passed
+    if passed:
+        assert "verified at execution" in checks["model_initialization"]["message"]
+
+
+def test_initialization_preflight_never_treats_evaluator_only_weights_as_trainable():
+    definition = ExperimentDefinition(name="language", engine="learning.language", execution={"profile": "trusted_native"},
+        learning={"initialization": "weights"},
+        inputs=[{"artifact_id": "parent", "role": "initial_weights", "sha256": "a" * 64, "visibility": "evaluation"}])
+    checks = {item["code"]: item for item in execution_checks(definition, {})}
+    assert checks["model_initialization"]["passed"] is False
+    assert "model-visible" in checks["model_initialization"]["message"]
 
 
 def test_engine_available_elsewhere_does_not_authorize_selected_backend():

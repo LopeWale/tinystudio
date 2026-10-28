@@ -7,7 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import {
   StudioContext,
   useResource,
@@ -439,6 +439,15 @@ describe("stacked modal ownership", () => {
 });
 
 describe("confirmation lifecycle", () => {
+  let previousProject: string | null;
+  beforeEach(() => {
+    previousProject = localStorage.getItem("tinystudio.project");
+    localStorage.setItem("tinystudio.project", "a");
+  });
+  afterEach(() => {
+    if (previousProject === null) localStorage.removeItem("tinystudio.project");
+    else localStorage.setItem("tinystudio.project", previousProject);
+  });
   it.each(["navigation", "project", "account", "unmount"])(
     "settles a pending confirmation false on %s",
     async (reason) => {
@@ -471,6 +480,7 @@ describe("confirmation lifecycle", () => {
         const studio = useStudio();
         return (
           <>
+            <output data-testid="confirmation-project">{studio.project}</output>
             <button
               onClick={() =>
                 void studio.confirm("Delete fixture?").then(resolve)
@@ -501,11 +511,16 @@ describe("confirmation lifecycle", () => {
           </StudioProvider>
         </MemoryRouter>,
       );
-      await screen.findByText("Ask");
+      await waitFor(() =>
+        expect(screen.getByTestId("confirmation-project")).toHaveTextContent(
+          /^a$/,
+        ),
+      );
       fireEvent.click(screen.getByText("Ask"));
       expect(screen.getByRole("alertdialog")).toHaveTextContent(
         "Delete fixture?",
       );
+      expect(resolve).not.toHaveBeenCalled();
       if (reason === "unmount") view.unmount();
       else fireEvent.click(screen.getByText("Change context"));
       await waitFor(() =>

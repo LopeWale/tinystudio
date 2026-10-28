@@ -311,6 +311,51 @@ Chat export accepts explicit authored messages for unchanged observations. A tra
 
 Every transformed record exposes `observation_sha256`, binding its retained source, scientific values, timestamps, units, masks and dependencies. `parameters.annotations` maps `record_id` and that checksum to explicit `labels` and/or `messages`, with a `label_source` declaring `kind`, `actor` and evidence `reference`. A changed observation, missing record, duplicate annotation or missing source is rejected. Label kinds are human, simulator assertion, solver, reviewed teacher or imported; these are authored provenance claims, not independent proof that a target is correct. Optional target availability is retained separately from observation input. These mappings are versioned with the definition and recorded in the manifest. Software qualification uses disposable fixtures; users select and run their own research studies.
 
+## Language initialization
+
+`learning.language` separates three operations. Scratch initialization constructs a
+Transformer or GRU and fits a byte, byte-BPE or engineering-vocabulary tokenizer
+using training records only. `learning.initialization: "weights"` requires one
+model-visible `initial_weights` artifact: it inherits the saved architecture,
+weights and tokenizer, creates a fresh optimizer and seeded sampler, and permits
+a new corpus and split. `learning.initialization: "resume"` requires one `resume`
+artifact and restores optimizer and RNG state for the identical corpus, split,
+objective, learning rate, CPU backend and PyTorch version. Resume after a weights
+restart retains the original weight-parent identity and separately records the
+immediate continuation checkpoint checksum.
+
+Checkpoint modes restore the tokenizer before constructing sequence windows;
+they never refit its merges on a replacement corpus. Explicit architecture and
+representation settings must agree with the inherited checkpoint. Family,
+tokenizer kind, merge references and vocabulary are validated before model
+construction. Existing v1 checkpoints remain loadable; new provenance fields
+are additive. A `teacher` artifact is separate and required only for
+distillation. Checkpoint paths cannot be supplied in portable parameters.
+
+Conflicting or unused checkpoint bindings fail. In particular, an older edited
+definition declaring `scratch` while supplying a `resume` artifact must explicitly
+select `resume` before a new submission; it no longer silently resumes. The
+compatibility check validates declared mode/role consistency without opening
+checkpoint files. Actual content, architecture and tokenizer compatibility are
+checked by the executor. Reports distinguish fresh versus restored optimizer
+state and actual initialization; successful weight restart is not reported as
+training from random weights.
+
+The actual Laboratory language editor uses the shared settings sections, form
+controls and validated structured drafts. Invalid local drafts gate save,
+compatibility and submission. Switching to GRU with retained Transformer heads,
+or switching representations with retained vocabulary settings, requires an
+explicit conflict resolution. Advanced fields and immutable bindings remain in
+the same versioned definition used by the code view.
+
+Omitted model dimensions in checkpoint modes are displayed as inherited rather
+than filled with scratch defaults. Only explicit dimensions participate in
+cross-field checks before checkpoint resolution. Retained inputs identify their
+frozen originating definition, revision and run, so same-named checkpoints can
+be distinguished before attaching them; later definition edits do not relabel
+their origin. Evaluation visibility restrictions apply to inline text/message
+documents and imported records alike.
+
 ## Qualification boundaries
 
 A/B source, PostgreSQL/RQ, legacy regression, package and authenticated workflow evidence are recorded separately in the changelog. B is accepted for native macOS and an independently installed Linux ARM runner inside Docker Desktop's [Linux VM](https://docs.docker.com/desktop/features/networking/), sharing the physical Mac with the native Darwin origin. Execution uses public Cloudflare HTTPS, scoped target and origin-bound Access credentials, frozen source/runtime receipts and API-only artifact transfer. The runner receives its scoped credential rather than a host checkout, Docker socket or store credentials. Independent source and acceptance reviews inspected the implementation, tests and documented boundaries; execution receipts were parent-supplied. Separate-computer restore/resume belongs to G; E's execution-isolation qualification remains open.
