@@ -1,3 +1,10 @@
+## 2026-10-29 — Experiment dialog scroll and focus qualification
+
+- Finished actual-app verification of the contextual experiment editor on the existing local server at `127.0.0.1:58543`. Closing during a delayed compatibility request returns focus to Laboratory; its eventual response neither reopens the dialog nor steals focus. The qualification draft was preserved before reloading the compiled release.
+- Corrected flex height containment after browser measurements exposed an outer hidden wrapper scrolling independently of the content pane. At 1280×720 and 390×844, long compatibility output now scrolls only inside the pane, keeps the header/actions visible, and returns the first section and scroll fade to their initial state. Measured zero horizontal overflow; temporary viewport and network overrides were cleared.
+- The full source checkpoint passed 804 frontend tests in 78 files with one worker and unchanged time limits. The final four-line CSS correction passed TypeScript/production build and the browser checks above. The intermittent five-second language-workflow timeout under the default concurrent suite remains unresolved. The served frontend checksum matches the compiled release; this is local authoring qualification, with no hosted release, full Runs-layout acceptance or D acceptance claimed.
+- Independent final source/advisor review returned **PASS** for this bounded correction. Full Runs-layout and expansion acceptance remain separate gates.
+
 ## 2026-10-28 — Contextual Laboratory experiment authoring
 
 - Laboratory opens on Runs. New/Open/Resume/Edit experiment actions use the existing shared modal, AffectUI controls, BoardUI fields and grouped settings sections. Removed the Experiment work-area tab. Authoring section navigation and save/check/run actions stay visible around one bounded scrolling content pane; desktop fields reuse the wider application grid, with phone/tablet reflow.

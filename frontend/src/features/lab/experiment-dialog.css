@@ -20,6 +20,8 @@
   align-items: center;
 }
 .lab-experiment-scroll-wrap {
+  display: flex;
+  flex-direction: column;
   position: relative;
   min-block-size: 0;
   flex: 1 1 auto;
@@ -29,6 +31,8 @@
   background: var(--color-background-secondary-default);
 }
 .lab-experiment-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   max-block-size: 58dvh;
