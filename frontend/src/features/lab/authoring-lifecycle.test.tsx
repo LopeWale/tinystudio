@@ -52,11 +52,15 @@ function fixture() {
   return { api, studio };
 }
 function mount(studio: StudioRuntime) {
-  return render(
+  const view = render(
     <StudioContext.Provider value={studio}>
       <LabPage />
     </StudioContext.Provider>,
   );
+  fireEvent.click(
+    screen.getByRole("button", { name: /Open experiment|Resume draft/ }),
+  );
+  return view;
 }
 afterEach(() => {
   cleanup();
@@ -167,6 +171,7 @@ it("retains the imported-definition recovery action while operation inventory re
   });
   mount(studio);
   const user = userEvent.setup();
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
   fireEvent.click(screen.getByRole("tab", { name: "History" }));
   await user.click(

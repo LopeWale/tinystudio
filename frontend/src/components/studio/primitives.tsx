@@ -13,6 +13,7 @@ import {
   type ButtonHTMLAttributes,
   type ElementType,
   type Ref,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { UNSAFE_PortalProvider } from "react-aria/PortalProvider";
@@ -186,6 +187,8 @@ export function Modal({
   onClose,
   footer,
   wide,
+  keepMounted = false,
+  fallbackFocusRef,
   children,
   className,
 }: Box & {
@@ -194,6 +197,8 @@ export function Modal({
   onClose: () => void;
   footer?: ReactNode;
   wide?: boolean;
+  keepMounted?: boolean;
+  fallbackFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const parentId = useContext(ModalParentContext),
     dialog = useRef<HTMLDivElement>(null),
@@ -203,21 +208,33 @@ export function Modal({
   const id = useId();
   useEffect(() => {
     if (!open || !dialog.current || !backdrop.current) return;
+    // A sibling modal may have snapshotted this retained portal while closed.
+    // Restore its active state after that modal releases its background lease.
+    if (keepMounted) {
+      backdrop.current.inert = false;
+      backdrop.current.removeAttribute("inert");
+      backdrop.current.removeAttribute("aria-hidden");
+    }
     return modalStack(dialog.current.ownerDocument).register({
       id,
       parentId,
       dialog: dialog.current,
       backdrop: backdrop.current,
       close: () => close.current(),
+      fallbackFocus: fallbackFocusRef?.current,
     });
-  }, [open, id, parentId]);
-  if (!open) return null;
+  }, [open, id, parentId, keepMounted, fallbackFocusRef]);
+  if (!open && !keepMounted) return null;
   return createPortal(
     <ModalParentContext.Provider value={id}>
       <UNSAFE_PortalProvider getContainer={() => dialog.current}>
         <div
           ref={backdrop}
           className="modal-overlay"
+          hidden={!open}
+          inert={!open}
+          aria-hidden={!open || undefined}
+          style={!open ? { display: "none" } : undefined}
           onMouseDown={(event) => {
             if (
               event.target === event.currentTarget &&

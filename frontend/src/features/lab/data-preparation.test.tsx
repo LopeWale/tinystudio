@@ -340,6 +340,9 @@ it("wires invalid data edits into the actual Lab Save, preflight and run control
     </StudioContext.Provider>,
   );
   await userEvent.click(
+    screen.getByRole("button", { name: "Open experiment" }),
+  );
+  await userEvent.click(
     await screen.findByRole("button", { name: /Saved experiment/ }),
   );
   await userEvent.click(
@@ -350,6 +353,14 @@ it("wires invalid data edits into the actual Lab Save, preflight and run control
   ).toBeEnabled();
   await open("Ordered transformations");
   edit("Stage 1 factor", "-");
+  const invalidFactor = screen.getByLabelText("Stage 1 factor");
+  await userEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Edit experiment" }),
+  );
+  expect(screen.getByLabelText("Stage 1 factor")).toBe(invalidFactor);
+  expect(invalidFactor).toHaveValue("-");
   for (const name of [
     "Save revision",
     "Check compatibility",

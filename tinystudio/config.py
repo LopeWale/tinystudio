@@ -88,7 +88,8 @@ def _load() -> Config:
         namespace = hashlib.sha256(f"{_env('R2_ENDPOINT_URL')}/{_env('R2_BUCKET_NAME')}".encode()).hexdigest()[:20]
         # No durable state is rooted in a user's home directory in R2 mode.
         # This stable, host-local workspace can be discarded and reconstructed.
-        scratch = Path(tempfile.gettempdir()) / f"tinystudio-{os.getuid()}" / namespace
+        user_namespace = os.getuid() if hasattr(os, "getuid") else "user"
+        scratch = Path(tempfile.gettempdir()) / f"tinystudio-{user_namespace}" / namespace
         data_dir = Path(_env("TINYSTUDIO_CACHE_DIR") or scratch).expanduser().resolve()
     else:
         data_dir = Path(_env("TINYSTUDIO_DATA_DIR") or Path.home() / ".tinystudio" / "data").expanduser().resolve()

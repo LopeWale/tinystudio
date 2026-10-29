@@ -4,6 +4,14 @@ TinyStudio can use private R2 storage and Cloudflare Access while its API, worke
 
 Set `TINYSTUDIO_STORAGE_BACKEND=r2`, `R2_ENDPOINT_URL`, `R2_BUCKET_NAME`, `R2_REGION=auto`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in a private `.env`. The bucket credential needs Object Read & Write on this bucket only. With `local` (the default), existing database snapshots and local model artifacts keep working.
 
+In R2 mode the bucket owns durable file artifacts. `TINYSTUDIO_DATA_DIR` is ignored;
+`TINYSTUDIO_CACHE_DIR` optionally selects a disposable runtime workspace, otherwise
+TinyStudio uses a bucket-namespaced directory in OS temporary storage. Model
+loaders, extraction and frontend serving use reconstructed local files, with no
+shared filesystem requirement between the API and workers. Each host connects
+to the same PostgreSQL, Redis and Qdrant services and the same private bucket.
+The config response reports the artifact backend/bucket separately from its cache.
+
 Set `TINYSTUDIO_PUBLIC_URL=https://tinystudio.joatlabs.dev`, `CF_ACCESS_TEAM_DOMAIN=joatlabsholding.cloudflareaccess.com`, `CF_ACCESS_AUD`, and `TINYSTUDIO_CF_ACCESS_REQUIRED=1`. FastAPI independently verifies Access JWT signatures, issuer, audience, expiry, and application-token type. Missing and invalid assertions fail closed, including on loopback; only the constant `/healthz` liveness response is exempt. `/api/health` remains protected. Internal assistant requests forward the verified assertion together with the user's short-lived app credential.
 
 Verified human emails map to existing enabled TinyStudio accounts and retain their roles. Access does not create administrators. The approved `tinystudio@joatlabs.dev` account has the member role. Machine service authentication still requires a TinyStudio API key. The application's existing keys inherit their user's permissions; they do not provide per-project permission scopes.
@@ -51,9 +59,18 @@ print(studio.call('GET', '/api/datasets'))
 
 - `snapshots/PROJECT_ID/SNAPSHOT_ID/`: Parquet shards containing ordered JSON rows, plus a checksum manifest. A nullable database marker distinguishes these from legacy SQL-only snapshots. Remote snapshot failures do not silently fall back to SQL.
 - `models/PROJECT_ID/EXPERIMENT_ID/`: immutable step-specific checkpoints and final weights, published before success is reported. Inference and refinetuning hydrate and verify missing local files. Weight downloads redirect to a signed R2 URL.
-- `captures/PROJECT_ID/`: activation captures and comparisons. The existing bucket lifecycle expires this prefix after 30 days. Readers check remote availability before using a cache and report expired captures as unavailable.
+- `retained-captures/PROJECT_ID/`: new activation captures, comparisons, explanations and tests. This avoids the historical 30-day expiration policy on `captures/`. Stored prefixes remain readable; expired legacy captures are unavailable. Concurrent mutations across hosts are serialized using PostgreSQL advisory locks, including publication and metadata registration.
+- `sources/PROJECT_ID/SHA256/FILENAME`: original JSONL dataset uploads and synthetic/repository source files, verified before task admission. Workers receive project-scoped object references and materialize verified temporary copies; API-host paths are never passed to remote workers. Dataset origins and task arguments retain the references. `GET /api/p/SLUG/artifacts/sources/SHA256/FILENAME` retrieves an original file.
+- `tasks/TASK_ID/`: full task logs as immutable checksummed chunks and a last-published head manifest. Any API host can read full logs (`tail=0`) or a suffix; successful task completion requires final log publication. Progress publishes on initial/final flush, full 64-KiB chunks and a new event after two seconds. A hard process kill can lose the unpublished progress buffer; the durable head remains valid. Duplicate delivery cannot claim an already-running task.
 - `uploads/PROJECT_ID/`: short-lived staging uploads. Successful dataset imports remove their staged object. Failed or abandoned uploads may need operator cleanup.
 
-Objects remain private; no public R2 custom domain is needed. Browser CORS permits the public origin and the configured localhost development origins. Checkpoint history uses step-numbered keys, not bucket versioning. Existing artifacts are not bulk migrated; newly produced artifacts use the selected backend.
+Objects remain private; no public R2 custom domain is needed. Browser CORS permits the public origin and the configured localhost development origins. Checkpoint history uses step-numbered keys, not bucket versioning. New experiments persist portable locations, retain their refinement base independently of an ancestor, and publish merged exports and available failure diagnostics. Imported experiment metadata commits only after publication. No migration of historical implementation/mock files is performed. Records lacking a remote publication report unavailable rather than silently using a host-local copy.
+
+Hugging Face downloads and frontend release copies are reconstructible caches.
+PostgreSQL owns application rows; Redis owns the queue; Qdrant owns retrieval
+indexes. These services must be reachable from every participating host. R2
+storage does not change their connection settings or the host running the API.
+Bucket lifecycle settings must retain the durable prefixes above; object-only
+credentials cannot inspect or change bucket-wide lifecycle rules.
 
 Source contracts: [Access JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/), [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), [R2 lifecycle](https://developers.cloudflare.com/r2/buckets/object-lifecycles/).

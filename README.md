@@ -529,7 +529,7 @@ PostgreSQL holds the rows (see `tinystudio/db/models.py`; datapoints are hash-pa
 `traces`, `repositories`, `documents`, `interp_captures`, `autopilot_runs`,
 `tasks`. Qdrant holds one collection per repository (`ts_<repository id>`)
 with chunk text, document id, and position as payload. The data directory
-(`TINYSTUDIO_DATA_DIR`, the `data` volume in compose) holds:
+(`TINYSTUDIO_DATA_DIR`, the `data` volume in compose) in local storage mode holds:
 
 ```
 projects/<project id>/experiments/<job id>/<n>/   config.json, loss.jsonl, checkpoints.jsonl, adapter/ | model/, merged/, checkpoints/checkpoint-<step>/
@@ -537,8 +537,16 @@ projects/<project id>/interp/captures/<name>/     meta.json, tokens.json, layer-
 projects/<project id>/interp/diffs/<name>/        meta.json, tokens.json, layer-<L>.npz
 uploads/                                          files uploaded through the web interface, read by workers
 tasks/<task id>.log                               full task logs (the row keeps the tail)
-hub/                                              the Hugging Face cache when HF_HOME points here (compose does)
+hub/                                              the Hugging Face cache if HF_HOME explicitly points here
 ```
+
+With `TINYSTUDIO_STORAGE_BACKEND=r2`, durable files live in the private bucket,
+including original input files, experiment artifacts, captures and full task
+logs. `TINYSTUDIO_DATA_DIR` is ignored. Each host materializes verified working
+copies into `TINYSTUDIO_CACHE_DIR` (default: a namespaced OS temporary directory),
+which can be discarded. API and worker hosts share the database/queue/vector
+endpoints and R2 credentials, without a shared data volume. See
+[Cloudflare storage and recovery](docs/cloudflare.md#storage-layout-and-recovery).
 
 ## Tests
 

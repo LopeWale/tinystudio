@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -345,9 +346,13 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
       <LabPage />
     </StudioContext.Provider>,
   );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Open experiment" }),
+  );
+  const editor = within(screen.getByRole("dialog"));
   await select("Saved experiment", "Language revision · r1");
   expect(
-    screen.getByRole("button", { name: "Run saved revision" }),
+    editor.getByRole("button", { name: "Run saved revision" }),
   ).toBeEnabled();
   edit("Hidden size", "-");
   for (const name of [
@@ -355,20 +360,20 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
     "Check compatibility",
     "Run saved revision",
   ])
-    expect(screen.getByRole("button", { name })).toBeDisabled();
+    expect(editor.getByRole("button", { name })).toBeDisabled();
   // A draft gate belongs only to its active engine. Switching through shared
   // JSON must release the language editor gate for another engine.
   const portable = JSON.parse(
-    (screen.getByLabelText("Experiment definition JSON") as HTMLTextAreaElement)
+    (editor.getByLabelText("Experiment definition JSON") as HTMLTextAreaElement)
       .value,
   );
   edit(
     "Experiment definition JSON",
     JSON.stringify({ ...portable, engine: "synthetic.signal" }),
   );
-  expect(screen.getByRole("button", { name: "Save revision" })).toBeEnabled();
+  expect(editor.getByRole("button", { name: "Save revision" })).toBeEnabled();
   expect(
-    screen.getByRole("button", { name: "Check compatibility" }),
+    editor.getByRole("button", { name: "Check compatibility" }),
   ).toBeEnabled();
   edit("Experiment definition JSON", JSON.stringify(portable));
   edit("Hidden size", "64");
@@ -381,7 +386,7 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
   );
   edit("Generation prompt", "A measured");
   const authored = JSON.parse(
-    (screen.getByLabelText("Experiment definition JSON") as HTMLTextAreaElement)
+    (editor.getByLabelText("Experiment definition JSON") as HTMLTextAreaElement)
       .value,
   );
   expect(authored).toMatchObject({
@@ -400,30 +405,30 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
     },
     learning: { architecture: { hidden_size: 64 }, device: "cpu" },
   });
-  await userEvent.click(screen.getByRole("button", { name: "Save revision" }));
+  await userEvent.click(editor.getByRole("button", { name: "Save revision" }));
   await waitFor(() => expect(api.put).toHaveBeenCalled());
   expect(api.put.mock.calls[0][1]).toEqual({
     expected_revision: 1,
     definition: authored,
   });
-  await userEvent.click(screen.getByRole("button", { name: "New experiment" }));
+  await userEvent.click(editor.getByRole("button", { name: "New experiment" }));
   await select("Saved experiment", "Language revision · r2");
-  expect(screen.getByLabelText("Hidden size")).toHaveValue("64");
+  expect(editor.getByLabelText("Hidden size")).toHaveValue("64");
   expect(
     JSON.parse(
       (
-        screen.getByLabelText(
+        editor.getByLabelText(
           "Experiment definition JSON",
         ) as HTMLTextAreaElement
       ).value,
     ),
   ).toEqual(authored);
   await userEvent.click(
-    screen.getByRole("button", { name: "Check compatibility" }),
+    editor.getByRole("button", { name: "Check compatibility" }),
   );
   await waitFor(() => expect(api.post).toHaveBeenCalled());
   await userEvent.click(
-    screen.getByRole("button", { name: "Run saved revision" }),
+    editor.getByRole("button", { name: "Run saved revision" }),
   );
   await waitFor(() =>
     expect(

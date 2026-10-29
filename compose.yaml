@@ -20,12 +20,13 @@ x-app: &app
     TINYSTUDIO_QDRANT_URL: http://qdrant:${QDRANT_PORT:-6333}
     TINYSTUDIO_QDRANT_API_KEY: ${QDRANT_API_KEY:-}
     TINYSTUDIO_DATA_DIR: /data
+    TINYSTUDIO_CACHE_DIR: /tmp/tinystudio-cache
     TINYSTUDIO_HOST: 0.0.0.0
     TINYSTUDIO_PORT: ${TINYSTUDIO_PORT:-8000}
     TINYSTUDIO_INFERENCE_HOST: 0.0.0.0
     TINYSTUDIO_INFERENCE_PORT: ${TINYSTUDIO_INFERENCE_PORT:-8001}
     TINYSTUDIO_INFERENCE_URL: http://inference:${TINYSTUDIO_INFERENCE_PORT:-8001}
-    HF_HOME: /data/hub
+    HF_HOME: /tmp/tinystudio-hub
     # These belong only to the connector and external machine clients.
     TUNNEL_TOKEN: ""
     CF_ACCESS_CLIENT_ID: ""

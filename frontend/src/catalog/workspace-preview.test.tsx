@@ -220,7 +220,9 @@ describe("actual shell in the local illustrative preview", () => {
     const records = await screen.findByRole("table", {
       name: "Dataset records",
     });
-    expect(records.textContent).toContain("The customer cannot sign in");
+    await waitFor(() =>
+      expect(records.textContent).toContain("The customer cannot sign in"),
+    );
     expect(window.location.hash).toBe("#/__preview");
     fireEvent.click(screen.getByRole("link", { name: "Download" }));
     expect(await screen.findByText(previewRefusal)).toBeTruthy();

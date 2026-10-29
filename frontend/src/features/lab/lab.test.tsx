@@ -102,13 +102,32 @@ function runFixture(state: string) {
   return { ...data, run };
 }
 function mount(studio: any) {
-  return render(
+  const view = render(
     <StudioContext.Provider value={studio}>
       <LabPage />
     </StudioContext.Provider>,
   );
+  fireEvent.click(
+    screen.getByRole("button", { name: /Open experiment|Resume draft/ }),
+  );
+  return view;
+}
+function closeAuthoring() {
+  if (
+    screen.queryByRole("dialog", { name: /^(New experiment|Edit experiment)/ })
+  )
+    fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+}
+function resumeAuthoring() {
+  if (!screen.queryByRole("dialog"))
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /^(Open experiment|Resume draft|Edit experiment)$/,
+      }),
+    );
 }
 async function findRunByName(name: string) {
+  closeAuthoring();
   fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
   const selector = await screen.findByRole("button", { name: /Retained run/ });
   await waitFor(() => expect(selector).toBeEnabled());
@@ -131,6 +150,7 @@ describe("laboratory authoring and execution", () => {
     fireEvent.change(screen.getByLabelText("Experiment name"), {
       target: { value: "Retained draft" },
     });
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     expect(
       screen.getByRole("dialog", { name: "Import / export" }),
@@ -157,6 +177,7 @@ describe("laboratory authoring and execution", () => {
         expect.any(AbortSignal),
       ),
     );
+    closeAuthoring();
     fireEvent.click(screen.getByRole("tab", { name: "Capabilities" }));
     expect(
       screen.getByRole("table", { name: "Engine capabilities" }),
@@ -165,7 +186,7 @@ describe("laboratory authoring and execution", () => {
     expect(
       screen.queryByRole("button", { name: /Retained run/ }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+    resumeAuthoring();
     expect(screen.getByLabelText("Experiment name")).toHaveValue(
       "Retained draft",
     );
@@ -259,7 +280,8 @@ describe("laboratory authoring and execution", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Dataset" }));
     expect(screen.getByRole("textbox", { name: "Dataset name" })).toBe(name);
     expect(name).toHaveValue("Retained dataset draft");
-    fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+    resumeAuthoring();
+    closeAuthoring();
     fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(screen.getByRole("tab", { name: "Dataset" })).toHaveAttribute(
       "aria-selected",
@@ -275,7 +297,7 @@ describe("laboratory authoring and execution", () => {
       screen
         .getAllByRole("tabpanel")
         .map((panel) => panel.getAttribute("aria-label")),
-    ).toEqual(["Experiment", "Parameters"]);
+    ).toEqual(["Parameters"]);
     expect(rendered.container.querySelector(".react-flow")).toBeNull();
     expect(
       screen.getByRole("button", { name: "Save experiment" }),
@@ -288,6 +310,7 @@ describe("laboratory authoring and execution", () => {
     expect(
       screen.queryByRole("textbox", { name: "Experiment name" }),
     ).not.toBeInTheDocument();
+    closeAuthoring();
     fireEvent.click(screen.getByRole("tab", { name: "Capabilities" }));
     expect(
       screen
@@ -300,6 +323,7 @@ describe("laboratory authoring and execution", () => {
     expect(
       screen.queryByRole("button", { name: "Import portable bundle" }),
     ).not.toBeInTheDocument();
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     expect(
       screen.getByRole("button", { name: "Import portable bundle" }),
@@ -320,8 +344,9 @@ describe("laboratory authoring and execution", () => {
     }) as HTMLInputElement;
     const file = new File(["data"], "recording.jsonl");
     fireEvent.change(input, { target: { files: [file] } });
+    closeAuthoring();
     fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+    resumeAuthoring();
     expect(screen.getByRole("tab", { name: "Inputs" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -348,6 +373,7 @@ describe("laboratory authoring and execution", () => {
     fireEvent.change(screen.getByLabelText("Experiment name"), {
       target: { value: "Kept experiment" },
     });
+    closeAuthoring();
     const trigger = screen.getByRole("button", { name: "Import / export" });
     await user.click(trigger);
     const file = new File(["bundle"], "kept.zip", { type: "application/zip" });
@@ -386,7 +412,8 @@ describe("laboratory authoring and execution", () => {
         expect.any(AbortSignal),
       ),
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+    resumeAuthoring();
+    closeAuthoring();
     fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(
       screen.getByRole("button", {
@@ -424,6 +451,7 @@ describe("laboratory authoring and execution", () => {
         : baseGet(path, signal),
     );
     mount(studio);
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     const file = new File(["portable-bundle"], "experiment.zip", {
       type: "application/zip",
@@ -459,12 +487,11 @@ describe("laboratory authoring and execution", () => {
         ),
       { timeout: 2500 },
     );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Experiment" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    expect(
+      screen.getByRole("dialog", { name: /Edit experiment/ }),
+    ).toBeVisible();
     expect(screen.getByRole("button", { name: "Save revision" })).toBeEnabled();
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     expect(screen.getByText("Import: succeeded")).toBeInTheDocument();
     expect(studio.evidence.snapshot()).toEqual(
@@ -513,6 +540,7 @@ describe("laboratory authoring and execution", () => {
       mount(studio);
       fireEvent.click(await findRetainedRun("succeeded"));
       await screen.findByRole("button", { name: "Export manifest bundle" });
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       if (source === "import") {
         fireEvent.change(
@@ -546,12 +574,14 @@ describe("laboratory authoring and execution", () => {
         );
       }
       fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+      resumeAuthoring();
       fireEvent.change(screen.getByLabelText("Experiment name"), {
         target: { value: "Newer experiment" },
       });
+      closeAuthoring();
       fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
       // Reopening must not restore the dismissed action's right to replace context.
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       await act(async () => {
         recovered = true;
@@ -575,10 +605,11 @@ describe("laboratory authoring and execution", () => {
           name: /recovery-run · succeeded Retained run/,
         }),
       ).toBeVisible();
-      fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+      resumeAuthoring();
       expect(screen.getByLabelText("Experiment name")).toHaveValue(
         "Newer experiment",
       );
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       fireEvent.click(screen.getByRole("tab", { name: "History" }));
       fireEvent.click(
@@ -589,13 +620,7 @@ describe("laboratory authoring and execution", () => {
           name: "Load imported definition late-import",
         }),
       );
-      await waitFor(() =>
-        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-      );
-      expect(screen.getByRole("tab", { name: "Experiment" })).toHaveAttribute(
-        "aria-selected",
-        "true",
-      );
+      await screen.findByRole("dialog", { name: /Edit experiment/ });
       expect(screen.getByLabelText("Experiment name")).toHaveValue(
         "Deferred import",
       );
@@ -609,6 +634,7 @@ describe("laboratory authoring and execution", () => {
         api.upload.mockRejectedValueOnce(new Error("Upload interrupted"));
       else api.upload.mockResolvedValueOnce({} as any);
       mount(studio);
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       fireEvent.change(
         screen.getByLabelText("Portable laboratory bundle", {
@@ -639,6 +665,7 @@ describe("laboratory authoring and execution", () => {
       state: "queued",
     });
     const view = mount(studio);
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     fireEvent.change(
       screen.getByLabelText("Portable laboratory bundle", {
@@ -705,12 +732,14 @@ describe("laboratory authoring and execution", () => {
       return baseGet(path, signal);
     });
     const first = mount(studio);
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
     await screen.findByRole("button", { name: "Inspect queued-export" });
     expect(api.post).not.toHaveBeenCalled();
     first.unmount();
     const second = mount(studio);
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
     fireEvent.click(
@@ -739,7 +768,9 @@ describe("laboratory authoring and execution", () => {
         "Recovered import",
       ),
     );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: /Edit experiment/ }),
+    ).toBeVisible();
     expect(api.get).toHaveBeenCalledWith(
       "/api/lab/operations/done-import",
       expect.any(AbortSignal),
@@ -759,6 +790,7 @@ describe("laboratory authoring and execution", () => {
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
     try {
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       fireEvent.click(screen.getByRole("tab", { name: "History" }));
       fireEvent.click(
@@ -789,6 +821,7 @@ describe("laboratory authoring and execution", () => {
       return baseGet(path, signal);
     });
     const view = mount(studio);
+    closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
     const inspect = await screen.findByRole("button", {
@@ -840,6 +873,7 @@ describe("laboratory authoring and execution", () => {
         state: after,
       });
       mount(studio);
+      closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
       fireEvent.click(screen.getByRole("tab", { name: "History" }));
       const control = await screen.findByRole("button", {
@@ -1567,6 +1601,8 @@ describe("laboratory authoring and execution", () => {
     await act(async () => {
       resolve(row);
     });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    resumeAuthoring();
     expect(
       screen.getByRole("button", { name: "Save experiment" }),
     ).toBeEnabled();
@@ -1909,7 +1945,7 @@ describe("laboratory authoring and execution", () => {
 });
 
 async function choose(label: string, name: string) {
-  fireEvent.click(screen.getByRole("tab", { name: "Experiment" }));
+  resumeAuthoring();
   const section = label.startsWith("Execution")
     ? "Execution"
     : ["Connection source", "Connection target", "Target input port"].includes(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,14 +39,13 @@ def resolve(db: Session, project: Project | None, model_id: str) -> ResolvedMode
             if exp is not None:
                 if is_retained_quantized(exp.config, exp.status or {}):
                     raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
-                source = resolved_weights_source(db, project, exp)
-                return _resolve_experiment(exp, model_id, step, source)
+                return _resolve_experiment(exp, model_id, step, resolve_weights=lambda: resolved_weights_source(db, project, exp))
             if alias is not None:
                 raise ProjectError(f"experiment {model_id} does not exist")
     return ResolvedModel(model_id, model_id, None, None, "base")
 
 
-def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_source: str | None = None) -> ResolvedModel:
+def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_source: str | None = None, *, resolve_weights: Callable[[], str] | None = None) -> ResolvedModel:
     if step and not step.isdigit():
         raise ProjectError(f"{model_id}: a checkpoint reference is job/number@step")
     if is_retained_quantized(exp.config, exp.status or {}):
@@ -53,18 +53,21 @@ def _resolve_experiment(exp: Experiment, model_id: str, step: str, weights_sourc
     path = ensure_experiment_artifacts(exp, step)
     if has_quantized_marker(path):
         raise ProjectError("This quantized policy requires its retained base and a compatible target; legacy merged serving is not qualified. Use the laboratory quantized model bundle.")
-    base = weights_source or (exp.status or {}).get("weights_source") or exp.config["base_model"]
+    def adapter_base() -> str:
+        return weights_source or (resolve_weights() if resolve_weights else (exp.status or {}).get("weights_source")) or exp.config["base_model"]
+
+    base = weights_source or exp.config["base_model"]
     if step:
         ck = path / "checkpoints" / f"checkpoint-{step}"
         if not ck.is_dir():
             raise ProjectError(f"experiment {exp.alias} has no checkpoint at step {step}; train with checkpoint_every_steps")
         if (ck / "adapter_config.json").exists():
-            return ResolvedModel(model_id, base, ck, None, "lora")
+            return ResolvedModel(model_id, adapter_base(), ck, None, "lora")
         return ResolvedModel(model_id, base, None, ck, "full")
     if exp.state != "succeeded":
         raise ProjectError(f"experiment {model_id} is in state {exp.state!r}; only succeeded experiments can be loaded")
     if (path / "adapter").exists():
-        return ResolvedModel(model_id, base, path / "adapter", None, "lora")
+        return ResolvedModel(model_id, adapter_base(), path / "adapter", None, "lora")
     if (path / "model").exists():
         return ResolvedModel(model_id, base, None, path / "model", "full")
     raise ProjectError(f"experiment {model_id} has no adapter/ or model/ directory")

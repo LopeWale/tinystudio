@@ -1,0 +1,197 @@
+@reference "../../styles/globals.css";
+
+.studio-modal.lab-experiment-dialog {
+  inline-size: min(72rem, calc(100vw - 3rem));
+  max-block-size: calc(100dvh - 3rem);
+  overflow: hidden;
+}
+.lab-experiment-dialog > .modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-block-size: 0;
+  overflow: hidden;
+}
+.lab-experiment-dialog [hidden] {
+  display: none !important;
+}
+.lab-experiment-meta {
+  display: flex;
+  align-items: center;
+}
+.lab-experiment-scroll-wrap {
+  position: relative;
+  min-block-size: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--color-separator-border);
+  border-radius: 1rem;
+  background: var(--color-background-secondary-default);
+}
+.lab-experiment-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-block-size: 58dvh;
+  padding: 1rem;
+}
+.lab-experiment-fields {
+  min-inline-size: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.lab-experiment-fade {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.lab-experiment-fade > span {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+}
+.lab-experiment-fade > span:nth-child(1) {
+  block-size: 24px;
+  backdrop-filter: blur(1px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.lab-experiment-fade > span:nth-child(2) {
+  block-size: 16px;
+  backdrop-filter: blur(4px);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+.lab-experiment-fade > span:nth-child(3) {
+  block-size: 24px;
+  background: linear-gradient(
+    to bottom,
+    var(--color-background-secondary-default),
+    transparent
+  );
+}
+.lab-experiment-dialog .lab-configuration-pane {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+  border: 0;
+}
+.lab-experiment-dialog .lab-authoring-workspace {
+  gap: 0;
+}
+.lab-experiment-dialog .studio-settings-section {
+  padding-block: 0.75rem;
+}
+.lab-experiment-dialog .studio-settings-section:first-child {
+  padding-block-start: 0;
+}
+.lab-experiment-dialog .lab-fields {
+  gap: 0.75rem;
+}
+.lab-experiment-dialog .lab-engine-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+.lab-experiment-dialog .lab-engine-status p,
+.lab-experiment-dialog .lab-run-readiness {
+  margin: 0;
+}
+.lab-experiment-dialog .lab-run-readiness {
+  @apply text-caption-1-regular text-text-secondary;
+}
+.lab-experiment-dialog pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-inline-size: 100%;
+}
+.lab-experiment-dialog .lab-primary-actions {
+  flex-shrink: 0;
+}
+.lab-experiment-dialog .lab-canvas-pane {
+  min-inline-size: 0;
+}
+@media (min-width: 1100px) {
+  .lab-experiment-dialog .lab-identity-fields {
+    grid-template-columns: minmax(10rem, 2fr) repeat(3, minmax(4rem, 1fr));
+  }
+  .lab-experiment-dialog .lab-engine-parameters .lab-fields {
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .studio-modal.lab-experiment-dialog {
+    inline-size: calc(100vw - 1rem);
+    max-block-size: calc(100dvh - 1rem);
+  }
+  .lab-experiment-dialog .lab-engine-bar,
+  .lab-experiment-dialog .lab-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lab-experiment-scroll {
+    max-block-size: 48dvh;
+    padding: 0.75rem;
+  }
+  .lab-experiment-dialog .lab-primary-actions {
+    gap: 0.5rem;
+  }
+  .lab-experiment-dialog .lab-primary-actions > * {
+    flex: 1 1 auto;
+  }
+}
+
+.lab-experiment-dialog .lab-experiment-meta {
+  gap: 0.5rem 0.75rem;
+  flex-wrap: wrap;
+}
+.lab-experiment-dialog .lab-experiment-meta > .lab-choice {
+  inline-size: min(100%, 18rem);
+}
+.lab-experiment-dialog .ui-segc {
+  max-inline-size: 100%;
+  flex-shrink: 0;
+}
+.lab-experiment-dialog [data-input-size] {
+  min-inline-size: 0;
+  background: transparent;
+  padding: 0;
+}
+.lab-experiment-dialog [data-input-size] > div:has(input) {
+  min-block-size: 0;
+  padding: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  box-shadow: none;
+}
+.lab-experiment-dialog [data-input-size] input {
+  @apply text-body-regular;
+  block-size: 2.125rem;
+  min-block-size: 2.125rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 0.375rem;
+  background: var(--color-background-primary-default);
+}
+.lab-experiment-dialog [data-input-size] input:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: 2px;
+}
+.lab-experiment-dialog .lab-engine-status {
+  padding: 0;
+  border: 0;
+  gap: 0.25rem;
+  @apply text-body-2-regular text-text-secondary;
+}
+.lab-experiment-dialog .lab-engine-status > strong {
+  display: none;
+}
+@media (max-width: 760px) {
+  .lab-experiment-dialog [data-input-size] input {
+    min-block-size: 2.75rem;
+  }
+  .lab-experiment-dialog .ui-segc[data-size][data-variant="tray"] {
+    --ui-segc-h: 48px;
+  }
+  .lab-experiment-dialog .ui-segc__opt {
+    min-block-size: 44px;
+  }
+}

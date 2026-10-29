@@ -36,6 +36,41 @@ def write_adapter(path, content):
     (path / 'adapter' / 'adapter_model.safetensors').write_bytes(content)
 
 
+def test_model_resolver_uses_child_owned_base_after_ancestor_deletion(hosts, monkeypatch):
+    from tinystudio.services import models
+    cfg, backend, host_b = hosts
+    child = experiment(2, 'deleted-parent/1')
+    path = jobs.exp_path(child)
+    write_adapter(path, b'child-adapter')
+    base = cfg.data_dir / 'standalone-base'
+    base.mkdir(parents=True)
+    (base / 'config.json').write_text('{}')
+    (base / 'model.safetensors').write_bytes(b'retained-independent-base')
+    child.status = {'weights_source': str(base)}
+    child.status = jobs.publish_existing_experiment(child, path)
+    shutil.rmtree(cfg.data_dir)
+    cfg.data_dir = host_b
+    monkeypatch.setattr(jobs, 'find_experiment', lambda *args: pytest.fail('deleted ancestor must not be resolved'))
+    result = models.resolve(SimpleNamespace(scalar=lambda query: child), SimpleNamespace(id='p'), 'job/2')
+    assert Path(result.base_model).is_relative_to(host_b)
+    assert (Path(result.base_model) / 'model.safetensors').read_bytes() == b'retained-independent-base'
+
+
+def test_warm_experiment_cache_cannot_hide_missing_remote_member(hosts):
+    from tinystudio.storage import ArtifactNotFound
+    cfg, backend, _ = hosts
+    exp = experiment()
+    path = jobs.exp_path(exp)
+    write_adapter(path, b'retained-adapter')
+    exp.status = jobs.publish_existing_experiment(exp, path)
+    manifest = backend.read_manifest(exp.status['artifact_prefix'])
+    member = next(item for item in manifest['files'] if item['path'].endswith('adapter_model.safetensors'))
+    backend.delete(member['key'])
+    assert (path / 'adapter' / 'adapter_model.safetensors').is_file()
+    with pytest.raises(ArtifactNotFound):
+        jobs.ensure_experiment_artifacts(exp)
+
+
 def test_refinement_ancestry_survives_empty_host_and_lost_merge_cache(hosts, monkeypatch):
     cfg, backend, host_b = hosts
     parent, refined = experiment(), experiment(2, 'job/1')
@@ -223,6 +258,11 @@ def test_trained_child_keeps_its_base_after_parent_deletion(hosts, monkeypatch):
         (destination / 'config.json').write_text('{}')
         (destination / 'model.safetensors').write_bytes(b'refined-child-weights')
     monkeypatch.setattr(jobs, 'export_merged', merge)
+    from tinystudio.services import models
+    resolved = models.resolve(SimpleNamespace(scalar=lambda query: child), SimpleNamespace(id='p'), 'job/2')
+    assert resolved.kind == 'lora'
+    assert (Path(resolved.base_model) / 'model.safetensors').read_bytes() == b'parent-trained-weights'
+    assert (resolved.adapter_dir / 'adapter_model.safetensors').read_bytes() == b'child-adapter'
     weights = jobs.parent_weights(None, SimpleNamespace(id='p'), 'job/2')
     assert (weights / 'model.safetensors').read_bytes() == b'refined-child-weights'
 
@@ -262,3 +302,84 @@ def test_stopped_training_retains_available_files(hosts, monkeypatch):
     shutil.rmtree(cfg.data_dir)
     cfg.data_dir = host_b
     assert json.loads((jobs.ensure_experiment_artifacts(exp) / 'trainer_state.json').read_text()) == {'global_step': 11}
+
+
+def test_missing_published_merge_member_never_replaces_authoritative_manifest(hosts, monkeypatch):
+    from tinystudio.storage import ArtifactNotFound
+    cfg, backend, _ = hosts
+    exp = experiment()
+    path = jobs.exp_path(exp)
+    write_adapter(path, b'retained-adapter')
+    exp.status = jobs.publish_existing_experiment(exp, path)
+    merged = path.parent / f'{exp.id}-merged'
+    merged.mkdir()
+    (merged / 'config.json').write_text('{}')
+    (merged / 'model.safetensors').write_bytes(b'complete-merged-weights')
+    prefix = 'models/p/exp-1/merged'
+    manifest = backend.publish_directory(merged, prefix)
+    original_manifest = backend.client.objects[prefix + '/manifest.json']
+    weight = next(item for item in manifest['files'] if item['path'] == 'model.safetensors')
+    backend.delete(weight['key'])
+    (merged / 'model.safetensors').unlink()
+    monkeypatch.setattr(jobs, 'find_experiment', lambda *args: exp)
+    with pytest.raises(ArtifactNotFound):
+        jobs.parent_weights(None, SimpleNamespace(id='p'), 'job/1')
+    assert backend.client.objects[prefix + '/manifest.json'] == original_manifest
+    assert [item['path'] for item in backend.read_manifest(prefix)['files']] == ['config.json', 'model.safetensors']
+
+
+def test_unpublished_config_only_merge_cache_is_rebuilt_from_retained_inputs(hosts, monkeypatch):
+    cfg, backend, _ = hosts
+    exp = experiment()
+    path = jobs.exp_path(exp)
+    write_adapter(path, b'retained-adapter')
+    exp.status = jobs.publish_existing_experiment(exp, path)
+    merged = path.parent / f'{exp.id}-merged'
+    merged.mkdir()
+    (merged / 'config.json').write_text('{"unfinished":true}')
+    monkeypatch.setattr(jobs, 'find_experiment', lambda *args: exp)
+    merges = []
+    def merge(directory, destination, base, source):
+        assert (directory / 'adapter' / 'adapter_model.safetensors').read_bytes() == b'retained-adapter'
+        merges.append(source)
+        destination.mkdir(parents=True)
+        (destination / 'config.json').write_text('{}')
+        (destination / 'model.safetensors').write_bytes(b'new-complete-merge')
+    monkeypatch.setattr(jobs, 'export_merged', merge)
+    result = jobs.parent_weights(None, SimpleNamespace(id='p'), 'job/1')
+    assert merges == ['org/base']
+    assert (result / 'model.safetensors').read_bytes() == b'new-complete-merge'
+    assert [item['path'] for item in backend.read_manifest('models/p/exp-1/merged')['files']] == ['config.json', 'model.safetensors']
+
+
+@pytest.mark.parametrize('step', ['', '5'])
+@pytest.mark.parametrize('base_prefix', [None, 'models/p/exp-2/missing-base'])
+def test_public_resolver_loads_imported_full_refinement_after_ancestor_deletion(hosts, monkeypatch, step, base_prefix):
+    from tinystudio.services import models
+    from tinystudio.core.project import ProjectError
+    cfg, backend, host_b = hosts
+    exp = experiment(2, 'job/1')
+    exp.config.update(training_type='full', update_strategy='full')
+    path = jobs.exp_path(exp)
+    (path / 'model').mkdir(parents=True)
+    (path / 'model' / 'config.json').write_text('{}')
+    (path / 'model' / 'model.safetensors').write_bytes(b'imported-standalone-refinement')
+    if step:
+        checkpoint = path / 'checkpoints' / 'checkpoint-5'
+        checkpoint.mkdir(parents=True)
+        (checkpoint / 'config.json').write_text('{}')
+        (checkpoint / 'model.safetensors').write_bytes(b'imported-standalone-refinement')
+    exp.status = jobs.publish_existing_experiment(exp, path)
+    assert not exp.status.get('artifact_base_prefix')
+    if base_prefix:
+        exp.status['artifact_base_prefix'] = base_prefix
+    backend.delete_prefix('models/p/exp-1')
+    shutil.rmtree(cfg.data_dir)
+    cfg.data_dir = host_b
+    def absent_ancestor(*args):
+        raise ProjectError('deleted ancestor must not be needed for a standalone model')
+    monkeypatch.setattr(jobs, 'find_experiment', absent_ancestor)
+    db = SimpleNamespace(scalar=lambda query: exp)
+    resolved = models.resolve(db, SimpleNamespace(id='p'), 'job/2' + (f'@{step}' if step else ''))
+    assert resolved.kind == 'full'
+    assert (resolved.model_dir / 'model.safetensors').read_bytes() == b'imported-standalone-refinement'

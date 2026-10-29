@@ -5,6 +5,7 @@ interface ModalEntry {
   dialog: HTMLElement;
   close: () => void;
   opener: HTMLElement | null;
+  fallbackFocus: HTMLElement | null;
   lastFocused: HTMLElement | null;
 }
 interface BackgroundState {
@@ -121,12 +122,14 @@ export class ModalStack {
     backdrop,
     dialog,
     close,
+    fallbackFocus = null,
   }: {
     id: string;
     parentId?: string | null;
     backdrop: HTMLElement;
     dialog: HTMLElement;
     close: () => void;
+    fallbackFocus?: HTMLElement | null;
   }) {
     const entry: ModalEntry = {
       id,
@@ -134,6 +137,7 @@ export class ModalStack {
       backdrop,
       dialog,
       close,
+      fallbackFocus,
       opener: this.document.activeElement as HTMLElement | null,
       lastFocused: null,
     };
@@ -189,13 +193,14 @@ export class ModalStack {
       }
       if (wasTop) {
         const top = this.entries.at(-1),
-          opener = entry.opener;
-        if (
-          opener?.isConnected &&
-          !opener.closest("[inert]") &&
-          (!top || top.dialog.contains(opener))
-        )
-          opener.focus();
+          destination = [entry.opener, entry.fallbackFocus].find(
+            (node) =>
+              node?.isConnected &&
+              !node.matches(":disabled") &&
+              !node.closest("[inert],[hidden]") &&
+              (!top || top.dialog.contains(node)),
+          );
+        if (destination) destination.focus();
         else if (top) this.focus(top);
       }
     };

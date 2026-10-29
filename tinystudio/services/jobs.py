@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tinystudio.config import config
-from tinystudio.storage import ArtifactNotFound, project_key, storage
+from tinystudio.storage import project_key, storage
 from tinystudio.core.project import ProjectError, check_name, iso
 from tinystudio.db import session
 from tinystudio.db.models import Analysis, Experiment, ExperimentLog, Job, Project
@@ -40,12 +40,12 @@ def ensure_experiment_artifacts(exp: Experiment, step: str = "") -> Path:
         target = path / "checkpoints" / f"checkpoint-{step}"
         record = next((c for c in status.get("artifact_checkpoints", []) if str(c["step"]) == step), None)
         if record:
-            storage().hydrate_directory(record["prefix"], target)
+            storage().hydrate_directory(record["prefix"], target, refresh=True)
         elif status.get("artifact_prefix") or status.get("artifact_diagnostics_prefix"):
-            storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path)
+            storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path, refresh=True)
     elif status.get("artifact_prefix") or status.get("artifact_diagnostics_prefix"):
         # The manifest verifies every required file even after a partial cache loss.
-        storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path)
+        storage().hydrate_directory(status.get("artifact_prefix") or status["artifact_diagnostics_prefix"], path, refresh=True)
     return path
 
 
@@ -181,13 +181,14 @@ def parent_weights(db: Session, project: Project, reference: str) -> Path:
     backend = storage()
     merged = path.parent / f"{parent.id}-merged" if backend.remote or (parent.status or {}).get("artifact_prefix") else path / "merged"
     prefix = project_key(project.id, "models", parent.id) + "/merged"
-    if backend.remote:
-        try:
-            backend.hydrate_directory(prefix, merged)
-            return merged
-        except ArtifactNotFound:
-            pass  # Reconstruct an unpublished merge from retained ancestry.
-    if not (merged / "config.json").exists():
+    if backend.remote and backend.exists(prefix + "/manifest.json"):
+        # A published manifest is authoritative. A missing member is a broken
+        # publication, not permission to replace it with a partial local cache.
+        backend.hydrate_directory(prefix, merged, refresh=True)
+        return merged
+    if backend.remote or not (merged / "config.json").exists():
+        # Without a manifest, remote cache contents have never been qualified.
+        # Reconstruct in staging even if an interrupted merge left config.json.
         source = resolved_weights_source(db, project, parent)
         merged.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".merge-", dir=merged.parent) as temporary:
@@ -198,8 +199,6 @@ def parent_weights(db: Session, project: Project, reference: str) -> Path:
             if merged.exists():
                 shutil.rmtree(merged)
             shutil.move(str(staging), merged)
-    elif backend.remote:
-        backend.publish_directory(merged, prefix)
     return merged
 
 
@@ -208,7 +207,7 @@ def resolved_weights_source(db: Session, project: Project, exp: Experiment) -> s
     prefix = (exp.status or {}).get("artifact_base_prefix")
     if prefix:
         target = exp_path(exp).parent / f"{exp.id}-base"
-        storage().hydrate_directory(prefix, target)
+        storage().hydrate_directory(prefix, target, refresh=True)
         return str(target)
     ancestor = exp.config.get("refinetune_from")
     return str(parent_weights(db, project, ancestor)) if ancestor else exp.config["base_model"]
@@ -299,6 +298,7 @@ def run_experiment(experiment_id: str, progress: Any = print, task_id: str | Non
         checkpoint = None
         if kind == "checkpoint" and backend.remote:
             step = int(row["step"])
+            row = {**row, "path": f"checkpoints/checkpoint-{step}"}
             directory = out_dir / "checkpoints" / f"checkpoint-{step}"
             prefix = artifact_prefix + f"/checkpoints/{step}"
             manifest = backend.publish_directory(directory, prefix)

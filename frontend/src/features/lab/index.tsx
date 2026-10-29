@@ -31,6 +31,7 @@ import {
   type LabRun,
 } from "./definition";
 import "./lab.css";
+import "./experiment-dialog.css";
 import { InputArtifacts, LabChoice as Choice } from "./inputs";
 import { DataPreparation } from "./data-preparation";
 import { LanguageLearning } from "./language-learning";
@@ -89,10 +90,19 @@ function LabWorkspace() {
   const [languageLearningValid, setLanguageLearningValid] = useState(true);
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [savedText, setSavedText] = useState("");
-  const [area, setArea] = useState("experiment");
+  const [area, setArea] = useState("runs");
+  const [experimentOpen, setExperimentOpen] = useState(false);
+  const laboratoryHeading = useRef<HTMLHeadingElement>(null);
+  const [authoringStarted, setAuthoringStarted] = useState(false);
+  const authoringScroll = useRef<HTMLDivElement>(null);
+  const [scrollFade, setScrollFade] = useState(0);
   const [transferOpen, setTransferOpen] = useState(false);
   const [transferView, setTransferView] = useState("import");
   const [view, setView] = useState("parameters");
+  useEffect(() => {
+    if (authoringScroll.current) authoringScroll.current.scrollTop = 0;
+    setScrollFade(0);
+  }, [experimentOpen, view]);
   const [graphVisited, setGraphVisited] = useState(false);
   const [target, setTarget] = useState("local");
   const [notBefore, setNotBefore] = useState("");
@@ -146,7 +156,9 @@ function LabWorkspace() {
     setSavedText(json(row.definition));
     setConflict(false);
     setError(null);
-    setArea("experiment");
+    setView("parameters");
+    setAuthoringStarted(true);
+    setExperimentOpen(true);
   };
   const observeHistory = (operation: LabOperation, signal: AbortSignal) => {
     historyPoll.current?.abort();
@@ -212,7 +224,8 @@ function LabWorkspace() {
   };
   const save = () =>
     action(async (signal) => {
-      const next = parseDefinition(draft);
+      const submittedDraft = draft;
+      const next = parseDefinition(submittedDraft);
       const row = saved
         ? await studio.api.put<SavedDefinition>(
             `/api/lab/definitions/${enc(saved.id)}`,
@@ -225,7 +238,12 @@ function LabWorkspace() {
             signal,
           );
       if (signal.aborted) return;
-      load(row);
+      setSaved(row);
+      setDraft((current) =>
+        current === submittedDraft ? json(row.definition) : current,
+      );
+      setSavedText(json(row.definition));
+      setConflict(false);
       definitions.reload();
       studio.toast(`Saved revision ${row.revision}`);
     });
@@ -256,13 +274,64 @@ function LabWorkspace() {
   );
   const template = templates.find((item) => item.id === definition?.engine);
   const selectedTarget = targets.data?.find((item) => item.id === target);
+  const startNewExperiment = () => {
+    setAuthoringStarted(true);
+    setExperimentOpen(true);
+    setView("parameters");
+    setGraphVisited(false);
+    setSaved(null);
+    setSavedText("");
+    setAuthoringGeneration((generation) => generation + 1);
+    setDraft(json(makeDefinition()));
+    setConflict(false);
+    setError(null);
+    setTarget("local");
+    setNotBefore("");
+  };
+  const savedExperimentChoice = (
+    <Choice
+      label="Saved experiment"
+      placeholder="Open saved experiment"
+      value={saved?.id ?? ""}
+      disabled={busy || definitions.loading}
+      options={(definitions.data ?? []).map((row) => ({
+        id: row.id,
+        name: `${row.name} · r${row.revision}`,
+      }))}
+      onChange={(id) => {
+        const row = definitions.data?.find((item) => item.id === id);
+        if (row) load(row);
+      }}
+    />
+  );
   return (
     <Page
       title="Laboratory"
+      headingRef={laboratoryHeading}
       className="lab-page"
       description="Author portable experiments, execute a saved revision, and inspect retained evidence."
       actions={
         <>
+          <Button
+            variant="primary"
+            disabled={busy}
+            onClick={startNewExperiment}
+          >
+            New experiment
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setAuthoringStarted(true);
+              setExperimentOpen(true);
+            }}
+          >
+            {saved
+              ? "Edit experiment"
+              : authoringStarted
+                ? "Resume draft"
+                : "Open experiment"}
+          </Button>
           <Button onClick={() => setTransferOpen(true)}>Import / export</Button>
           <Button
             onClick={() => {
@@ -280,7 +349,7 @@ function LabWorkspace() {
     >
       <Fault
         error={
-          (!transferOpen && error) ||
+          (!transferOpen && !experimentOpen && error) ||
           catalog.error ||
           definitions.error ||
           runs.error ||
@@ -393,8 +462,8 @@ function LabWorkspace() {
                           );
                           return;
                         }
-                        load(result.definition);
                         setTransferOpen(false);
+                        load(result.definition);
                         selectRun(null);
                         studio.toast("Imported portable experiment");
                       })
@@ -543,8 +612,8 @@ function LabWorkspace() {
                                       );
                                     if (dismissal !== transferDismissal.current)
                                       return;
-                                    load(result.definition);
                                     setTransferOpen(false);
+                                    load(result.definition);
                                     definitions.reload();
                                   })
                                 }
@@ -599,11 +668,6 @@ function LabWorkspace() {
             value={area}
             onChange={setArea}
             options={[
-              {
-                value: "experiment",
-                label: "Experiment",
-                controls: "lab-area-experiment",
-              },
               { value: "runs", label: "Runs", controls: "lab-area-runs" },
               {
                 value: "capabilities",
@@ -615,660 +679,686 @@ function LabWorkspace() {
         }
       >
         <div className="lab-main">
-          <section
-            id="lab-area-experiment"
-            role="tabpanel"
-            aria-label="Experiment"
-            hidden={area !== "experiment"}
+          <Modal
+            open={experimentOpen}
+            keepMounted
+            fallbackFocusRef={laboratoryHeading}
+            wide
+            title={saved ? `Edit experiment · ${saved.name}` : "New experiment"}
+            onClose={() => setExperimentOpen(false)}
+            className="lab-experiment-dialog"
           >
-            <Panel
-              className="lab-authoring-panel"
-              title={saved ? saved.name : "New experiment"}
-              actions={
-                <div className="lab-experiment-actions">
-                  <Badge>
-                    {saved
-                      ? `r${saved.revision} · ${dirty ? "Edited draft" : "Saved"}`
-                      : "Unsaved draft"}
-                  </Badge>
-                  <Choice
-                    label="Saved experiment"
-                    placeholder="Open saved experiment"
-                    value={saved?.id ?? ""}
-                    disabled={busy || definitions.loading}
-                    options={(definitions.data ?? []).map((row) => ({
-                      id: row.id,
-                      name: `${row.name} · r${row.revision}`,
-                    }))}
-                    onChange={(id) => {
-                      const row = definitions.data?.find(
-                        (item) => item.id === id,
-                      );
-                      if (row) load(row);
-                    }}
-                  />
-                  <Button
-                    disabled={busy}
-                    onClick={() => {
-                      setArea("experiment");
-                      setView("parameters");
-                      setSaved(null);
-                      setSavedText("");
-                      setAuthoringGeneration((generation) => generation + 1);
-                      setDraft(json(makeDefinition()));
-                      setConflict(false);
-                    }}
-                  >
-                    New experiment
-                  </Button>
-                </div>
-              }
-            >
-              <SegmentedControl
-                kind="tabs"
-                variant="tray"
-                size="sm"
-                aria-label="Experiment authoring view"
-                value={view}
-                onChange={(next) => {
-                  setView(next);
-                  if (next === "graph") setGraphVisited(true);
-                }}
-                options={[
-                  {
-                    value: "parameters",
-                    label: "Parameters",
-                    controls: "lab-view-parameters",
-                  },
-                  {
-                    value: "inputs",
-                    label: "Inputs",
-                    controls: "lab-view-inputs",
-                  },
-                  {
-                    value: "execution",
-                    label: "Execution",
-                    controls: "lab-view-execution",
-                  },
-                  {
-                    value: "graph",
-                    label: "Visual topology",
-                    controls: "lab-view-graph",
-                  },
-                  {
-                    value: "json",
-                    label: "Definition JSON",
-                    controls: "lab-view-json",
-                  },
-                ]}
-              />
-              <div className="lab-authoring-workspace">
-                <div
-                  id="lab-view-graph"
-                  role="tabpanel"
-                  aria-label="Visual topology"
-                  hidden={view !== "graph"}
+            <div className="lab-experiment-meta">
+              {savedExperimentChoice}{" "}
+              <Button disabled={busy} onClick={startNewExperiment}>
+                New experiment
+              </Button>
+              <Badge>
+                {saved
+                  ? `r${saved.revision} · ${dirty ? "Edited draft" : "Saved"}`
+                  : "Unsaved draft"}
+              </Badge>
+            </div>
+            <SegmentedControl
+              kind="tabs"
+              variant="tray"
+              size="sm"
+              aria-label="Experiment authoring view"
+              value={view}
+              onChange={(next) => {
+                setView(next);
+                if (next === "graph") setGraphVisited(true);
+              }}
+              options={[
+                {
+                  value: "parameters",
+                  label: "Parameters",
+                  controls: "lab-view-parameters",
+                },
+                {
+                  value: "inputs",
+                  label: "Inputs",
+                  controls: "lab-view-inputs",
+                },
+                {
+                  value: "execution",
+                  label: "Execution",
+                  controls: "lab-view-execution",
+                },
+                {
+                  value: "graph",
+                  label: "Visual topology",
+                  controls: "lab-view-graph",
+                },
+                {
+                  value: "json",
+                  label: "Definition JSON",
+                  controls: "lab-view-json",
+                },
+              ]}
+            />
+            <div className="lab-experiment-scroll-wrap">
+              <div className="lab-experiment-fade" aria-hidden="true">
+                <span style={{ opacity: scrollFade }} />
+                <span style={{ opacity: scrollFade }} />
+                <span style={{ opacity: scrollFade }} />
+              </div>
+              <div
+                ref={authoringScroll}
+                className="lab-experiment-scroll"
+                onScroll={(event) =>
+                  setScrollFade(Math.min(event.currentTarget.scrollTop / 24, 1))
+                }
+              >
+                <fieldset
+                  disabled={busy}
+                  inert={busy}
+                  className="lab-experiment-fields"
                 >
-                  {definition && graphVisited && (
-                    <div className="lab-canvas-pane">
-                      <DefinitionGraph
-                        key={`canvas:${definition.engine}`}
-                        definition={definition}
-                        onChange={change}
-                      />
-                    </div>
-                  )}
-                </div>
-                <div className="lab-configuration-pane">
-                  <div
-                    id="lab-view-parameters"
-                    role="tabpanel"
-                    aria-label="Parameters"
-                    hidden={view !== "parameters"}
-                  >
-                    <SettingsSection
-                      title="Engine"
-                      description="Choose the adapter that powers this experiment."
+                  <div className="lab-authoring-workspace">
+                    <div
+                      id="lab-view-graph"
+                      role="tabpanel"
+                      aria-label="Visual topology"
+                      hidden={view !== "graph"}
                     >
-                      <div className="lab-engine-bar">
-                        <Choice
-                          label="Experiment engine"
-                          value={definition?.engine ?? ""}
-                          options={engineOptions}
-                          disabled={busy}
-                          onChange={(engine) => {
-                            if (busy) return;
-                            const next = makeDefinition(engine);
-                            if (definition)
-                              next.execution = { ...definition.execution };
-                            const manifest = engineCatalog.find(
-                              (item) => item.id === engine,
-                            );
-                            if (manifest?.name) next.name = manifest.name;
-                            if (manifest?.domain) next.domain = manifest.domain;
-                            setDraft(json(next));
-                            setAuthoringGeneration(
-                              (generation) => generation + 1,
-                            );
-                            setSaved(null);
-                            setSavedText("");
-                          }}
-                        />
-                        <div className="lab-engine-status" role="status">
-                          <strong>
-                            {definition?.engine ?? "Invalid definition"}
-                          </strong>
-                          <p>
-                            {capability
-                              ? `${capability.implemented ? "Implemented" : "Not implemented"} · ${capability.available ? "Available on catalog host" : "Prerequisite unavailable on catalog host"}`
-                              : "Capability not reported for this engine."}
-                          </p>
-                          <details>
-                            <summary>Engine requirements</summary>
-                            {capability?.reason && <p>{capability.reason}</p>}
-                            {template?.hint && <p>{template.hint}</p>}
-                            <small>
-                              Execution target: {selectedTarget?.name ?? target}
-                              . Catalog host availability does not establish
-                              target qualification.
-                            </small>
-                          </details>
+                      {definition && graphVisited && (
+                        <div className="lab-canvas-pane">
+                          <DefinitionGraph
+                            key={`canvas:${authoringGeneration}:${definition.engine}`}
+                            definition={definition}
+                            onChange={change}
+                          />
                         </div>
-                      </div>
-                    </SettingsSection>
-                    {definition && (
-                      <SettingsSection
-                        title="Identity"
-                        description="Name and reproducibility settings for the saved definition."
+                      )}
+                    </div>
+                    <div className="lab-configuration-pane">
+                      <div
+                        id="lab-view-parameters"
+                        role="tabpanel"
+                        aria-label="Parameters"
+                        hidden={view !== "parameters"}
                       >
-                        <div className="lab-fields lab-identity-fields">
-                          <Input
-                            label="Experiment name"
-                            value={definition.name}
-                            onChange={(name) => change({ name })}
-                          />
-                          <Input
-                            label="Seed"
-                            type="number"
-                            value={String(definition.seed)}
-                            onChange={(value) =>
-                              change({ seed: Number(value) })
-                            }
-                          />
-                          <Input
-                            label="Domain"
-                            value={definition.domain}
-                            onChange={(domain) => change({ domain })}
-                          />
-                          {definition.engine !== "data.pipeline" && (
-                            <Input
-                              label="Mode"
-                              value={definition.mode}
-                              onChange={(mode) => change({ mode })}
+                        <SettingsSection
+                          title="Engine"
+                          description="Choose the adapter that powers this experiment."
+                        >
+                          <div className="lab-engine-bar">
+                            <Choice
+                              label="Experiment engine"
+                              value={definition?.engine ?? ""}
+                              options={engineOptions}
+                              disabled={busy}
+                              onChange={(engine) => {
+                                if (busy) return;
+                                const next = makeDefinition(engine);
+                                if (definition)
+                                  next.execution = { ...definition.execution };
+                                const manifest = engineCatalog.find(
+                                  (item) => item.id === engine,
+                                );
+                                if (manifest?.name) next.name = manifest.name;
+                                if (manifest?.domain)
+                                  next.domain = manifest.domain;
+                                setDraft(json(next));
+                                setAuthoringGeneration(
+                                  (generation) => generation + 1,
+                                );
+                                setSaved(null);
+                                setSavedText("");
+                              }}
                             />
-                          )}
-                        </div>
-                      </SettingsSection>
-                    )}
-                    {definition && !structuredEngine && (
-                      <SettingsSection
-                        title="Engine parameters"
-                        className="lab-engine-parameters"
-                        description="Configure the adapter for this experiment."
+                            <div className="lab-engine-status" role="status">
+                              <strong>
+                                {definition?.engine ?? "Invalid definition"}
+                              </strong>
+                              <p>
+                                {capability
+                                  ? `${capability.implemented ? "Implemented" : "Not implemented"} · ${capability.available ? "Available on catalog host" : "Prerequisite unavailable on catalog host"}`
+                                  : "Capability not reported for this engine."}
+                              </p>
+                              <details>
+                                <summary>Engine requirements</summary>
+                                {capability?.reason && (
+                                  <p>{capability.reason}</p>
+                                )}
+                                {template?.hint && <p>{template.hint}</p>}
+                                <small>
+                                  Execution target:{" "}
+                                  {selectedTarget?.name ?? target}. Catalog host
+                                  availability does not establish target
+                                  qualification.
+                                </small>
+                              </details>
+                            </div>
+                          </div>
+                        </SettingsSection>
+                        {definition && (
+                          <SettingsSection
+                            title="Identity"
+                            description="Name and reproducibility settings for the saved definition."
+                          >
+                            <div className="lab-fields lab-identity-fields">
+                              <Input
+                                label="Experiment name"
+                                value={definition.name}
+                                onChange={(name) => change({ name })}
+                              />
+                              <Input
+                                label="Seed"
+                                type="number"
+                                value={String(definition.seed)}
+                                onChange={(value) =>
+                                  change({ seed: Number(value) })
+                                }
+                              />
+                              <Input
+                                label="Domain"
+                                value={definition.domain}
+                                onChange={(domain) => change({ domain })}
+                              />
+                              {definition.engine !== "data.pipeline" && (
+                                <Input
+                                  label="Mode"
+                                  value={definition.mode}
+                                  onChange={(mode) => change({ mode })}
+                                />
+                              )}
+                            </div>
+                          </SettingsSection>
+                        )}
+                        {definition && !structuredEngine && (
+                          <SettingsSection
+                            title="Engine parameters"
+                            className="lab-engine-parameters"
+                            description="Configure the adapter for this experiment."
+                          >
+                            <div className="lab-fields">
+                              {definition?.engine === "learning.pretrained" && (
+                                <>
+                                  <Choice
+                                    label="Learning objective"
+                                    value={pretrainedAxes(definition).objective}
+                                    options={[
+                                      {
+                                        id: "sft",
+                                        name: "Supervised conversations",
+                                      },
+                                      {
+                                        id: "causal_lm",
+                                        name: "Continued pretraining · raw text",
+                                      },
+                                      {
+                                        id: "dpo",
+                                        name: "Preference learning · DPO",
+                                      },
+                                    ]}
+                                    onChange={(objective) =>
+                                      change(
+                                        editPretrainedAxes(definition, {
+                                          objective,
+                                        }),
+                                      )
+                                    }
+                                  />
+                                  <Choice
+                                    label="Weight updates"
+                                    value={
+                                      pretrainedAxes(definition).update_strategy
+                                    }
+                                    options={["full", "lora", "qlora"].map(
+                                      (id) => ({ id, name: id }),
+                                    )}
+                                    onChange={(update_strategy) =>
+                                      change(
+                                        editPretrainedAxes(definition, {
+                                          update_strategy,
+                                        }),
+                                      )
+                                    }
+                                  />
+                                  <p className="text-text-secondary">
+                                    {pretrainedAxes(definition).objective ===
+                                    "causal_lm"
+                                      ? "Snapshot rows use exact text strings. Tokenization appends EOS if absent, then truncates on the right; no chat template is applied."
+                                      : pretrainedAxes(definition).objective ===
+                                          "dpo"
+                                        ? "Every row needs a prompt, a final assistant answer and a distinct rejected answer. Full updates use a separate frozen reference model."
+                                        : "Snapshot rows use conversational messages. The retained model tokenizer supplies the chat template."}
+                                    {
+                                      " QLoRA requires CUDA with bitsandbytes, or the pinned Linux ARM64 CPU NF4 pack."
+                                    }
+                                  </p>
+                                </>
+                              )}
+                              {[
+                                "learning.language_rl",
+                                "learning.control_rl",
+                                "learning.tool_rl",
+                              ].includes(definition?.engine ?? "") &&
+                                definition && (
+                                  <Choice
+                                    label="Learning objective"
+                                    value={String(
+                                      definition.learning?.objective ?? "ppo",
+                                    )}
+                                    options={(definition.engine ===
+                                    "learning.language_rl"
+                                      ? ["ppo", "grpo"]
+                                      : definition.engine ===
+                                          "learning.control_rl"
+                                        ? ["ppo", "dqn", "behavioral_cloning"]
+                                        : [
+                                            "grpo_tool_bandit",
+                                            "ppo_tool_bandit",
+                                          ]
+                                    ).map((id) => ({ id, name: id }))}
+                                    onChange={(objective) =>
+                                      change({
+                                        learning: {
+                                          ...definition.learning,
+                                          objective,
+                                        },
+                                      })
+                                    }
+                                  />
+                                )}
+                              {definition?.engine === "retrieval.index" && (
+                                <Choice
+                                  label="Retrieval mode"
+                                  value={String(
+                                    definition.parameters.mode ?? "lexical",
+                                  )}
+                                  options={[
+                                    "lexical",
+                                    "structured",
+                                    "semantic",
+                                    "hybrid",
+                                    "episode",
+                                  ].map((id) => ({ id, name: id }))}
+                                  onChange={(mode) =>
+                                    change({
+                                      parameters: {
+                                        ...definition.parameters,
+                                        mode,
+                                      },
+                                    })
+                                  }
+                                />
+                              )}
+                              {Object.entries(
+                                definition.engine === "data.pipeline"
+                                  ? {}
+                                  : definition.parameters,
+                              ).map(([key, value]) => (
+                                <Input
+                                  key={key}
+                                  label={key.replaceAll("_", " ")}
+                                  value={
+                                    typeof value === "object"
+                                      ? JSON.stringify(value)
+                                      : String(value ?? "")
+                                  }
+                                  onChange={(next) => {
+                                    let parsed: unknown = next;
+                                    if (typeof value === "number")
+                                      parsed = Number(next);
+                                    else if (
+                                      typeof value === "object" ||
+                                      typeof value === "boolean"
+                                    ) {
+                                      try {
+                                        parsed = JSON.parse(next);
+                                      } catch {
+                                        return;
+                                      }
+                                    }
+                                    change({
+                                      parameters: {
+                                        ...definition!.parameters,
+                                        [key]: parsed,
+                                      },
+                                    });
+                                  }}
+                                />
+                              ))}
+                              <p className="lab-wide text-text-secondary">
+                                Use Definition JSON for advanced adapter
+                                settings.
+                              </p>
+                            </div>
+                          </SettingsSection>
+                        )}
+                        {definition?.engine === "learning.language" && (
+                          <LanguageLearning
+                            key={`${authoringGeneration}:language`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setLanguageLearningValid}
+                          />
+                        )}
+                        {definition?.engine === "data.pipeline" && (
+                          <DataPreparation
+                            key={`${authoringGeneration}:data`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setDataPreparationValid}
+                          />
+                        )}
+                      </div>
+                      <div
+                        id="lab-view-json"
+                        role="tabpanel"
+                        aria-label="Definition JSON"
+                        hidden={view !== "json"}
                       >
-                        <div className="lab-fields">
-                          {definition?.engine === "learning.pretrained" && (
-                            <>
+                        <Textarea
+                          label="Experiment definition JSON"
+                          value={draft}
+                          onChange={setDraft}
+                          rows={20}
+                        />
+                      </div>
+                      {definition && (
+                        <section
+                          id="lab-view-execution"
+                          role="tabpanel"
+                          aria-label="Execution"
+                          hidden={view !== "execution"}
+                          className="lab-execution"
+                        >
+                          <SettingsSection
+                            title="Destination"
+                            description="Choose where and when to run this revision."
+                          >
+                            <div className="lab-fields">
                               <Choice
-                                label="Learning objective"
-                                value={pretrainedAxes(definition).objective}
+                                label="Execution target"
+                                value={target}
+                                onChange={setTarget}
+                                options={(targets.data ?? []).map((t) => ({
+                                  id: t.id,
+                                  name: t.name ?? t.id,
+                                }))}
+                              />
+                              <Input
+                                label="Start after"
+                                type="datetime-local"
+                                value={notBefore}
+                                onChange={setNotBefore}
+                                hint="Optional. Leave empty to run immediately. Uses your local time zone."
+                              />
+                            </div>
+                          </SettingsSection>
+                          <SettingsSection
+                            title="Runtime"
+                            description="Select the execution profile and backend."
+                          >
+                            <div className="lab-fields">
+                              <Choice
+                                label="Execution profile"
+                                value={definition.execution.profile}
                                 options={[
                                   {
-                                    id: "sft",
-                                    name: "Supervised conversations",
+                                    id: "trusted_native",
+                                    name: "Trusted native",
                                   },
-                                  {
-                                    id: "causal_lm",
-                                    name: "Continued pretraining · raw text",
-                                  },
-                                  {
-                                    id: "dpo",
-                                    name: "Preference learning · DPO",
-                                  },
+                                  { id: "isolated", name: "Isolated" },
                                 ]}
-                                onChange={(objective) =>
-                                  change(
-                                    editPretrainedAxes(definition, {
-                                      objective,
-                                    }),
-                                  )
-                                }
-                              />
-                              <Choice
-                                label="Weight updates"
-                                value={
-                                  pretrainedAxes(definition).update_strategy
-                                }
-                                options={["full", "lora", "qlora"].map(
-                                  (id) => ({ id, name: id }),
-                                )}
-                                onChange={(update_strategy) =>
-                                  change(
-                                    editPretrainedAxes(definition, {
-                                      update_strategy,
-                                    }),
-                                  )
-                                }
-                              />
-                              <p className="text-text-secondary">
-                                {pretrainedAxes(definition).objective ===
-                                "causal_lm"
-                                  ? "Snapshot rows use exact text strings. Tokenization appends EOS if absent, then truncates on the right; no chat template is applied."
-                                  : pretrainedAxes(definition).objective ===
-                                      "dpo"
-                                    ? "Every row needs a prompt, a final assistant answer and a distinct rejected answer. Full updates use a separate frozen reference model."
-                                    : "Snapshot rows use conversational messages. The retained model tokenizer supplies the chat template."}
-                                {
-                                  " QLoRA requires CUDA with bitsandbytes, or the pinned Linux ARM64 CPU NF4 pack."
-                                }
-                              </p>
-                            </>
-                          )}
-                          {[
-                            "learning.language_rl",
-                            "learning.control_rl",
-                            "learning.tool_rl",
-                          ].includes(definition?.engine ?? "") &&
-                            definition && (
-                              <Choice
-                                label="Learning objective"
-                                value={String(
-                                  definition.learning?.objective ?? "ppo",
-                                )}
-                                options={(definition.engine ===
-                                "learning.language_rl"
-                                  ? ["ppo", "grpo"]
-                                  : definition.engine === "learning.control_rl"
-                                    ? ["ppo", "dqn", "behavioral_cloning"]
-                                    : ["grpo_tool_bandit", "ppo_tool_bandit"]
-                                ).map((id) => ({ id, name: id }))}
-                                onChange={(objective) =>
+                                onChange={(profile) =>
                                   change({
-                                    learning: {
-                                      ...definition.learning,
-                                      objective,
+                                    execution: {
+                                      ...definition.execution,
+                                      profile,
                                     },
                                   })
                                 }
                               />
-                            )}
-                          {definition?.engine === "retrieval.index" && (
-                            <Choice
-                              label="Retrieval mode"
-                              value={String(
-                                definition.parameters.mode ?? "lexical",
-                              )}
-                              options={[
-                                "lexical",
-                                "structured",
-                                "semantic",
-                                "hybrid",
-                                "episode",
-                              ].map((id) => ({ id, name: id }))}
-                              onChange={(mode) =>
-                                change({
-                                  parameters: {
-                                    ...definition.parameters,
-                                    mode,
-                                  },
-                                })
-                              }
-                            />
-                          )}
-                          {Object.entries(
-                            definition.engine === "data.pipeline"
-                              ? {}
-                              : definition.parameters,
-                          ).map(([key, value]) => (
-                            <Input
-                              key={key}
-                              label={key.replaceAll("_", " ")}
-                              value={
-                                typeof value === "object"
-                                  ? JSON.stringify(value)
-                                  : String(value ?? "")
-                              }
-                              onChange={(next) => {
-                                let parsed: unknown = next;
-                                if (typeof value === "number")
-                                  parsed = Number(next);
-                                else if (
-                                  typeof value === "object" ||
-                                  typeof value === "boolean"
-                                ) {
-                                  try {
-                                    parsed = JSON.parse(next);
-                                  } catch {
-                                    return;
-                                  }
+                              <Choice
+                                label="Execution backend"
+                                value={definition.execution.backend ?? "native"}
+                                options={[
+                                  "native",
+                                  "container",
+                                  "kubernetes",
+                                  "rq",
+                                ].map((id) => ({ id, name: id }))}
+                                onChange={(backend) =>
+                                  change({
+                                    execution: {
+                                      ...definition.execution,
+                                      backend,
+                                    },
+                                  })
                                 }
-                                change({
-                                  parameters: {
-                                    ...definition!.parameters,
-                                    [key]: parsed,
-                                  },
-                                });
-                              }}
-                            />
-                          ))}
-                          <p className="lab-wide text-text-secondary">
-                            Use Definition JSON for advanced adapter settings.
+                              />
+                            </div>
+                          </SettingsSection>
+                          <SettingsSection
+                            title="Limits"
+                            description="Bound execution time and retained output size."
+                          >
+                            <div className="lab-fields">
+                              <Input
+                                label="Maximum execution seconds"
+                                type="number"
+                                value={String(
+                                  definition.execution.max_seconds ?? 300,
+                                )}
+                                onChange={(value) => {
+                                  if (
+                                    Number.isInteger(Number(value)) &&
+                                    Number(value) > 0
+                                  )
+                                    change({
+                                      execution: {
+                                        ...definition.execution,
+                                        max_seconds: Number(value),
+                                      },
+                                    });
+                                }}
+                              />
+                              <Input
+                                label="Maximum output bytes"
+                                type="number"
+                                value={String(
+                                  definition.execution.max_output_bytes ??
+                                    536870912,
+                                )}
+                                onChange={(value) => {
+                                  if (
+                                    Number.isInteger(Number(value)) &&
+                                    Number(value) > 0
+                                  )
+                                    change({
+                                      execution: {
+                                        ...definition.execution,
+                                        max_output_bytes: Number(value),
+                                      },
+                                    });
+                                }}
+                              />
+                            </div>
+                          </SettingsSection>
+                          <p>
+                            The chosen profile/backend is saved without
+                            fallback. Runner-owned capabilities and native
+                            grants are checked on the selected target.
                           </p>
-                        </div>
-                      </SettingsSection>
-                    )}
-                    {definition?.engine === "learning.language" && (
-                      <LanguageLearning
-                        key={`${authoringGeneration}:${saved?.id ?? "new-language"}`}
-                        definition={definition}
-                        onChange={change}
-                        onValidityChange={setLanguageLearningValid}
-                      />
-                    )}
-                    {definition?.engine === "data.pipeline" && (
-                      <DataPreparation
-                        key={`${authoringGeneration}:${saved?.id ?? "new-data"}`}
-                        definition={definition}
-                        onChange={change}
-                        onValidityChange={setDataPreparationValid}
-                      />
-                    )}
-                  </div>
-                  <div
-                    id="lab-view-json"
-                    role="tabpanel"
-                    aria-label="Definition JSON"
-                    hidden={view !== "json"}
-                  >
-                    <Textarea
-                      label="Experiment definition JSON"
-                      value={draft}
-                      onChange={setDraft}
-                      rows={20}
-                    />
-                  </div>
-                  {definition && (
-                    <section
-                      id="lab-view-execution"
-                      role="tabpanel"
-                      aria-label="Execution"
-                      hidden={view !== "execution"}
-                      className="lab-execution"
-                    >
-                      <SettingsSection
-                        title="Destination"
-                        description="Choose where and when to run this revision."
-                      >
-                        <div className="lab-fields">
-                          <Choice
-                            label="Execution target"
-                            value={target}
-                            onChange={setTarget}
-                            options={(targets.data ?? []).map((t) => ({
-                              id: t.id,
-                              name: t.name ?? t.id,
-                            }))}
-                          />
-                          <Input
-                            label="Start after"
-                            type="datetime-local"
-                            value={notBefore}
-                            onChange={setNotBefore}
-                            hint="Optional. Leave empty to run immediately. Uses your local time zone."
-                          />
-                        </div>
-                      </SettingsSection>
-                      <SettingsSection
-                        title="Runtime"
-                        description="Select the execution profile and backend."
-                      >
-                        <div className="lab-fields">
-                          <Choice
-                            label="Execution profile"
-                            value={definition.execution.profile}
-                            options={[
-                              { id: "trusted_native", name: "Trusted native" },
-                              { id: "isolated", name: "Isolated" },
-                            ]}
-                            onChange={(profile) =>
-                              change({
-                                execution: { ...definition.execution, profile },
-                              })
-                            }
-                          />
-                          <Choice
-                            label="Execution backend"
-                            value={definition.execution.backend ?? "native"}
-                            options={[
-                              "native",
-                              "container",
-                              "kubernetes",
-                              "rq",
-                            ].map((id) => ({ id, name: id }))}
-                            onChange={(backend) =>
-                              change({
-                                execution: { ...definition.execution, backend },
-                              })
-                            }
-                          />
-                        </div>
-                      </SettingsSection>
-                      <SettingsSection
-                        title="Limits"
-                        description="Bound execution time and retained output size."
-                      >
-                        <div className="lab-fields">
-                          <Input
-                            label="Maximum execution seconds"
-                            type="number"
-                            value={String(
-                              definition.execution.max_seconds ?? 300,
-                            )}
-                            onChange={(value) => {
-                              if (
-                                Number.isInteger(Number(value)) &&
-                                Number(value) > 0
-                              )
-                                change({
-                                  execution: {
-                                    ...definition.execution,
-                                    max_seconds: Number(value),
+                          <details>
+                            <summary>
+                              Selected target profile capabilities
+                            </summary>
+                            <pre>
+                              {json(
+                                selectedTarget?.profile ??
+                                  selectedTarget?.capabilities ?? {
+                                    status: "not_reported",
+                                    target_id: target,
                                   },
-                                });
-                            }}
+                              )}
+                            </pre>
+                          </details>
+                        </section>
+                      )}
+                      {definition && (
+                        <section
+                          id="lab-view-inputs"
+                          role="tabpanel"
+                          aria-label="Inputs"
+                          hidden={view !== "inputs"}
+                        >
+                          <InputArtifacts
+                            key={`${authoringGeneration}:${definition.engine}`}
+                            definition={definition}
+                            onChange={(inputs) => change({ inputs })}
+                            signal={() => lifetime.current?.signal}
                           />
-                          <Input
-                            label="Maximum output bytes"
-                            type="number"
-                            value={String(
-                              definition.execution.max_output_bytes ??
-                                536870912,
-                            )}
-                            onChange={(value) => {
-                              if (
-                                Number.isInteger(Number(value)) &&
-                                Number(value) > 0
-                              )
-                                change({
-                                  execution: {
-                                    ...definition.execution,
-                                    max_output_bytes: Number(value),
-                                  },
-                                });
-                            }}
-                          />
-                        </div>
-                      </SettingsSection>
+                        </section>
+                      )}
+                    </div>
+                  </div>
+                  {parseError && <Fault error={parseError} />}
+                  {conflict && (
+                    <div role="alert">
                       <p>
-                        The chosen profile/backend is saved without fallback.
-                        Runner-owned capabilities and native grants are checked
-                        on the selected target.
+                        The saved revision changed. Your draft is preserved.
+                        Reload the latest revision to compare before saving
+                        again.
                       </p>
-                      <details>
-                        <summary>Selected target profile capabilities</summary>
-                        <pre>
-                          {json(
-                            selectedTarget?.profile ??
-                              selectedTarget?.capabilities ?? {
-                                status: "not_reported",
-                                target_id: target,
-                              },
-                          )}
-                        </pre>
-                      </details>
-                    </section>
+                      <Button
+                        disabled={busy}
+                        onClick={() =>
+                          action(async (signal) => {
+                            const rows = await studio.api.get<
+                              SavedDefinition[]
+                            >("/api/lab/definitions", signal);
+                            if (signal.aborted) return;
+                            const latest = rows.find(
+                              (row) => row.id === saved?.id,
+                            );
+                            if (!latest)
+                              throw new Error(
+                                "This definition no longer exists. Save your draft as a new experiment.",
+                              );
+                            setAuthoringGeneration(
+                              (generation) => generation + 1,
+                            );
+                            setSaved(latest);
+                            setDraft(json(latest.definition));
+                            setSavedText(json(latest.definition));
+                            setConflict(false);
+                            definitions.reload();
+                          })
+                        }
+                      >
+                        Load latest saved revision
+                      </Button>
+                      <Button
+                        onClick={() => {
+                          setSaved(null);
+                          setConflict(false);
+                        }}
+                      >
+                        Save draft as new experiment
+                      </Button>
+                    </div>
                   )}
-                  {definition && (
-                    <section
-                      id="lab-view-inputs"
-                      role="tabpanel"
-                      aria-label="Inputs"
-                      hidden={view !== "inputs"}
-                    >
-                      <InputArtifacts
-                        key={`${authoringGeneration}:${saved?.id ?? definition.engine}`}
-                        definition={definition}
-                        onChange={(inputs) => change({ inputs })}
-                        signal={() => lifetime.current?.signal}
-                      />
-                    </section>
-                  )}
-                </div>
-              </div>
-              {parseError && <Fault error={parseError} />}
-              {conflict && (
-                <div role="alert">
-                  <p>
-                    The saved revision changed. Your draft is preserved. Reload
-                    the latest revision to compare before saving again.
-                  </p>
-                  <Button
-                    disabled={busy}
-                    onClick={() =>
-                      action(async (signal) => {
-                        const rows = await studio.api.get<SavedDefinition[]>(
-                          "/api/lab/definitions",
-                          signal,
-                        );
-                        if (signal.aborted) return;
-                        const latest = rows.find((row) => row.id === saved?.id);
-                        if (!latest)
-                          throw new Error(
-                            "This definition no longer exists. Save your draft as a new experiment.",
-                          );
-                        load(latest);
-                        definitions.reload();
-                      })
+                  <Fault
+                    error={
+                      error ||
+                      catalog.error ||
+                      definitions.error ||
+                      targets.error
                     }
-                  >
-                    Load latest saved revision
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setSaved(null);
-                      setConflict(false);
-                    }}
-                  >
-                    Save draft as new experiment
-                  </Button>
-                </div>
-              )}
-              <div className="lab-actions lab-primary-actions">
-                <Button
-                  variant="primary"
-                  disabled={busy || !!parseError || !authoringValid}
-                  onClick={save}
-                >
-                  {saved ? "Save revision" : "Save experiment"}
-                </Button>
-                <Button
-                  disabled={busy || !!parseError || !authoringValid || !target}
-                  onClick={() =>
-                    action(async (signal) => {
-                      const result = await studio.api.post(
-                        "/api/lab/preflight",
-                        {
-                          definition: parseDefinition(draft),
-                          target_id: target,
-                        },
-                        signal,
-                      );
-                      if (!signal.aborted)
-                        setPreflight({ draft, target, result });
-                    })
-                  }
-                >
-                  Check compatibility
-                </Button>
-                <Button
-                  disabled={
-                    busy || dirty || !saved || !target || !authoringValid
-                  }
-                  onClick={() =>
-                    action(async (signal) => {
-                      const run = await studio.api.post<LabRun>(
-                        "/api/lab/runs",
-                        {
-                          definition_id: saved!.id,
-                          revision: saved!.revision,
-                          target_id: target,
-                          idempotency_key: crypto.randomUUID(),
-                          ...(notBefore
-                            ? { not_before: new Date(notBefore).toISOString() }
-                            : {}),
-                        },
-                        signal,
-                      );
-                      if (!signal.aborted) {
-                        selectRun(run.id);
-                        setArea("runs");
-                        runs.reload();
-                      }
-                    })
-                  }
-                >
-                  Run saved revision
-                </Button>
+                  />
+                  {preflight != null &&
+                    preflight.draft === draft &&
+                    preflight.target === target && (
+                      <Evidence
+                        label="Laboratory compatibility check"
+                        data={preflight.result}
+                      >
+                        <details open>
+                          <summary>Compatibility result</summary>
+                          <pre>{json(preflight.result)}</pre>
+                        </details>
+                      </Evidence>
+                    )}
+                </fieldset>
               </div>
-              <p className="lab-run-readiness" role="status">
-                {busy
-                  ? "Laboratory request in progress."
-                  : !saved
-                    ? "Save the experiment before running."
-                    : dirty
-                      ? "Save your edited revision before running."
-                      : !target
-                        ? "Choose an execution target before running."
-                        : "Saved revision ready to submit to the selected target."}
-                {preflight &&
-                  (preflight.draft !== draft || preflight.target !== target) &&
-                  " Compatibility check is stale. Recheck the current draft and target."}
-              </p>
-              {preflight != null &&
-                preflight.draft === draft &&
-                preflight.target === target && (
-                  <Evidence
-                    label="Laboratory compatibility check"
-                    data={preflight.result}
-                  >
-                    <details open>
-                      <summary>Compatibility result</summary>
-                      <pre>{json(preflight.result)}</pre>
-                    </details>
-                  </Evidence>
-                )}
-            </Panel>
-          </section>
+            </div>
+            <div className="lab-actions lab-primary-actions">
+              <Button
+                variant="primary"
+                disabled={busy || !!parseError || !authoringValid}
+                onClick={save}
+              >
+                {saved ? "Save revision" : "Save experiment"}
+              </Button>
+              <Button
+                disabled={busy || !!parseError || !authoringValid || !target}
+                onClick={() =>
+                  action(async (signal) => {
+                    const result = await studio.api.post(
+                      "/api/lab/preflight",
+                      {
+                        definition: parseDefinition(draft),
+                        target_id: target,
+                      },
+                      signal,
+                    );
+                    if (!signal.aborted)
+                      setPreflight({ draft, target, result });
+                  })
+                }
+              >
+                Check compatibility
+              </Button>
+              <Button
+                disabled={busy || dirty || !saved || !target || !authoringValid}
+                onClick={() =>
+                  action(async (signal) => {
+                    const run = await studio.api.post<LabRun>(
+                      "/api/lab/runs",
+                      {
+                        definition_id: saved!.id,
+                        revision: saved!.revision,
+                        target_id: target,
+                        idempotency_key: crypto.randomUUID(),
+                        ...(notBefore
+                          ? { not_before: new Date(notBefore).toISOString() }
+                          : {}),
+                      },
+                      signal,
+                    );
+                    if (!signal.aborted) {
+                      selectRun(run.id);
+                      setArea("runs");
+                      setExperimentOpen(false);
+                      runs.reload();
+                    }
+                  })
+                }
+              >
+                Run saved revision
+              </Button>
+            </div>
+            <p className="lab-run-readiness" role="status">
+              {busy
+                ? "Laboratory request in progress."
+                : !saved
+                  ? "Save the experiment before running."
+                  : dirty
+                    ? "Save your edited revision before running."
+                    : !target
+                      ? "Choose an execution target before running."
+                      : "Saved revision ready to submit to the selected target."}
+              {preflight &&
+                (preflight.draft !== draft || preflight.target !== target) &&
+                " Compatibility check is stale. Recheck the current draft and target."}
+            </p>
+          </Modal>
           <section
             id="lab-area-runs"
             role="tabpanel"

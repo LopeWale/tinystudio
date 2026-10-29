@@ -1,5 +1,4 @@
 """Source bytes cross API/worker hosts without any shared directory."""
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -190,3 +189,12 @@ def test_original_source_can_be_downloaded_through_another_api_host(tmp_path, ba
     assert response.status_code == 307
     assert response.headers["location"] == "https://example.invalid/signed"
     assert backend.client.signed[1]["Key"] == ref["storage_key"]
+
+
+def test_r2_workspace_configuration_does_not_require_posix_uid(tmp_path, monkeypatch):
+    import tinystudio.config as module
+    monkeypatch.setenv("TINYSTUDIO_STORAGE_BACKEND", "r2")
+    monkeypatch.delenv("TINYSTUDIO_CACHE_DIR", raising=False)
+    monkeypatch.delattr(module.os, "getuid", raising=False)
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(tmp_path))
+    assert module._load().cache_dir.is_relative_to(tmp_path)

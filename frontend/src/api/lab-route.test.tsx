@@ -154,8 +154,12 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
     await workspace.findByRole("heading", { name: "Laboratory" }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "Save experiment" }),
+    screen.getByRole("button", { name: "New experiment" }),
   ).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("tab", { name: "Experiment" }),
+  ).not.toBeInTheDocument();
   expect(
     within(
       screen.getByRole("navigation", { name: "Main navigation" }),

@@ -19,7 +19,8 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TINYSTUDIO_DATA_DIR=/data \
-    HF_HOME=/data/hub \
+    TINYSTUDIO_CACHE_DIR=/tmp/tinystudio-cache \
+    HF_HOME=/tmp/tinystudio-hub \
     TOKENIZERS_PARALLELISM=false
 
 RUN apt-get update \

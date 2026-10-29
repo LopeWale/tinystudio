@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from tinystudio.config import config
@@ -54,24 +54,56 @@ def update_project(db: Session, project: Project, name: str | None = None, goal:
 
 
 def delete_project(db: Session, project: Project) -> None:
-    """Delete the rows (cascade), the repositories' vector collections, and the artifact directory."""
+    """Delete idle project rows before removing their external artifacts."""
     from tinystudio import vectors
-
-    for repository in db.scalars(select(Repository).where(Repository.project_id == project.id)):
-        try:
-            vectors.drop_collection(repository.collection)
-        except Exception:  # noqa: BLE001 - the vector store may be down; rows still go
-            pass
+    from tinystudio.lab.models import LabAttempt, LabOperation, LabRun
     from tinystudio.storage import project_key, storage
-    backend = storage()
-    if backend.remote:
-        for category in ("snapshots", "models", "captures", "retained-captures", "sources", "uploads", "lab"):
-            backend.delete_prefix(project_key(project.id, category))
-        for task_id in db.scalars(select(Task.id).where(Task.project_id == project.id)):
-            backend.delete_prefix(f"tasks/{task_id}")
-    artifact_dir = config().project_dir(project.id)
+
+    # The project lock fences new project-scoped inserts through their FK;
+    # work-row locks also prevent existing work from starting during deletion.
+    project_id = project.id
+    project = db.scalar(select(Project).where(Project.id == project_id).with_for_update())
+    if project is None:
+        raise ProjectError("project no longer exists")
+    run_scope = select(LabRun.id).where(LabRun.project_id == project_id)
+    terminal_lab = {"succeeded", "failed", "cancelled", "lost", "recovery_required"}
+    work = (
+        ("task", Task, Task.project_id == project_id, {"succeeded", "failed", "stopped"}),
+        ("laboratory run", LabRun, LabRun.project_id == project_id, terminal_lab),
+        ("laboratory attempt", LabAttempt, LabAttempt.run_id.in_(run_scope), terminal_lab),
+        ("laboratory operation", LabOperation, LabOperation.project_id == project_id, terminal_lab),
+    )
+    identities: dict[type[Any], list[str]] = {}
+    for label, model, scope, terminal in work:
+        rows = list(db.execute(select(model.id, model.state).where(scope).with_for_update()))
+        if any(row.state not in terminal for row in rows):
+            raise ProjectError(f"project has active {label} work; stop or finish it before deleting the project")
+        identities[model] = [row.id for row in rows]
+
+    collections = list(db.scalars(select(Repository.collection).where(Repository.project_id == project_id)))
+    prefixes = [project_key(project_id, category) for category in
+                ("snapshots", "models", "captures", "retained-captures", "sources", "uploads", "lab")]
+    prefixes.extend(f"tasks/{task_id}" for task_id in identities[Task])
+    artifact_dir = config().project_dir(project_id)
+
+    # Attempts restrict target deletion, and runs restrict definitions/targets.
+    # A single run DELETE also handles same-project parent_run_id references at
+    # PostgreSQL's statement boundary; cross-project references must still fail.
+    db.execute(delete(LabAttempt).where(LabAttempt.run_id.in_(identities[LabRun])))
+    db.execute(delete(LabRun).where(LabRun.id.in_(identities[LabRun])))
     db.delete(project)
     db.flush()
+
+    # Never destroy remote/vector artifacts before relational FK checks pass.
+    for collection in collections:
+        try:
+            vectors.drop_collection(collection)
+        except Exception:  # noqa: BLE001 - the vector store may be down; rows still go
+            pass
+    backend = storage()
+    if backend.remote:
+        for prefix in prefixes:
+            backend.delete_prefix(prefix)
     shutil.rmtree(artifact_dir, ignore_errors=True)
 
 
