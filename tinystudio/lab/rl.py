@@ -17,9 +17,36 @@ from .learning import artifact, resolved_inputs
 
 
 def read_records(spec: dict, key: str = "records") -> list[dict]:
+    """Read immutable records without discarding source custody or row identities."""
+    from .learning import evaluator_validation_inputs
+    from .partitioning import partition_label, source_protection
     params = spec["definition"].get("parameters", {})
-    rows = list(params.get(key, []))
-    for item in resolved_inputs(spec, {"resume", "teacher", "pretrained_model", "embedding_model"}):
+    supplied = params.get(key, [])
+    if not isinstance(supplied, list):
+        raise ValueError("records must be a list of JSON objects")
+    rows = []
+
+    def append(values, identity, binding=None, validation=False):
+        if not isinstance(values, list) or any(not isinstance(row, dict) for row in values):
+            raise ValueError("records must be a list of JSON objects")
+        for index, source in enumerate(values):
+            row = dict(source)
+            if validation:
+                label = partition_label(row, allow_truth=True)
+                if label not in {None, "validation"}:
+                    raise ValueError("validation artifact contains non-validation partition rows")
+                row["partition"] = "validation"
+            row["source_visibility"] = source_protection(row,
+                visibility=(binding or {}).get("visibility", "model"),
+                role=(binding or {}).get("role", "source"))
+            row.setdefault("source_record_id", row.get("record_id", f"{identity}:{index}"))
+            rows.append(row)
+
+    append(supplied, f"inline:{key}")
+    validation_bindings = evaluator_validation_inputs(spec)
+    bindings = [(item, False) for item in resolved_inputs(spec, {"resume", "teacher", "pretrained_model", "embedding_model"})]
+    bindings.extend((item, True) for item in validation_bindings)
+    for item, validation in bindings:
         path = Path(item["path"])
         data = path.read_bytes()
         if item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"]:
@@ -37,9 +64,11 @@ def read_records(spec: dict, key: str = "records") -> list[dict]:
                 values = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
             if isinstance(values, dict):
                 values = values.get(key, values.get("records", [values]))
-        rows.extend(values)
-    if any(not isinstance(row, dict) for row in rows):
-        raise ValueError("records must be JSON objects")
+        append(values, hashlib.sha256(data).hexdigest(), item, validation)
+    if validation_bindings:
+        for row in rows:
+            if partition_label(row, allow_truth=True) is None and row["source_visibility"] == "model":
+                row["partition"] = "train"
     return rows
 
 
@@ -251,14 +280,21 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
     if not 0 <= gamma <= 1 or not 0 < epsilon < 1 or not 0 < lr <= 1:
         raise ValueError("invalid discount, clipping epsilon or learning rate")
     from .learning import evaluator_validation_inputs
-    if evaluator_validation_inputs(spec):
-        raise ValueError("control/tool RL does not consume external validation artifacts; use the documented independent environment evaluator")
+    if not offline and evaluator_validation_inputs(spec):
+        raise ValueError("online control/tool policies require an independent environment evaluator; external validation artifacts are unsupported")
     architecture = {"observation_size": 6 if tools_mode else 3, "hidden_size": hidden,
                     "layers": dimensions["layers"], "actions": 4 if tools_mode else 3}
     seed = int(definition.get("seed", 42))
     data = read_records(spec, "transitions") if offline else []
     if offline and not data:
         raise ValueError("offline RL and imitation require retained transitions")
+    partition_plan = None
+    if offline:
+        from .research_partitions import record_partition_plan
+        if "leakage_policy" in params:
+            raise ValueError("offline policy leakage_policy overrides are unsupported; use group_by for additional isolation")
+        partition_plan = record_partition_plan(data, seed=seed, group_by=params.get("group_by"), require_validation=False)
+        data = [data[index] for index in partition_plan["train"]]
     for row in data:
         if len(row.get("observation", [])) != 3 or row.get("action") not in range(3):
             raise ValueError("offline rows require three observation features and action in [0, 2]")
@@ -288,6 +324,7 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
     corpus_digest = hashlib.sha256(json.dumps(data if offline else tasks if tools_mode else [], sort_keys=True).encode()).hexdigest()
     output_dir.mkdir(parents=True, exist_ok=True)
     previous_threads = torch.get_num_threads()
+    environment = None
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
         torch.set_num_threads(1)
@@ -300,8 +337,8 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
             optimizer = torch.optim.Adam(model.parameters(), lr=lr)
             generator = torch.Generator().manual_seed(seed + 3)
             reward_options = params.get("reward", {})
-            environment = ControlEnvironment(seed, params.get("target", 0), params.get("horizon", 24), agents,
-                ControlReward(reward_options.get("distance_weight", 1), reward_options.get("action_cost", 0.01)))
+            from .policy_environment import create_policy_environment
+            environment = create_policy_environment(params, seed=seed, agents=agents)
             error_cost = _finite(reward_options.get("error_cost", 0.1), "error_cost")
             if error_cost < 0:
                 raise ValueError("error_cost must be nonnegative")
@@ -317,8 +354,14 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 optimizer.load_state_dict(saved["optimizer"])
                 reference.load_state_dict(saved["reference_model"])
                 generator.set_state(saved["sampler_rng"])
-                environment.restore(saved["environment"])
-                observation = saved["observation"]
+                snapshot = saved["environment"]
+                if "core" not in snapshot:  # Earlier native checkpoints retained the same core state directly.
+                    snapshot = {"configuration": environment.state()["configuration"], "core": snapshot,
+                                "observation": saved["observation"]}
+                if saved["observation"] != snapshot["observation"]:
+                    raise ValueError("checkpoint observation differs from environment observation")
+                environment.restore(snapshot)
+                observation = list(environment.state()["observation"])
                 torch.set_rng_state(saved["torch_rng"])
                 start = saved["step"]
                 if iterations <= start:
@@ -337,7 +380,7 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                     indices = torch.randint(len(data), (batch_size,), generator=generator).tolist()
                     batch = [{**data[index], "policy_version": version,
                               "behavior_policy_version": data[index].get("policy_version", "unknown"),
-                              "source_index": index, "update": update, "source": "offline"} for index in indices]
+                              "source_index": partition_plan["train"][index], "update": update, "source": "offline"} for index in indices]
                 elif tools_mode:
                     task = tasks[update % len(tasks)]
                     feature = [float(task["left"]) / 10, float(task["right"]) / 10] + [float(task["operation"] == name) for name in registry.names]
@@ -439,7 +482,7 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 "backend": "cpu", "torch_version": str(torch.__version__),
                 "configuration": configuration, "config_sha256": config_digest,
                 "corpus_sha256": corpus_digest,
-                "reward_evaluator_separate": True}
+                "reward_evaluator_separate": True, "partition_plan": partition_plan}
             checkpoint = output_dir / "policy.pt"
             torch.save(state, checkpoint)
             probe = torch.tensor([[0.1] * architecture["observation_size"]])
@@ -450,20 +493,35 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
             reloaded, _ = load_policy(checkpoint)
             with torch.no_grad():
                 reload_equal = torch.equal(expected, reloaded(probe)[0])
+            evaluation = None
+            evaluation_artifacts = []
+            if not tools_mode:
+                from .control_evaluation import evaluate_control_policy
+                evaluation = evaluate_control_policy(reloaded, params, seed=seed, agents=agents, cancelled=cancelled)
+                evaluation["format"] = "tinystudio.control-evaluation.v1"
+                evaluation["policy_version"] = final_version
+                evaluation_path = output_dir / "control-evaluation.json"
+                evaluation_path.write_text(json.dumps(evaluation, indent=2))
+                evaluation_artifacts.append(artifact(evaluation_path, "independent_evaluation"))
             trace_path = output_dir / "transitions.jsonl"
             trace_path.write_text("".join(json.dumps(row) + "\n" for row in transitions))
             update_path = output_dir / "updates.json"
             update_path.write_text(json.dumps(updates, indent=2))
             return {"records": updates, "artifacts": [artifact(checkpoint, "policy_checkpoint", "application/octet-stream"),
-                artifact(trace_path, "transitions", "application/x-ndjson"), artifact(update_path, "policy_updates")],
+                artifact(trace_path, "transitions", "application/x-ndjson"), artifact(update_path, "policy_updates"), *evaluation_artifacts],
+                "baseline_comparison": {"format": evaluation["format"], "metrics": evaluation["metrics"],
+                    "qualification": evaluation["qualification"]} if evaluation else None,
                 "metrics": {"steps": completed, "transitions": len(transitions), "parameters_changed": initial_version != final_version,
                     "reload_logits_equal": reload_equal, "policy_version": final_version,
                     "tool_calls": sum("tool" in row for row in transitions),
                     "tool_errors": sum(bool(row.get("tool", {}).get("error")) for row in transitions)},
-                "qualification": {"status": "completed" if completed == iterations else "cancelled", "algorithm": algorithm,
+                "qualification": {"status": "completed" if completed == iterations and (evaluation is None or evaluation["qualification"]["comparison_complete"]) else "cancelled", "algorithm": algorithm,
                     "backend": "cpu", "dtype": "float32", "offline": offline, "agents": agents, "save_unload_reload": reload_equal,
-                    "torchrl": "optional TensorDict data bridge; EnvBase collector integration unqualified",
+                    "environment_runtime": environment.runtime,
+                    "torchrl": "EnvBase reset/step execution" if environment.runtime == "torchrl" else "not selected",
                     "scope": "one-tool categorical bandit analogue; not token-level LLM GRPO" if tools_mode else "seeded local control fixture; no physical or benchmark performance qualification",
                     "resume": "exact same CPU backend, corpus and configuration at update boundaries"}}
         finally:
+            if environment is not None:
+                environment.close()
             torch.set_num_threads(previous_threads)

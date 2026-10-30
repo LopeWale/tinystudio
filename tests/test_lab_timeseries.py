@@ -1,5 +1,6 @@
 import math
 import hashlib
+import json
 
 import pytest
 import torch
@@ -67,6 +68,15 @@ def test_multimodal_fuses_real_modalities_and_reloads(tmp_path, objective):
     assert len(prediction) == 2
     if objective == "classification":
         assert set(prediction) <= {"odd", "even"}
+        report = json.loads((tmp_path / "predictions.json").read_text())
+        expected_labels = [experiment["definition"]["parameters"]["records"][index]["target"]
+                           for index in state["split"]["validation"]]
+        assert report["target_labels"] == expected_labels
+        assert report["classes"] == ["even", "odd"]
+        assert report["target_encoding"] == "class_index"
+        assert [report["classes"][index] for index in report["targets"]] == expected_labels
+        assert [row["target"] for row in report["records"]] == expected_labels
+        assert [row["target_index"] for row in report["records"]] == report["targets"]
 
 
 def test_invalid_data_and_single_modality_fail_explicitly(tmp_path):
@@ -123,3 +133,71 @@ def test_nested_forecaster_architecture_is_actual_and_unsupported_strategy_rejec
     experiment["definition"]["learning"]["update_strategy"] = "qlora"
     with pytest.raises(ValueError, match="unsupported update_strategy"):
         execute_timeseries(experiment, tmp_path / "strategy", lambda row: None, lambda: False)
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_excluded_numeric_rows_are_never_parsed_as_features_or_targets(tmp_path, multimodal):
+    rows = [{"source_record_id": f"{label}:{index}", "partition": label,
+             "episode_id": label, "time": index, "value": index,
+             "numeric": [index], "text": "signal", "target": index}
+            for label in ("train", "validation") for index in range(6)]
+    rows.extend([{"partition": label, "episode_id": label, "value": {"invalid": True},
+                  "numeric": "not-an-array", "text": None, "target": {"invalid": True}}
+                 for label in ("test", "truth")])
+    experiment = {"definition": {"learning": {"family": "mlp"} if not multimodal else {},
+                                "parameters": {"steps": 1, "hidden_size": 8,
+                                               "records": rows, **({"modalities": ["numeric", "text"]} if multimodal else {"context": 2})}}}
+    execute = execute_multimodal if multimodal else execute_timeseries
+    execute(experiment, tmp_path, lambda row: None, lambda: False)
+    state = load_research_checkpoint(tmp_path / "model.pt")[1]
+    normalization = state["normalization"]["numeric"] if multimodal else state["normalization"]
+    assert normalization["mean"].tolist() == pytest.approx([2.5])
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_numeric_external_validation_binding_is_used_without_resplitting(tmp_path, multimodal):
+    def rows(episode, offset):
+        return [{"source_record_id": f"{episode}:{index}", "episode_id": episode, "time": index,
+                 "value": offset + index, "numeric": [offset + index], "text": "signal", "target": offset + index}
+                for index in range(6)]
+    validation = tmp_path / "validation.json"
+    validation.write_text(json.dumps({"records": rows("v", 10)}))
+    experiment = {"definition": {"learning": {"family": "mlp"} if not multimodal else {},
+        "parameters": {"steps": 1, "hidden_size": 8, "records": rows("t", 0),
+                       **({"modalities": ["numeric", "text"]} if multimodal else {"context": 2})},
+        "inputs": [{"artifact_id": "validation", "role": "validation", "visibility": "evaluation",
+                    "sha256": hashlib.sha256(validation.read_bytes()).hexdigest()}]},
+        "evaluation_input_paths": {"validation": str(validation)}}
+    execute = execute_multimodal if multimodal else execute_timeseries
+    execute(experiment, tmp_path / "output", lambda row: None, lambda: False)
+    predictions = json.loads((tmp_path / "output/predictions.json").read_text())
+    expected = range(6) if multimodal else range(2, 6)
+    assert [row["source_record_ids"] for row in predictions["records"]] == [[f"v:{index}"] for index in expected]
+    state = load_research_checkpoint(tmp_path / "output/model.pt")[1]
+    normalization = state["normalization"]["numeric"] if multimodal else state["normalization"]
+    assert normalization["mean"].tolist() == pytest.approx([2.5])
+
+
+@pytest.mark.parametrize("parameters, message", [
+    ({"temporal_split": "false"}, "boolean"),
+    ({"leakage_policy": {}}, "leakage_policy"),
+    ({"records": [{"value": 0}]}, "mutually exclusive"),
+])
+def test_forecast_partition_controls_fail_explicitly(tmp_path, parameters, message):
+    with pytest.raises(ValueError, match=message):
+        execute_timeseries(spec(steps=1, **parameters), tmp_path, lambda row: None, lambda: False)
+
+
+def test_forecast_explicit_temporal_validation_uses_only_causal_training_history(tmp_path):
+    rows = [{"source_record_id": f"r:{index}", "episode_id": "one", "time": index,
+             "partition": label, "value": index if index < 8 else "excluded"}
+            for index, label in enumerate(["train"] * 5 + ["validation"] * 3 + ["test", "truth"])]
+    execute_timeseries(spec("mlp", values=None, records=rows, context=2, horizon=2,
+                            temporal_split=True, steps=1), tmp_path, lambda row: None, lambda: False)
+    state = load_research_checkpoint(tmp_path / "model.pt")[1]
+    assert state["normalization"]["mean"].tolist() == pytest.approx([2.0])
+    predictions = json.loads((tmp_path / "predictions.json").read_text())
+    assert predictions["targets"] == [[5.0, 6.0], [6.0, 7.0]]
+    assert [row["source_record_ids"] for row in predictions["records"]] == [["r:5", "r:6"], ["r:6", "r:7"]]
+    first_validation = state["split"]["windows"][state["split"]["validation"][0]]
+    assert first_validation == {"context_rows": [3, 4], "target_rows": [5, 6]}

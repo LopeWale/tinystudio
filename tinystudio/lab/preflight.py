@@ -70,7 +70,9 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
     from .policy_selection import POLICY_ENGINES, validate_policy_selection
     if engine in POLICY_ENGINES:
         try:
-            validate_policy_selection(definition.model_dump())
+            selected = validate_policy_selection(definition.model_dump())
+            if selected["environment_runtime"] == "torchrl" and not all((runtime or {}).get(name) for name in ("torchrl", "tensordict")):
+                raise ValueError("selected TorchRL environment requires torchrl and tensordict on the execution target")
         except (ValueError, KeyError, TypeError) as exc:
             check("policy_selection", False, str(exc))
         else:

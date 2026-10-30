@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import random
 from pathlib import Path
 from typing import Callable
 
@@ -146,9 +145,14 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
         raise ValueError("research dimensions, steps or learning rate exceed bounds")
     if family == "transformer" and hidden % heads:
         raise ValueError("hidden_size must be divisible by heads")
-    from .learning import evaluator_validation_inputs
-    if evaluator_validation_inputs(spec):
-        raise ValueError("numeric/fusion learners currently require their documented internal holdout; external validation artifacts are unsupported")
+    from .research_partitions import forecast_window_plan, record_partition_plan
+    if "leakage_policy" in params:
+        raise ValueError("leakage_policy is unsupported; use group_by and temporal_split")
+    temporal_split = params.get("temporal_split", False)
+    if type(temporal_split) is not bool:
+        raise ValueError("temporal_split must be boolean")
+    if multimodal and temporal_split:
+        raise ValueError("temporal_split is only supported for forecasting")
     if "batch_size" in params:
         raise ValueError("numeric/fusion backend uses full-batch updates; batch_size selection is unsupported")
     fraction = float(params.get("validation_fraction", 0.2))
@@ -156,27 +160,33 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
         raise ValueError("validation_fraction must be between zero and one")
     records = read_records(spec)
     values = params.get("values")
-    if not multimodal and values is None:
-        if records and all("time" in row for row in records):
-            if any(float(left["time"]) >= float(right["time"]) for left, right in zip(records, records[1:])):
-                raise ValueError("forecast rows must be strictly chronological")
-        values = [row.get("features", row.get("value")) for row in records]
+    if values is not None:
+        if multimodal or records:
+            raise ValueError("values and records are mutually exclusive forecasting inputs")
+        if not isinstance(values, list):
+            raise ValueError("forecasting values must be a numeric list")
+        records = [{"source_record_id": f"inline:values:{index}", "value": value}
+                   for index, value in enumerate(values)]
     normalization, classes = {}, []
     if multimodal:
-        if len(records) < 4:
+        split = record_partition_plan(records, validation_fraction=fraction, seed=seed,
+                                      group_by=params.get("group_by"))
+        train_ids, validation_ids = split["train"], split["validation"]
+        active_ids = sorted(train_ids + validation_ids)
+        if len(active_ids) < 4:
             raise ValueError("multimodal training needs at least four examples")
         modalities = params.get("modalities", ["numeric", "text"])
         if len(set(modalities)) < 2:
             raise ValueError("multimodal training requires at least two different modalities")
-        features = [_modality_features(row, modalities) for row in records]
-        modality_sizes = {name: len(features[0][name]) for name in modalities}
-        if any(len(row[name]) != size for row in features for name, size in modality_sizes.items()):
+        features = {index: _modality_features(records[index], modalities) for index in active_ids}
+        modality_sizes = {name: len(features[active_ids[0]][name]) for name in modalities}
+        if any(len(row[name]) != size for row in features.values() for name, size in modality_sizes.items()):
             raise ValueError("each modality must have consistent dimensions")
-        order = list(range(len(records)))
-        random.Random(seed).shuffle(order)
-        validation_count = max(1, int(len(records) * fraction))
-        validation_ids, train_ids = order[:validation_count], order[validation_count:]
-        inputs = {name: torch.tensor([row[name] for row in features], dtype=torch.float32) for name in modalities}
+        inputs = {}
+        for name, size in modality_sizes.items():
+            tensor = torch.zeros((len(records), size), dtype=torch.float32)
+            tensor[active_ids] = torch.tensor([features[index][name] for index in active_ids], dtype=torch.float32)
+            inputs[name] = tensor
         for name, tensor in inputs.items():
             mean = tensor[train_ids].mean(0)
             std = tensor[train_ids].std(0, unbiased=False).clamp_min(1e-6)
@@ -187,51 +197,48 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
             classes = sorted(set(str(records[index][target_key]) for index in train_ids))
             if len(classes) < 2:
                 raise ValueError("classification training requires at least two training classes")
-            if any(str(row[target_key]) not in classes for row in records):
+            if any(str(records[index][target_key]) not in classes for index in active_ids):
                 raise ValueError("validation contains a class unseen during training")
-            targets = torch.tensor([classes.index(str(row[target_key])) for row in records])
+            targets = torch.zeros(len(records), dtype=torch.long)
+            targets[active_ids] = torch.tensor([classes.index(str(records[index][target_key])) for index in active_ids])
             output_size = len(classes)
         else:
-            targets = torch.tensor([_flat(row[target_key]) for row in records], dtype=torch.float32)
-            output_size = targets.shape[1]
+            active_targets = torch.tensor([_flat(records[index][target_key]) for index in active_ids], dtype=torch.float32)
+            output_size = active_targets.shape[1]
+            targets = torch.zeros((len(records), output_size), dtype=torch.float32)
+            targets[active_ids] = active_targets
         architecture = {"family": family, "hidden_size": hidden, "layers": dimensions["layers"], "modalities": modality_sizes, "output_size": output_size}
-        corpus = records
-        split = {"train": train_ids, "validation": validation_ids, "strategy": "seeded_document_split"}
         raw_probe = [records[index] for index in validation_ids]
+        prediction_sources = [[index] for index in validation_ids]
     else:
-        if not isinstance(values, list) or len(values) < context + horizon + 3 or len(values) > 500000:
+        if len(records) > 500000:
             raise ValueError("forecasting requires a bounded numeric series longer than context plus horizon")
-        matrix = torch.tensor([_flat(value) for value in values], dtype=torch.float32)
-        if matrix.ndim != 2 or not torch.isfinite(matrix).all():
+        split = forecast_window_plan(records, context=context, horizon=horizon, validation_fraction=fraction,
+                                     seed=seed, group_by=params.get("group_by"), temporal_split=temporal_split)
+        train_ids, validation_ids = split["train"], split["validation"]
+        active_ids = sorted(split["record_partitions"]["train"] + split["record_partitions"]["validation"])
+        active_matrix = torch.tensor([_flat(records[index].get("features", records[index].get("value")))
+                                      for index in active_ids], dtype=torch.float32)
+        if active_matrix.ndim != 2 or not torch.isfinite(active_matrix).all():
             raise ValueError("time-series values must be finite feature vectors")
-        cutoff = int(len(values) * (1 - fraction))
+        matrix = torch.zeros((len(records), active_matrix.shape[1]), dtype=torch.float32)
+        matrix[active_ids] = active_matrix
         target_feature = int(params.get("target_feature", 0))
         if not 0 <= target_feature < matrix.shape[1]:
             raise ValueError("target_feature is outside the input feature vector")
-        mean, std = matrix[:cutoff].mean(0), matrix[:cutoff].std(0, unbiased=False).clamp_min(1e-6)
+        fitting = matrix[split["normalization_rows"]]
+        mean, std = fitting.mean(0), fitting.std(0, unbiased=False).clamp_min(1e-6)
         normalization = {"mean": mean, "std": std}
         normalized = (matrix - mean) / std
-        windows, target_rows, positions = [], [], []
-        for position in range(context, len(values) - horizon + 1):
-            # Drop windows straddling the held-out target boundary.
-            if position < cutoff < position + horizon:
-                continue
-            windows.append(normalized[position - context:position])
-            target_rows.append(matrix[position:position + horizon, target_feature])
-            positions.append(position)
-        train_ids = [index for index, position in enumerate(positions) if position + horizon <= cutoff]
-        validation_ids = [index for index, position in enumerate(positions) if position >= cutoff]
-        if not train_ids or not validation_ids:
-            raise ValueError("series cannot form disjoint chronological train/validation targets")
-        inputs, targets = torch.stack(windows), torch.stack(target_rows)
+        inputs = torch.stack([normalized[window["context_rows"]] for window in split["windows"]])
+        targets = torch.stack([matrix[window["target_rows"], target_feature] for window in split["windows"]])
         architecture = {"family": family, "hidden_size": hidden, "input_size": matrix.shape[1], "context": context,
                         "output_size": horizon, "heads": heads, "layers": dimensions["layers"]}
-        corpus = values
-        split = {"train": train_ids, "validation": validation_ids, "strategy": "chronological_target_split",
-                 "cutoff": cutoff, "target_positions": positions, "normalization_rows": list(range(cutoff))}
-        raw_probe = [matrix[positions[index] - context:positions[index]].tolist() for index in validation_ids]
+        raw_probe = [matrix[split["windows"][index]["context_rows"]].tolist() for index in validation_ids]
+        prediction_sources = [split["windows"][index]["target_rows"] for index in validation_ids]
     if objective != "classification" and not torch.isfinite(targets).all():
         raise ValueError("training targets must be finite")
+    corpus = {"records": [records[index] for index in active_ids], "split": split}
     corpus_digest = hashlib.sha256(json.dumps(corpus, sort_keys=True).encode()).hexdigest()
     configuration = {"learning": {key: value for key, value in learning.items() if key != "initialization"},
         "parameters": {key: value for key, value in params.items() if key not in {"steps", "resume_from"}}, "seed": seed}
@@ -301,8 +308,23 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
                 reload_equal = torch.equal(predictions, reloaded(validation_input))
             result_path = output_dir / "predictions.json"
             raw_predictions = predict_from_checkpoint(checkpoint, raw_probe)
-            result_path.write_text(json.dumps({"predictions": raw_predictions, "targets": targets[validation_ids].tolist(),
-                "split": split, "corpus_sha256": corpus_digest}, indent=2))
+            raw_targets = targets[validation_ids].tolist()
+            prediction_records = []
+            for prediction, target, source_indices in zip(raw_predictions, raw_targets, prediction_sources):
+                row = {"prediction": prediction, "target": target, "partition": "validation",
+                       "source_record_ids": [split["source_record_ids"][index] for index in source_indices]}
+                if objective == "classification":
+                    row.update(target=classes[target], target_index=target)
+                if "episode_id" in records[source_indices[0]]:
+                    row["episode_id"] = records[source_indices[0]]["episode_id"]
+                prediction_records.append(row)
+            report = {"predictions": raw_predictions, "targets": raw_targets,
+                "records": prediction_records, "split": split, "corpus_sha256": corpus_digest}
+            if objective == "classification":
+                # Preserve the existing encoded target array and make its mapping explicit.
+                report.update(classes=classes, target_encoding="class_index",
+                              target_labels=[classes[index] for index in raw_targets])
+            result_path.write_text(json.dumps(report, indent=2))
             manifest = output_dir / "training.json"
             manifest.write_text(json.dumps(updates, indent=2))
             metrics = {"steps": completed, "initial_validation_loss": initial_validation_loss,
@@ -313,7 +335,7 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
                 metrics["validation_accuracy"] = float((predictions.argmax(-1) == targets[validation_ids]).float().mean())
             else:
                 metrics["validation_mae"] = float((predictions - targets[validation_ids]).abs().mean())
-                metrics["persistence_baseline_mse"] = float(((matrix[torch.tensor([split["target_positions"][index] - 1 for index in validation_ids]), target_feature, None] - targets[validation_ids]) ** 2).mean()) if not multimodal else None
+                metrics["persistence_baseline_mse"] = float(((matrix[torch.tensor([split["windows"][index]["context_rows"][-1] for index in validation_ids]), target_feature, None] - targets[validation_ids]) ** 2).mean()) if not multimodal else None
             return {"records": updates, "metrics": metrics, "artifacts": [artifact(checkpoint, "model_checkpoint", "application/octet-stream"),
                 artifact(result_path, "held_out_predictions"), artifact(manifest, "training_metrics")],
                 "qualification": {"status": "completed" if completed == steps else "cancelled", "backend": "cpu", "dtype": "float32",

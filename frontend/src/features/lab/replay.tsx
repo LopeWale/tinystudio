@@ -1,4 +1,5 @@
 import { useStudio } from "../../app/StudioContext";
+import { RetainedBaselineComparison } from "./baseline-comparison";
 import { RepresentationInspector } from "./representation-inspector";
 import { CoverageInspector, type CoverageSource } from "./coverage-inspector";
 import { eventAvailableForDecision } from "./clock";
@@ -439,17 +440,14 @@ export function ReplayViews({
         coordinates remain independent.
       </p>
       {view === replayViews[4] && (
-        <>
-          {result?.baseline_comparison ? (
-            <pre>{JSON.stringify(result.baseline_comparison, null, 2)}</pre>
-          ) : (
-            <EmptyState>
-              Baseline comparison requires two compatible retained runs, a named
-              baseline, aligned evaluation inputs, and reported metrics. No
-              baseline comparison evidence is attached to this run.
-            </EmptyState>
-          )}
-        </>
+        <RetainedBaselineComparison
+          artifacts={retained.all}
+          comparison={result?.baseline_comparison}
+          records={Array.isArray(result?.records) ? result.records : []}
+          runId={run.id}
+          scopeKey={scopeKey}
+          execution={result?.qualification?.execution ?? run.state}
+        />
       )}
       {view === replayViews[5] && (
         <>

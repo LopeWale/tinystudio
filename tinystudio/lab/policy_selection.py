@@ -46,6 +46,15 @@ def validate_policy_selection(definition, engine=None):
         supported = {"ppo", "grpo"} if language else {"ppo", "dqn", "behavioral_cloning", "grpo_tool_bandit", "ppo_tool_bandit"}
     if objective not in supported:
         raise ValueError(f"unsupported learning objective {objective!r}")
+    environment = None
+    if language or numeric or objective in {"grpo_tool_bandit", "ppo_tool_bandit"}:
+        if "environment" in params:
+            raise ValueError("environment selection is unused by this learning objective")
+    else:
+        from .policy_environment import environment_runtime
+        from .control_evaluation import evaluation_seeds
+        environment = environment_runtime(params)
+        evaluation_seeds(params, definition.get("seed", 42))
     if language or not numeric and objective not in {"dqn", "behavioral_cloning"}:
         if any(item.get("visibility", "model") == "model" and item.get("role") != "resume"
                for item in definition.get("inputs", [])):
@@ -73,7 +82,7 @@ def validate_policy_selection(definition, engine=None):
     if family == "transformer" and dimensions["hidden_size"] % dimensions["heads"]:
         raise ValueError("hidden_size must be divisible by heads")
     learning_rate(params, 0.01 if numeric else 0.003)
-    return {**axes, "objective": objective, "family": family, "dimensions": dimensions}
+    return {**axes, "objective": objective, "family": family, "dimensions": dimensions, "environment_runtime": environment}
 
 
 def resume_configuration(configuration):
