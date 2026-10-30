@@ -187,6 +187,11 @@ def manifest_for(row: dict) -> dict:
             "Authenticated frozen model and held-out case admission with real native generation, both retrieval arms and all five index modes.",
             "Exact model inputs, original index bytes, stable case identities, wrong-output scoring and cross-project artifact denial.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_method_matrix_workflow.py", evidence_required=[
+            "Actual retained base, full-trained, LoRA, retrieval and combined methods plus a conventional recipe on identical held-out cases.",
+            "Frozen case/model/index identities, exact conventional outputs, project isolation and cancellation during artifact publication.",
+            "Run success and complete method/case coverage are required; a retained aggregate alone does not establish completion.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.language":
         fixtures.append(FixtureRequirement(path="tests/test_lab_scratch_qualification.py", evidence_required=[
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
@@ -253,11 +258,11 @@ def input_contracts(id_: str) -> list[PortContract]:
     elif id_ == "evaluation.compare":
         for role in ("examples", "candidate", "baseline", "provenance"):
             add(role, visibility=["evaluation", "truth"], media=["application/json", "application/x-ndjson"])
-        add("cases", visibility=["evaluation", "truth"], media=["application/json"], when="operation=generate")
-        add("model", when="operation=generate without checkpoint")
-        add("checkpoint", when="operation=generate without model")
-        add("retrieval_index", media=["application/json"], when="operation=generate and compare_retrieval=true")
-        add("embedding_model", when="operation=generate with semantic/hybrid index")
+        add("cases", visibility=["evaluation", "truth"], media=["application/json"], when="operation=generate|matrix")
+        add("model", maximum=16, when="operation=generate without checkpoint, or matrix model methods")
+        add("checkpoint", maximum=16, when="operation=generate without model, or matrix model methods")
+        add("retrieval_index", media=["application/json"], when="generation or matrix method selects retrieval")
+        add("embedding_model", when="generation or matrix uses semantic/hybrid index")
     elif id_ == "data.pipeline":
         for role in ("source", "dataset", "recorded"):
             add(role, maximum=128, visibility=["model", "evaluation", "truth"],

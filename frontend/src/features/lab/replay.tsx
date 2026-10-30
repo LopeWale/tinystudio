@@ -447,6 +447,7 @@ export function ReplayViews({
           runId={run.id}
           scopeKey={scopeKey}
           execution={result?.qualification?.execution ?? run.state}
+          runState={run.state}
         />
       )}
       {view === replayViews[5] && (

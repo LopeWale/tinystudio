@@ -14,6 +14,9 @@ def validate_generation_selection(definition):
     """Validate authored choices without importing model dependencies or opening files."""
     params = definition.get("parameters", {})
     operation = params.get("operation", "precomputed")
+    if operation == "matrix":
+        from .evaluation_matrix import validate_matrix_selection
+        return validate_matrix_selection(definition)
     if operation == "precomputed":
         if definition.get("retrieval") or any(item.get("role") in {
                 "model", "checkpoint", "cases", "retrieval_index", "embedding_model"} for item in definition.get("inputs", [])):
@@ -81,7 +84,7 @@ def _cases(spec, binding):
     if not isinstance(rows, list) or not 1 <= len(rows) <= 1000:
         raise ValueError("evaluation requires 1..1000 cases")
     for row in rows:
-        if not isinstance(row, dict) or set(row) - {"source_id", "episode_id", "partition", "prompt", "query", "expected", "unit"}:
+        if not isinstance(row, dict) or set(row) - {"source_id", "episode_id", "partition", "prompt", "query", "expected", "unit", "features"}:
             raise ValueError("unsupported evaluation case fields")
         if any(not isinstance(row.get(key), str) or not row[key].strip() for key in ("source_id", "episode_id", "prompt")):
             raise ValueError("cases require nonempty source_id, episode_id and prompt")
@@ -93,10 +96,38 @@ def _cases(spec, binding):
         if identity in identities:
             raise ValueError("duplicate held-out case identity")
         identities.add(identity)
+        if "features" in row:
+            validate_features(row["features"])
         # Use the validator's effective symbol for both predictions and targets,
         # including typed quantities with omitted or explicitly null outer units.
         row["unit"] = _quantity(row.get("expected"), row.get("unit"))[2]
     return rows
+
+
+def strict_scalar(value):
+    """Bounded authored decimal coordinates, parsed without binary floating point."""
+    from .evaluation import _decimal
+    if not isinstance(value, str) or len(value) > 256:
+        raise ValueError("features and affine coefficients require decimal strings of at most 256 characters")
+    number = _decimal(value)
+    if len(number.as_tuple().digits) > 128 or abs(number.adjusted()) > 128:
+        raise ValueError("decimal coordinates require at most 128 significant digits and an adjusted exponent within +/-128")
+    return number
+
+
+def validate_features(features):
+    if (not isinstance(features, dict) or not 1 <= len(features) <= 32 or
+            any(not isinstance(key, str) or not key.strip() or len(key) > 120 for key in features)):
+        raise ValueError("features require 1..32 bounded nonempty named scalar coordinates")
+    for value in features.values():
+        strict_scalar(value)
+
+
+def case_prompt(case):
+    """Only authored prompt and scalar features may cross the model boundary."""
+    if "features" not in case:
+        return case["prompt"]
+    return case["prompt"] + "\n\nFeatures:\n" + canonical(case["features"]).decode()
 
 
 def _declared_overlap(value, sources, episodes):
@@ -174,7 +205,7 @@ def execute_generation_evaluation(spec, output_dir, emit, cancelled):
                 hits = trace["hits"] if arm == "retrieval" else []
                 # The model receives only this projection; case answers and evaluator
                 # metadata never cross the session boundary.
-                prompt = _render(case["prompt"], hits, selection["fields"])
+                prompt = _render(case_prompt(case), hits, selection["fields"])
                 output = session.generate(prompt, selection["max_new_tokens"], cancelled=cancelled)
                 prediction = {key: case[key] for key in ("source_id", "episode_id", "partition", "expected")}
                 prediction["unit"] = case["unit"]

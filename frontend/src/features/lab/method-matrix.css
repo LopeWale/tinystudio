@@ -1,0 +1,79 @@
+/* Composition over the existing shared table and inspection workspace. */
+.method-matrix {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 1rem;
+  min-inline-size: 0;
+}
+.method-matrix-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.method-matrix-form {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+.method-matrix-details {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+.method-matrix-details dt {
+  text-transform: capitalize;
+}
+.method-matrix-details dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.method-matrix-details .method-matrix-details {
+  padding-inline-start: 0.5rem;
+  border-inline-start: 1px solid var(--color-separator-border);
+}
+.method-matrix tr[tabindex] {
+  cursor: pointer;
+}
+.method-matrix tr[aria-selected="true"] {
+  background: var(--color-background-secondary-default);
+}
+.method-matrix tr[tabindex]:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: -2px;
+}
+.method-matrix-table {
+  block-size: clamp(22rem, 52vh, 38rem);
+  min-inline-size: 0;
+}
+.method-matrix-table table {
+  min-inline-size: 42rem;
+}
+.method-matrix .metrics-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1000px) {
+  .lab-page .method-matrix .inspection-workspace.has-inspector,
+  .method-matrix .inspection-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .method-matrix .inspection-workspace.has-inspector .inspection-detail {
+    grid-row: auto;
+    position: static;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--color-separator-border);
+    padding-inline-start: 0;
+    padding-block-start: 1rem;
+  }
+}
+@media (max-width: 600px) {
+  .method-matrix .metrics-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.method-matrix-editor-table {
+  block-size: clamp(12rem, 32vh, 22rem);
+  min-inline-size: 0;
+}

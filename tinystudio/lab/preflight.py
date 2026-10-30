@@ -51,7 +51,8 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         from .evaluation_generation import validate_generation_selection
         try:
             selected = validate_generation_selection(definition.model_dump())
-            if selected and not (runtime or {}).get("torch"):
+            needs_torch = selected and (selected.get("requires_model", True))
+            if needs_torch and not (runtime or {}).get("torch"):
                 raise ValueError("generation evaluation requires a target with the torch dependency pack")
         except (ValueError, KeyError, TypeError) as exc:
             check("evaluation_selection", False, str(exc))

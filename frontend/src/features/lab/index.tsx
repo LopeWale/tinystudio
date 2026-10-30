@@ -24,6 +24,7 @@ import { Label } from "react-aria-components";
 import {
   makeDefinition,
   parseDefinition,
+  evaluationParameters,
   templates,
   isTerminal,
   type ExperimentDefinition,
@@ -38,6 +39,7 @@ import { InputArtifacts, LabChoice as Choice } from "./inputs";
 import { DataPreparation } from "./data-preparation";
 import { LanguageLearning } from "./language-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
+import { MethodMatrixEditor } from "./method-matrix";
 import { DefinitionGraph } from "./graph";
 import { ReplayViews } from "./replay";
 import { dataArtifacts } from "./evidence";
@@ -928,23 +930,29 @@ function LabWorkspace() {
                                         id: "generate",
                                         name: "Generate and evaluate",
                                       },
+                                      {
+                                        id: "matrix",
+                                        name: "Compare methods on shared cases",
+                                      },
                                     ]}
                                     onChange={(operation) =>
                                       change({
-                                        parameters: {
-                                          ...(operation === "generate"
-                                            ? {
-                                                max_new_tokens: 16,
-                                                device: "cpu",
-                                                compare_retrieval: false,
-                                              }
-                                            : {}),
-                                          ...definition.parameters,
+                                        parameters: evaluationParameters(
+                                          definition.parameters,
                                           operation,
-                                        },
+                                        ),
                                       })
                                     }
                                   />
+                                  {definition.parameters.operation ===
+                                    "matrix" && (
+                                    <MethodMatrixEditor
+                                      definition={definition}
+                                      onChange={(parameters) =>
+                                        change({ parameters })
+                                      }
+                                    />
+                                  )}
                                   {definition.parameters.operation ===
                                     "generate" && (
                                     <>
@@ -1179,6 +1187,8 @@ function LabWorkspace() {
                                       ![
                                         "operation",
                                         "compare_retrieval",
+                                        "methods",
+                                        "baseline_method",
                                       ].includes(key)),
                                 )
                                 .map(([key, value]) => (

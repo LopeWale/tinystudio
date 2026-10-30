@@ -66,7 +66,7 @@
 - [ ] Integrate offline/online control RL, imitation and multi-agent learning through TorchRL-compatible environments.
 - [ ] Compose lexical, semantic, hybrid, structured and episode retrieval with frozen corpora/indexes.
 - [ ] Verify intended parameter updates and save/unload/reload/inference for every learning method on a compatible target.
-- [ ] Compare conventional, base, specialized, LoRA, RAG and combined methods on matched held-out cases.
+- [x] Compare conventional, base, specialized, LoRA, RAG and combined methods on matched held-out cases.
 - [ ] Complete baseline comparison views while retaining existing loss and neuron inspection.
 - [ ] Accept D through complete research workflows and independent review.
 

@@ -86,7 +86,7 @@ function view(
           user: { id: "user" },
           scopeKey,
           evidence,
-        } as StudioRuntime
+        } as unknown as StudioRuntime
       }
     >
       <BaselineComparison
@@ -413,7 +413,7 @@ function retainedView(
           user: { id: "user" },
           scopeKey,
           evidence: new EvidenceRegistry(),
-        } as StudioRuntime
+        } as unknown as StudioRuntime
       }
     >
       <RetainedBaselineComparison
@@ -461,7 +461,7 @@ it("loads every generation record from the verified report beyond the replay win
 it("never treats training updates as held-out control records when the report is missing", () => {
   render(
     <StudioContext.Provider
-      value={{ api: {}, scopeKey: "project" } as StudioRuntime}
+      value={{ api: {}, scopeKey: "project" } as unknown as StudioRuntime}
     >
       <RetainedBaselineComparison
         artifacts={[]}
@@ -511,4 +511,331 @@ it("accepts numeric zero scores and keeps unrecognized score values partial", ()
       screen.getByRole("row", { name: "Inspect case-1 without_retrieval" }),
     ).getByText("Partial"),
   ).toBeVisible();
+});
+
+it("preserves the precomputed evaluate_examples report comparison without inventing predictions", async () => {
+  // evaluation._report envelope; research.execute_evaluation adds examples,
+  // provenance, comparison and lineage, without retaining prediction records.
+  const baseReport = {
+    format: "tinystudio.evaluation.v1",
+    passed: true,
+    checks: [
+      {
+        id: "examples:present",
+        passed: true,
+        code: "evaluation_examples_required",
+        details: {},
+      },
+    ],
+    qualification: {
+      status: "qualified",
+      blocking_checks: [],
+      research_overrides: [],
+      scope: "supplied evidence and declared provenance only",
+    },
+    metrics: {},
+  };
+  const legacy = {
+    ...baseReport,
+    metrics: { examples: 1, passed_examples: 1 },
+    examples: [{ ...baseReport, source_id: "precomputed-case" }],
+    provenance: baseReport,
+    comparison: { ...baseReport, metrics: comparison.metrics },
+    lineage: baseReport,
+  };
+  const download = vi
+    .fn()
+    .mockResolvedValue(new Blob([JSON.stringify(legacy)]));
+  render(retainedView(download));
+  expect(
+    await screen.findByText(
+      /Comparable · matched evaluation evidence is complete/,
+    ),
+  ).toBeVisible();
+  expect(screen.getAllByText("-0.00000000000000000001")[0]).toBeVisible();
+  expect(
+    screen.getByText(/No retained per-case records are attached/),
+  ).toBeVisible();
+  expect(screen.queryByRole("row", { name: /Inspect/ })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+it("rejects a precomputed format label without its actual validator report envelope", async () => {
+  const download = vi.fn().mockResolvedValue(
+    new Blob([
+      JSON.stringify({
+        format: "tinystudio.evaluation.v1",
+        examples: [],
+        comparison,
+        lineage: {},
+      }),
+    ]),
+  );
+  render(retainedView(download));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "unsupported or invalid record envelope",
+  );
+  expect(screen.queryByRole("table")).toBeNull();
+});
+
+it("loads a complete checksummed matrix and requires the originating run to succeed", async () => {
+  const report = {
+    format: "tinystudio.method-matrix.v1",
+    baseline_method: "reference-id",
+    case_count: 1,
+    method_count: 2,
+    expected_coverage: 2,
+    methods: [
+      { id: "reference-id", label: "Reference", kind: "affine" },
+      { id: "test-id", label: "Test method", kind: "affine" },
+    ],
+    records: [
+      {
+        method_id: "reference-id",
+        source_id: "case",
+        episode_id: "episode",
+        expected: "-2.00000000000000000001",
+        prediction: "-2.00000000000000000001",
+      },
+      {
+        method_id: "test-id",
+        source_id: "case",
+        episode_id: "episode",
+        expected: "-2.00000000000000000001",
+        prediction: "-2.00000000000000000001",
+      },
+    ],
+    evaluations: {
+      "reference-id": {
+        format: "tinystudio.evaluation.v1",
+        checks: [],
+        passed: true,
+      },
+      "test-id": {
+        format: "tinystudio.evaluation.v1",
+        checks: [],
+        passed: true,
+      },
+    },
+    comparisons: {
+      "test-id": {
+        format: "tinystudio.evaluation.v1",
+        checks: [],
+        passed: true,
+        metrics: {
+          aggregate: {
+            candidate_mae: "0",
+            baseline_mae: "0",
+            candidate_minus_baseline_mae: "0",
+          },
+          per_example: [
+            {
+              source_id: "case",
+              episode_id: "episode",
+              candidate_absolute_error: "0",
+              baseline_absolute_error: "0",
+            },
+          ],
+        },
+      },
+    },
+    qualification: { coverage_complete: true, execution: "completed" },
+  };
+  const encoded = JSON.stringify(report);
+  const { createHash, webcrypto } = await import("node:crypto");
+  vi.stubGlobal("crypto", webcrypto);
+  const download = vi.fn().mockResolvedValue(new Blob([encoded]));
+  const api = { download };
+  const view = (runState: string) => (
+    <StudioContext.Provider
+      value={
+        {
+          api,
+          route: "/lab",
+          project: "project",
+          scopeKey: "project",
+          user: { id: "user" },
+          evidence: new EvidenceRegistry(),
+        } as unknown as StudioRuntime
+      }
+    >
+      <RetainedBaselineComparison
+        artifacts={[
+          {
+            id: "matrix",
+            name: "method-matrix.json",
+            role: "independent_evaluation",
+            sha256: createHash("sha256").update(encoded).digest("hex"),
+          },
+        ]}
+        comparison={null}
+        records={[]}
+        runId="run"
+        scopeKey="project"
+        execution="completed"
+        runState={runState}
+      />
+    </StudioContext.Provider>
+  );
+  const mounted = render(view("cancelled"));
+  expect(
+    await screen.findByText(/SHA-256 verified · 2 evaluation records/),
+  ).toBeVisible();
+  expect(screen.getByText(/Incomplete or unqualified matrix/)).toBeVisible();
+  expect(screen.queryByText(/Complete matched coverage/)).toBeNull();
+  mounted.rerender(view("succeeded"));
+  expect(screen.getByText(/Complete matched coverage/)).toBeVisible();
+  expect(
+    within(
+      screen.getByRole("table", { name: "Method evaluation cases" }),
+    ).getAllByText("-2.00000000000000000001"),
+  ).toHaveLength(3);
+});
+
+it("retains exact positive, negative and typed integer targets in downloaded matrix rows and inspectors", async () => {
+  const targets = [
+    "9007199254740993",
+    "-9007199254740993",
+    { value: "9007199254740993", unit: "V" },
+  ];
+  const methods = [
+    { id: "reference", label: "Reference", kind: "affine" },
+    { id: "candidate", label: "Candidate", kind: "affine" },
+  ];
+  const matrix = {
+    format: "tinystudio.method-matrix.v1",
+    methods,
+    baseline_method: "reference",
+    case_count: 3,
+    method_count: 2,
+    expected_coverage: 6,
+    records: methods.flatMap((method) =>
+      targets.map((expected_display, index) => ({
+        method_id: method.id,
+        source_id: `case-${index}`,
+        episode_id: "e",
+        expected:
+          index === 0
+            ? "RAW_POSITIVE"
+            : index === 1
+              ? "RAW_NEGATIVE"
+              : { value: "RAW_TYPED", unit: "V" },
+        expected_display,
+        prediction:
+          typeof expected_display === "string"
+            ? expected_display
+            : expected_display.value,
+        unit: "V",
+        case_sha256: `original-case-${index}`,
+      })),
+    ),
+    evaluations: Object.fromEntries(
+      methods.map((method) => [
+        method.id,
+        {
+          format: "tinystudio.evaluation.v1",
+          passed: true,
+          checks: [],
+          examples: targets.map((_, index) => ({
+            source_id: `case-${index}`,
+            episode_id: "e",
+            passed: true,
+          })),
+        },
+      ]),
+    ),
+    comparisons: {
+      candidate: {
+        format: "tinystudio.evaluation.v1",
+        passed: true,
+        checks: [],
+        metrics: {},
+      },
+    },
+    qualification: { execution: "completed", coverage_complete: true },
+  };
+  // Raw JSON numbers emulate Python's accepted integer serialization. A JS
+  // Number literal cannot construct these inputs without already rounding them.
+  const payload = JSON.stringify(matrix)
+    .replaceAll('"RAW_POSITIVE"', "9007199254740993")
+    .replaceAll('"RAW_NEGATIVE"', "-9007199254740993")
+    .replaceAll('"RAW_TYPED"', "9007199254740993");
+  const { createHash, webcrypto } = await import("node:crypto");
+  vi.stubGlobal("crypto", webcrypto);
+  const download = vi.fn().mockResolvedValue(new Blob([payload]));
+  const evidence = new EvidenceRegistry();
+  render(
+    <StudioContext.Provider
+      value={
+        {
+          api: { download },
+          route: "/lab",
+          project: "project",
+          scopeKey: "project",
+          user: { id: "user" },
+          evidence,
+        } as unknown as StudioRuntime
+      }
+    >
+      <RetainedBaselineComparison
+        artifacts={[
+          {
+            id: "matrix",
+            name: "method-matrix.json",
+            role: "independent_evaluation",
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ]}
+        comparison={null}
+        records={[]}
+        runId="run"
+        scopeKey="project"
+        runState="succeeded"
+      />
+    </StudioContext.Provider>,
+  );
+  await screen.findByRole("table", { name: "Method evaluation cases" });
+  for (const [index, expected] of targets.entries()) {
+    const row = screen.getByRole("row", {
+      name: `Inspect case case-${index} e`,
+    });
+    expect(
+      within(row).getAllByRole("cell", {
+        name:
+          typeof expected === "string" ? expected : JSON.stringify(expected),
+      })[0],
+    ).toBeVisible();
+    fireEvent.click(row);
+    const picked = evidence.snapshot()[0].data as {
+      record: { expected: unknown; case_sha256: string };
+    };
+    expect(picked.record.expected).toEqual(expected);
+    expect(picked.record.case_sha256).toBe(`original-case-${index}`);
+    expect(screen.queryByText("9007199254740992")).toBeNull();
+    expect(screen.queryByText("-9007199254740992")).toBeNull();
+  }
+});
+it("rejects older retained reports with unsafe integer targets and no exact display companion", async () => {
+  const download = vi
+    .fn()
+    .mockResolvedValue(
+      new Blob([
+        '{"format":"tinystudio.generation-evaluation.v1","records":[{"source_id":"legacy","episode_id":"e","prediction":"9007199254740993","expected":9007199254740993}]}',
+      ]),
+    );
+  render(retainedView(download));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "lacks exact target display",
+  );
+  expect(screen.queryByRole("table")).toBeNull();
+});
+
+it.each(["1" + "0".repeat(309), "-1" + "0".repeat(309)].flatMap((raw) => [
+  raw, `{"value":${raw},"unit":"Pa"}`,
+]))("rejects overflowing legacy target JSON %s", async (raw) => {
+  const download = vi.fn().mockResolvedValue(new Blob([
+    `{"format":"tinystudio.generation-evaluation.v1","records":[{"source_id":"overflow","episode_id":"e","prediction":"0","expected":${raw}}]}`,
+  ]));
+  render(retainedView(download));
+  expect(await screen.findByRole("alert")).toHaveTextContent("lacks exact target display");
+  expect(screen.queryByRole("table")).toBeNull();
 });

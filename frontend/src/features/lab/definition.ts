@@ -574,11 +574,52 @@ export const templates: Template[] = [
     hint: "No arbitrary custom-code adapter is assumed. Inspect target capability before execution.",
   },
 ];
+export function evaluationParameters(
+  current: Record<string, unknown>,
+  operation: string,
+): Record<string, unknown> {
+  if ((current.operation ?? "precomputed") === operation) return current;
+  if (operation === "precomputed") return { operation };
+  return {
+    operation,
+    max_new_tokens: current.max_new_tokens ?? 16,
+    device: current.device ?? "cpu",
+    ...(operation === "matrix"
+      ? { methods: [], baseline_method: "" }
+      : { compare_retrieval: false }),
+  };
+}
+
 export function inputExpectations(
   definition: ExperimentDefinition,
 ): InputExpectation[] {
   const rows = templates.find((t) => t.id === definition.engine)?.inputs ?? [];
   if (definition.engine === "evaluation.compare") {
+    if (definition.parameters.operation === "matrix") {
+      const methods = (
+        Array.isArray(definition.parameters.methods)
+          ? definition.parameters.methods
+          : []
+      ).filter(
+        (value): value is Record<string, unknown> =>
+          value !== null && typeof value === "object" && !Array.isArray(value),
+      );
+      return rows
+        .filter((row) =>
+          ["cases", "model", "retrieval_index", "embedding_model"].includes(
+            row.role,
+          ),
+        )
+        .map((row) => ({
+          ...row,
+          required:
+            row.role === "cases" ||
+            (row.role === "model" &&
+              methods.some((method) => method.kind === "model")) ||
+            (row.role === "retrieval_index" &&
+              methods.some((method) => method.retrieval === true)),
+        }));
+    }
     const generate = definition.parameters.operation === "generate";
     return rows
       .filter((row) =>

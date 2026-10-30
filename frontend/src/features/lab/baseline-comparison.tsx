@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  MatrixComparison,
+  exactExpected,
+  unsafeExpectedWithoutDisplay,
+} from "./method-matrix";
 import { useStudio } from "../../app/StudioContext";
 import type { RetainedArtifact } from "./evidence";
 import {
@@ -86,6 +91,50 @@ function Details({ value }: { value: unknown }) {
   );
 }
 
+// Precomputed evaluation retains validator reports, not prediction records.
+// Match the report contract from evaluation._report plus research.execute_evaluation.
+function evaluationReport(value: unknown): boolean {
+  const report = object(value),
+    qualification = object(report.qualification);
+  return (
+    report.format === "tinystudio.evaluation.v1" &&
+    typeof report.passed === "boolean" &&
+    Array.isArray(report.checks) &&
+    report.checks.length > 0 &&
+    report.checks.every((value) => {
+      const check = object(value);
+      return (
+        typeof check.id === "string" &&
+        typeof check.code === "string" &&
+        typeof check.passed === "boolean" &&
+        check.details !== null &&
+        typeof check.details === "object" &&
+        !Array.isArray(check.details)
+      );
+    }) &&
+    ["qualified", "failed", "research_only"].includes(
+      String(qualification.status),
+    ) &&
+    Array.isArray(qualification.blocking_checks) &&
+    qualification.blocking_checks.every((value) => typeof value === "string") &&
+    Array.isArray(qualification.research_overrides) &&
+    typeof qualification.scope === "string" &&
+    report.metrics !== null &&
+    typeof report.metrics === "object" &&
+    !Array.isArray(report.metrics)
+  );
+}
+function precomputedReport(report: RecordValue): boolean {
+  return (
+    evaluationReport(report) &&
+    Array.isArray(report.examples) &&
+    report.examples.every(evaluationReport) &&
+    evaluationReport(report.provenance) &&
+    (report.comparison === null || evaluationReport(report.comparison)) &&
+    evaluationReport(report.lineage)
+  );
+}
+
 /** Load the retained independent report, not the run's training-update records. */
 export function RetainedBaselineComparison({
   artifacts,
@@ -97,6 +146,7 @@ export function RetainedBaselineComparison({
   runId: string;
   scopeKey: string;
   execution?: string;
+  runState?: string;
 }) {
   const artifact = artifacts.find(
     (item) => item.role === "independent_evaluation",
@@ -119,6 +169,7 @@ function RetainedReport({
   runId: string;
   scopeKey: string;
   execution?: string;
+  runState?: string;
 }) {
   const { api } = useStudio();
   const [state, setState] = useState<{ report?: RecordValue; error?: string }>(
@@ -154,16 +205,27 @@ function RetainedReport({
         const control = report.format === "tinystudio.control-evaluation.v1";
         const generation =
           report.format === "tinystudio.generation-evaluation.v1";
+        const precomputed = precomputedReport(report);
+        const matrix =
+          report.format === "tinystudio.method-matrix.v1" &&
+          Array.isArray(report.methods) &&
+          Array.isArray(report.records);
         if (
-          (!control && !generation) ||
-          !Array.isArray(report.records) ||
-          report.records.some(
-            (row) =>
-              row === null || typeof row !== "object" || Array.isArray(row),
-          )
+          !precomputed &&
+          !matrix &&
+          ((!control && !generation) ||
+            !Array.isArray(report.records) ||
+            report.records.some(
+              (row) =>
+                row === null || typeof row !== "object" || Array.isArray(row),
+            ))
         )
           throw new Error(
             "Retained evaluation report has an unsupported or invalid record envelope.",
+          );
+        if (objects(report.records).some(unsafeExpectedWithoutDisplay))
+          throw new Error(
+            "This retained report lacks exact target display for an integer outside the browser safe range. Inspect the original retained artifact.",
           );
         if (!controller.signal.aborted) setState({ report });
       } catch (error) {
@@ -194,6 +256,22 @@ function RetainedReport({
   if (!state.report)
     return <p role="status">Loading retained independent evaluation report…</p>;
   const report = state.report;
+  if (report.format === "tinystudio.method-matrix.v1")
+    return (
+      <>
+        <p className="text-caption-1-regular text-text-secondary">
+          Retained report: {artifact.name} ·{" "}
+          {artifact.sha256 ? "SHA-256 verified" : "Checksum not recorded"} ·{" "}
+          {objects(report.records).length} evaluation records
+        </p>
+        <MatrixComparison
+          report={report}
+          runId={props.runId}
+          scopeKey={props.scopeKey}
+          runState={props.runState}
+        />
+      </>
+    );
   const control = report.format === "tinystudio.control-evaluation.v1";
   const records = objects(report.records).filter((row) =>
     control
@@ -214,7 +292,13 @@ function RetainedReport({
       </p>
       <BaselineComparison
         {...props}
-        comparison={control ? report : (report.comparison ?? props.comparison)}
+        comparison={
+          control
+            ? report
+            : report.format === "tinystudio.evaluation.v1"
+              ? report.comparison
+              : (report.comparison ?? props.comparison)
+        }
         records={records}
       />
     </>
@@ -228,6 +312,7 @@ export function BaselineComparison(props: {
   runId: string;
   scopeKey: string;
   execution?: string;
+  runState?: string;
 }) {
   return (
     <ComparisonWorkspace
@@ -248,6 +333,7 @@ function ComparisonWorkspace({
   runId: string;
   scopeKey: string;
   execution?: string;
+  runState?: string;
 }) {
   const report = object(comparison),
     metrics = object(report.metrics),
@@ -336,7 +422,7 @@ function ComparisonWorkspace({
         {
           id: "expected",
           label: "Expected",
-          value: (row) => text(row.record.expected),
+          value: (row) => text(exactExpected(row.record)),
         },
         {
           id: "prediction",
@@ -424,7 +510,10 @@ function ComparisonWorkspace({
               label={`Evaluation case ${selected.record.source_id ?? selected.record.episode ?? selected.id}`}
               data={{
                 run_id: runId,
-                record: selected.record,
+                record: {
+                  ...selected.record,
+                  expected: exactExpected(selected.record),
+                },
                 score: selected.score,
                 check: selected.check,
               }}
@@ -436,7 +525,12 @@ function ComparisonWorkspace({
               >
                 Close case
               </Button>
-              <Details value={selected.record} />
+              <Details
+                value={{
+                  ...selected.record,
+                  expected: exactExpected(selected.record),
+                }}
+              />
               <Details
                 value={{
                   reported_score: selected.score,
