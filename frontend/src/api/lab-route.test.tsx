@@ -182,15 +182,16 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
     "aria-pressed",
     "true",
   );
-  await user.click(trends.getByText("Graph settings"));
+  await user.click(trends.getByRole("button", { name: "Graph settings" }));
+  let settings = within(screen.getByRole("dialog", { name: "Graph settings" }));
   expect(
-    trends.getByRole("button", { name: "Event / sample time X axis" }),
+    settings.getByRole("button", { name: "Event / sample time X axis" }),
   ).toBeInTheDocument();
   expect(
-    trends.getByRole("button", { name: "value Y axis" }),
+    settings.getByRole("button", { name: "value Y axis" }),
   ).toBeInTheDocument();
   expect(
-    trends.getByRole("button", { name: "current Z axis" }),
+    settings.getByRole("button", { name: "current Z axis" }),
   ).toBeInTheDocument();
   await waitFor(() => expect(sceneUpdate).toHaveBeenCalled());
   expect(sceneUpdate.mock.lastCall![0].data[0]).toMatchObject({
@@ -202,6 +203,8 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
       '["signal-replay-run","retained-derived",1]',
     ],
   });
+  await user.keyboard("{Escape}");
+  expect(trends.getByRole("button", { name: "Graph settings" })).toHaveFocus();
   await user.click(trends.getByText("Exact values and source links"));
   const values = within(
     trends.getByRole("table", { name: "Trend sample values" }),
@@ -214,8 +217,11 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
   expect(
     values.getByRole("button", { name: "Select derived row 2" }).closest("tr"),
   ).toHaveAttribute("aria-selected", "true");
+  await user.click(
+    workspace.getByRole("button", { name: "Inspect observation" }),
+  );
   const selected = within(
-    workspace.getByRole("complementary", { name: "Selected record evidence" }),
+    workspace.getByRole("complementary", { name: "Selected observation" }),
   );
   expect(selected.getByText("0.125 V")).toBeInTheDocument();
   expect(selected.getByText("sensor-2")).toBeInTheDocument();
@@ -225,8 +231,10 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
     z: [-0.375],
     customdata: ['["signal-replay-run","retained-derived",1]'],
   });
+  await user.click(trends.getByRole("button", { name: "Graph settings" }));
+  settings = within(screen.getByRole("dialog", { name: "Graph settings" }));
   await user.click(
-    trends.getByRole("button", { name: /Source \/ unit group$/ }),
+    settings.getByRole("button", { name: /Source \/ unit group$/ }),
   );
   await user.click(
     await screen.findByRole("option", { name: /Original.*2 points/ }),
@@ -240,6 +248,7 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
       '["signal-replay-run","retained-original",1]',
     ],
   });
+  await user.keyboard("{Escape}");
   expect(values.getByText("value: -2.75 V")).toBeInTheDocument();
   expect(api.get).toHaveBeenCalledWith(
     `/api/lab/runs/${run.id}/records?offset=0&limit=1000&artifact=filtered.jsonl`,

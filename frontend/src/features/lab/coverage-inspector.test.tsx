@@ -202,7 +202,8 @@ it("keeps the loaded chart pin while inspecting a coverage row beyond its window
     </StudioContext.Provider>,
   );
   const initialPin = screen.getByTestId("chart-pin").textContent;
-  fireEvent.click(screen.getByRole("button", { name: "Dataset coverage" }));
+  fireEvent.click(screen.getByRole("button", { name: /Evidence view/ }));
+  fireEvent.click(screen.getByRole("option", { name: "Dataset coverage" }));
   await screen.findByText(/1005 retained transformed records/);
   fireEvent.click(screen.getByText("Pick heatmap fault"));
   fireEvent.click(screen.getByText("Inspect retained row 1004"));

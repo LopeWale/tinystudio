@@ -1,0 +1,116 @@
+/* Runs composition reuses the shared inspection workspace and command disclosure. */
+.lab-page .lab-run-evidence-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.lab-page .lab-run-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.lab-page .lab-run-toolbar > .records-command-menu {
+  margin-inline-start: auto;
+}
+.lab-page .lab-runs-layout,
+.lab-page .lab-run-evidence-panel .studio-template__content,
+.lab-page .lab-replay,
+.lab-page .lab-trends {
+  gap: 0.5rem;
+}
+.lab-page .lab-run-selector {
+  flex: 1 1 20rem;
+}
+.lab-page .lab-run-selector > .group {
+  inline-size: min(38rem, 100%);
+}
+.lab-page .lab-evidence-controls {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.lab-page .lab-evidence-controls > .group {
+  flex: 0 1 14rem;
+  min-inline-size: 0;
+}
+.lab-page .lab-replay-controls {
+  flex: 1 1 auto;
+  gap: 0.25rem;
+}
+.lab-page .lab-replay-controls > .group {
+  inline-size: 8rem;
+  min-inline-size: 0;
+}
+.lab-page .lab-visual-heading {
+  gap: 0.5rem;
+}
+.lab-page .lab-visual-heading .lab-actions {
+  gap: 0.25rem;
+}
+.lab-page .inspection-master {
+  overflow: visible;
+}
+.lab-page .inspection-workspace.has-inspector {
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 28%);
+}
+.lab-page .inspection-detail {
+  position: static;
+}
+.lab-run-details-dialog > .modal-content,
+.lab-graph-settings-dialog > .modal-content {
+  overflow: hidden;
+  min-block-size: 0;
+}
+.lab-graph-settings-dialog .lab-transfer-scroll {
+  display: grid;
+  gap: 1rem;
+}
+.lab-run-details-dialog .lab-run-summary {
+  display: grid;
+}
+.lab-run-details-dialog pre,
+.lab-run-details-dialog dd,
+.lab-run-details-dialog code,
+.lab-page [role="alert"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-inline-size: 0;
+}
+.lab-run-details-dialog dd {
+  margin-inline-start: 0;
+}
+.lab-page .lab-trend-readout {
+  padding-block: 0.5rem;
+}
+@media (max-width: 760px) {
+  .lab-page .inspection-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lab-page .inspection-workspace.has-inspector .inspection-detail {
+    grid-row: auto;
+  }
+  .lab-page .lab-run-selector {
+    flex-wrap: wrap;
+  }
+  .lab-page .lab-evidence-controls > .group {
+    flex-basis: 100%;
+  }
+  .lab-page .lab-replay-controls {
+    flex-wrap: wrap;
+  }
+  .lab-graph-settings-dialog .lab-spatial-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.lab-page .lab-run-toolbar > .lab-runs-header {
+  flex: 1 1 20rem;
+  min-inline-size: 0;
+}
+.lab-page .lab-run-toolbar .lab-run-selector {
+  flex-wrap: nowrap;
+  flex-basis: 0;
+}
+.lab-page .lab-run-toolbar .lab-run-selector > .group {
+  inline-size: 100%;
+}

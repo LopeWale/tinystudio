@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { EChartsOption, LineSeriesOption } from "echarts";
 import { Checkbox } from "@/components/boardui/base/checkbox/checkbox";
 import { Input } from "@/components/boardui/base/input/input";
-import { Button, EmptyState } from "../../components/studio/primitives";
+import { Button, EmptyState, Modal } from "../../components/studio/primitives";
 import { LabChoice } from "./inputs";
 import { Chart } from "./chart";
 import { exactNumber, fieldValue, trendTime, type TrendPoint } from "./trends";
@@ -20,6 +20,7 @@ export function TrendWorkbench({
 }: {
   controller: TrendController;
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [start, setStart] = useState(""),
     [end, setEnd] = useState("");
   const [rangeError, setRangeError] = useState("");
@@ -36,7 +37,7 @@ export function TrendWorkbench({
   const height = Math.max(360, c.model.lanes.length * 180 + 110);
   const option = useMemo<EChartsOption>(() => {
     const lanes = c.model.lanes;
-    const axes = lanes.map((_, index) => index);
+    const axes = lanes.map((lane) => lane.key);
     return {
       animation: false,
       tooltip: {
@@ -70,7 +71,7 @@ export function TrendWorkbench({
       xAxis: lanes.map((lane, index) => ({
         id: lane.key,
         type: "value",
-        gridIndex: index,
+        gridId: lane.key,
         min: c.model.extent?.[0],
         max: c.model.extent?.[1],
         name:
@@ -81,10 +82,10 @@ export function TrendWorkbench({
         nameGap: 30,
         axisLabel: { show: index === lanes.length - 1 },
       })),
-      yAxis: lanes.map((lane, index) => ({
+      yAxis: lanes.map((lane) => ({
         id: lane.key,
         type: "value",
-        gridIndex: index,
+        gridId: lane.key,
         name: lane.label,
         nameLocation: "end",
         scale: true,
@@ -93,7 +94,7 @@ export function TrendWorkbench({
         {
           id: "inside",
           type: "inside",
-          xAxisIndex: axes,
+          xAxisId: axes,
           filterMode: "none",
           preventDefaultMouseMove: false,
           startValue: extentStart,
@@ -102,7 +103,7 @@ export function TrendWorkbench({
         {
           id: "slider",
           type: "slider",
-          xAxisIndex: axes,
+          xAxisId: axes,
           filterMode: "none",
           bottom: 0,
           startValue: extentStart,
@@ -111,15 +112,12 @@ export function TrendWorkbench({
       ],
       series: [
         ...c.model.series.map<LineSeriesOption>((series) => {
-          const lane = lanes.findIndex(
-            (candidate) => candidate.key === series.laneKey,
-          );
           return {
             id: series.key,
             name: series.label,
             type: "line",
-            xAxisIndex: lane,
-            yAxisIndex: lane,
+            xAxisId: series.laneKey,
+            yAxisId: series.laneKey,
             connectNulls: false,
             smooth: false,
             showSymbol: true,
@@ -137,11 +135,11 @@ export function TrendWorkbench({
             })),
           };
         }),
-        ...lanes.map<LineSeriesOption>((lane, index) => ({
+        ...lanes.map<LineSeriesOption>((lane) => ({
           id: `selection:${lane.key}`,
           type: "line",
-          xAxisIndex: index,
-          yAxisIndex: index,
+          xAxisId: lane.key,
+          yAxisId: lane.key,
           data: [],
           silent: true,
           markLine:
@@ -194,7 +192,7 @@ export function TrendWorkbench({
     <section className="lab-trends" aria-label="Interactive signal trends">
       <header className="lab-visual-heading">
         <div>
-          <h3>Signal space</h3>
+          <h3 className="text-body-2-medium">Signal space</h3>
           <span className="text-text-secondary">
             {c.view === "3d"
               ? `${c.spatialGroup?.points.length ?? 0} retained points`
@@ -223,66 +221,193 @@ export function TrendWorkbench({
               Reset camera
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Graph settings
+          </Button>
         </div>
       </header>
+      <Modal
+        open={settingsOpen}
+        title="Graph settings"
+        onClose={() => setSettingsOpen(false)}
+        wide
+        className="lab-graph-settings-dialog"
+      >
+        <div className="lab-transfer-viewport">
+          <div
+            className="lab-transfer-scroll"
+            onScroll={(event) =>
+              event.currentTarget.parentElement?.style.setProperty(
+                "--lab-transfer-fade",
+                String(Math.min(1, event.currentTarget.scrollTop / 24)),
+              )
+            }
+          >
+            <section className="lab-graph-settings">
+              <h3>3D coordinates and geometry</h3>
+              <div className="lab-spatial-tools">
+                {(["x", "y", "z"] as const).map((axis) => (
+                  <LabChoice
+                    key={axis}
+                    label={`${axis.toUpperCase()} axis`}
+                    value={c.mapping[axis]}
+                    options={choices}
+                    onChange={(value) => c.changeMapping(axis, value)}
+                  />
+                ))}
+                <LabChoice
+                  label="Geometry"
+                  value={c.geometry}
+                  options={[
+                    { id: "points", name: "Points" },
+                    {
+                      id: "slices",
+                      name: "Direction slices",
+                      disabled: !ribbons.ok,
+                    },
+                    {
+                      id: "surface",
+                      name: "Landscape surface",
+                      disabled: !surface.ok,
+                    },
+                  ]}
+                  onChange={(value) =>
+                    c.changeGeometry(value as "points" | "surface" | "slices")
+                  }
+                />
+              </div>
+              <div className="lab-spatial-options">
+                {c.spatial.groups.length > 1 && (
+                  <LabChoice
+                    label="Source / unit group"
+                    value={c.spatialGroup?.key ?? ""}
+                    options={c.spatial.groups.map((group, index) => ({
+                      id: group.key,
+                      name: `${group.label} · ${group.points.length} points · group ${index + 1}`,
+                    }))}
+                    onChange={c.changeGroup}
+                  />
+                )}
+                <LabChoice
+                  label="Opacity"
+                  value={String(c.opacity)}
+                  options={[0.1, 0.25, 0.5, 0.75, 0.85, 1].map((value) => ({
+                    id: String(value),
+                    name: `${Math.round(value * 100)}%`,
+                  }))}
+                  onChange={(value) => c.changeOpacity(Number(value))}
+                />
+              </div>
+            </section>{" "}
+            <section className="lab-trend-settings">
+              <h3>Clock and time range</h3>
+              <div className="lab-trend-tools">
+                <LabChoice
+                  label="Trend clock"
+                  value={c.model.clock?.key ?? ""}
+                  options={c.model.clocks.map((clock) => ({
+                    id: clock.key,
+                    name: clock.label,
+                  }))}
+                  onChange={c.changeClock}
+                />
+                <LabChoice
+                  label="Time basis"
+                  value={c.basis}
+                  options={[
+                    { id: "event", name: "Event / sample time" },
+                    { id: "availability", name: "Availability time" },
+                  ]}
+                  onChange={(value) =>
+                    c.changeBasis(value as "event" | "availability")
+                  }
+                />
+                <Button
+                  size="sm"
+                  disabled={!c.range}
+                  onClick={() => c.setRange(null)}
+                >
+                  Reset zoom
+                </Button>
+              </div>
+              <div className="lab-trend-range">
+                <Input
+                  label="Trend range start"
+                  value={start}
+                  onChange={setStart}
+                  inputMode="decimal"
+                  inputDir="ltr"
+                />
+                <Input
+                  label="Trend range end"
+                  value={end}
+                  onChange={setEnd}
+                  inputMode="decimal"
+                  inputDir="ltr"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const from = Number(start),
+                      to = Number(end);
+                    if (
+                      !start.trim() ||
+                      !end.trim() ||
+                      !Number.isFinite(from) ||
+                      !Number.isFinite(to) ||
+                      from >= to
+                    ) {
+                      setRangeError("Enter a finite start below the end.");
+                      return;
+                    }
+                    if (
+                      !c.model.extent ||
+                      from < c.model.extent[0] ||
+                      to > c.model.extent[1]
+                    ) {
+                      setRangeError(
+                        "Choose a range within the loaded evidence window.",
+                      );
+                      return;
+                    }
+                    c.setRange([from, to]);
+                    setRangeError("");
+                  }}
+                >
+                  Apply time range
+                </Button>
+              </div>
+              {rangeError && <p role="alert">{rangeError}</p>}
+            </section>{" "}
+            {c.view === "2d" && (
+              <fieldset className="lab-trend-signals">
+                <legend>2D signals</legend>
+                {c.availableFields.map((field) => (
+                  <Checkbox
+                    key={field}
+                    size="sm"
+                    isSelected={c.fields.includes(field)}
+                    onChange={(selected) => c.toggleField(field, selected)}
+                  >
+                    {field}
+                  </Checkbox>
+                ))}
+              </fieldset>
+            )}
+          </div>
+          <div className="lab-transfer-fade" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </div>
+        </div>
+      </Modal>
       {c.view === "3d" && (
         <>
-          <details className="lab-graph-settings">
-            <summary>Graph settings</summary>
-            <div className="lab-spatial-tools">
-              {(["x", "y", "z"] as const).map((axis) => (
-                <LabChoice
-                  key={axis}
-                  label={`${axis.toUpperCase()} axis`}
-                  value={c.mapping[axis]}
-                  options={choices}
-                  onChange={(value) => c.changeMapping(axis, value)}
-                />
-              ))}
-              <LabChoice
-                label="Geometry"
-                value={c.geometry}
-                options={[
-                  { id: "points", name: "Points" },
-                  {
-                    id: "slices",
-                    name: "Direction slices",
-                    disabled: !ribbons.ok,
-                  },
-                  {
-                    id: "surface",
-                    name: "Landscape surface",
-                    disabled: !surface.ok,
-                  },
-                ]}
-                onChange={(value) =>
-                  c.changeGeometry(value as "points" | "surface" | "slices")
-                }
-              />
-            </div>
-            <div className="lab-spatial-options">
-              {c.spatial.groups.length > 1 && (
-                <LabChoice
-                  label="Source / unit group"
-                  value={c.spatialGroup?.key ?? ""}
-                  options={c.spatial.groups.map((group, index) => ({
-                    id: group.key,
-                    name: `${group.label} · ${group.points.length} points · group ${index + 1}`,
-                  }))}
-                  onChange={c.changeGroup}
-                />
-              )}
-              <LabChoice
-                label="Opacity"
-                value={String(c.opacity)}
-                options={[0.1, 0.25, 0.5, 0.75, 0.85, 1].map((value) => ({
-                  id: String(value),
-                  name: `${Math.round(value * 100)}%`,
-                }))}
-                onChange={(value) => c.changeOpacity(Number(value))}
-              />
-            </div>
-          </details>
           {c.spatialGroup &&
           (c.geometry === "points" ||
             (c.geometry === "surface" && surface.ok) ||
@@ -328,101 +453,9 @@ export function TrendWorkbench({
           )}
         </>
       )}
-      <details className="lab-trend-settings">
-        <summary>Clock and time range</summary>
-        <div className="lab-trend-tools">
-          <LabChoice
-            label="Trend clock"
-            value={c.model.clock?.key ?? ""}
-            options={c.model.clocks.map((clock) => ({
-              id: clock.key,
-              name: clock.label,
-            }))}
-            onChange={c.changeClock}
-          />
-          <LabChoice
-            label="Time basis"
-            value={c.basis}
-            options={[
-              { id: "event", name: "Event / sample time" },
-              { id: "availability", name: "Availability time" },
-            ]}
-            onChange={(value) =>
-              c.changeBasis(value as "event" | "availability")
-            }
-          />
-          <Button
-            size="sm"
-            disabled={!c.range}
-            onClick={() => c.setRange(null)}
-          >
-            Reset zoom
-          </Button>
-        </div>
-        <div className="lab-trend-range">
-          <Input
-            label="Trend range start"
-            value={start}
-            onChange={setStart}
-            inputMode="decimal"
-            inputDir="ltr"
-          />
-          <Input
-            label="Trend range end"
-            value={end}
-            onChange={setEnd}
-            inputMode="decimal"
-            inputDir="ltr"
-          />
-          <Button
-            size="sm"
-            onClick={() => {
-              const from = Number(start),
-                to = Number(end);
-              if (
-                !start.trim() ||
-                !end.trim() ||
-                !Number.isFinite(from) ||
-                !Number.isFinite(to) ||
-                from >= to
-              ) {
-                setRangeError("Enter a finite start below the end.");
-                return;
-              }
-              if (
-                !c.model.extent ||
-                from < c.model.extent[0] ||
-                to > c.model.extent[1]
-              ) {
-                setRangeError(
-                  "Choose a range within the loaded evidence window.",
-                );
-                return;
-              }
-              c.setRange([from, to]);
-              setRangeError("");
-            }}
-          >
-            Apply time range
-          </Button>
-        </div>
-        {rangeError && <p role="alert">{rangeError}</p>}
-      </details>
+
       {c.view === "2d" && (
         <>
-          <fieldset className="lab-trend-signals">
-            <legend>Signals</legend>
-            {c.availableFields.map((field) => (
-              <Checkbox
-                key={field}
-                size="sm"
-                isSelected={c.fields.includes(field)}
-                onChange={(selected) => c.toggleField(field, selected)}
-              >
-                {field}
-              </Checkbox>
-            ))}
-          </fieldset>
           {!c.model.clock?.qualified && c.model.clocks.length > 0 && (
             <p className="text-text-secondary">
               Clock origin, unit or reset/session metadata is incomplete.

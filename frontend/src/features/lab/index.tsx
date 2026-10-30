@@ -1,6 +1,6 @@
 import { SegmentedControl } from "../../components/affectui/controls";
 import { DataTable, SimpleTable } from "../../components/studio/data-table";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
 import { useRetainedResource } from "../data/records-workspace";
 import {
@@ -31,6 +31,8 @@ import {
   type LabRun,
 } from "./definition";
 import "./lab.css";
+import "./runs-workspace.css";
+import "../data/records-workspace.css";
 import "./experiment-dialog.css";
 import { InputArtifacts, LabChoice as Choice } from "./inputs";
 import { DataPreparation } from "./data-preparation";
@@ -304,12 +306,47 @@ function LabWorkspace() {
       }}
     />
   );
+  const runSelector =
+    runs.loading || !!runs.data?.length ? (
+      <div className="lab-runs-header">
+        <div className="lab-run-selector">
+          <span className="text-caption-1-medium text-text-secondary">
+            Retained run
+          </span>
+          <Select
+            size="sm"
+            aria-label="Retained run"
+            placeholder="Select a retained run"
+            selectedKey={selectedRun}
+            isDisabled={runs.loading}
+            onSelectionChange={(key) => {
+              if (key !== null) selectRun(String(key));
+            }}
+          >
+            {(runs.data ?? []).map((run) => (
+              <SelectItem
+                id={run.id}
+                key={run.id}
+                textValue={runSelectorLabel(run, runs.data ?? [])}
+              >
+                {runSelectorLabel(run, runs.data ?? [])}
+              </SelectItem>
+            ))}
+          </Select>
+        </div>
+        {runs.loading && <p role="status">Loading runs…</p>}
+      </div>
+    ) : null;
   return (
     <Page
       title="Laboratory"
       headingRef={laboratoryHeading}
       className="lab-page"
-      description="Author portable experiments, execute a saved revision, and inspect retained evidence."
+      description={
+        area === "runs"
+          ? undefined
+          : "Author portable experiments, execute a saved revision, and inspect retained evidence."
+      }
       actions={
         <>
           <Button
@@ -1366,37 +1403,7 @@ function LabWorkspace() {
             hidden={area !== "runs"}
           >
             <div className="lab-runs-layout">
-              {(runs.loading || !!runs.data?.length) && (
-                <div className="lab-runs-header">
-                  <h2>Runs</h2>
-                  <div className="lab-run-selector">
-                    <span className="text-caption-1-medium text-text-secondary">
-                      Retained run
-                    </span>
-                    <Select
-                      size="sm"
-                      aria-label="Retained run"
-                      placeholder="Select a retained run"
-                      selectedKey={selectedRun}
-                      isDisabled={runs.loading}
-                      onSelectionChange={(key) => {
-                        if (key !== null) selectRun(String(key));
-                      }}
-                    >
-                      {(runs.data ?? []).map((run) => (
-                        <SelectItem
-                          id={run.id}
-                          key={run.id}
-                          textValue={`${run.id} · ${run.state}`}
-                        >
-                          {run.id} · {run.state}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                  </div>
-                  {runs.loading && <p role="status">Loading runs…</p>}
-                </div>
-              )}
+              {!selectedRun && runSelector}
               <div className="lab-run-detail">
                 {!selectedRun && (
                   <div className="lab-runs-empty">
@@ -1420,6 +1427,7 @@ function LabWorkspace() {
                     key={selectedRun}
                     id={selectedRun}
                     active={area === "runs"}
+                    selector={runSelector}
                     onChanged={runs.reload}
                     onOperationChanged={operations.reload}
                   />
@@ -1511,12 +1519,31 @@ function LabWorkspace() {
     </Page>
   );
 }
+export function runSelectorLabel(run: LabRun, runs: LabRun[]): string {
+  const name = (run.spec as any)?.definition?.name;
+  let length = run.id.length <= 24 ? run.id.length : 8;
+  while (
+    length < run.id.length &&
+    runs.some(
+      (other) =>
+        other.id !== run.id &&
+        other.id.slice(-length) === run.id.slice(-length),
+    )
+  )
+    length++;
+  const identity =
+    length < run.id.length ? `…${run.id.slice(-length)}` : run.id;
+  return `${typeof name === "string" && name.trim() ? `${name} · ` : ""}${identity} · ${run.state}`;
+}
+
 function RunEvidence({
+  selector,
   id,
   active,
   onChanged,
   onOperationChanged,
 }: {
+  selector?: ReactNode;
   id: string;
   active: boolean;
   onChanged: () => void;
@@ -1530,6 +1557,7 @@ function RunEvidence({
   const [rawRecords, setRawRecords] = useState<any[]>([]);
   const [requestedArtifact, setArtifact] = useState("processed.jsonl");
   const [runView, setRunView] = useState("replay");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const retained = run ? dataArtifacts(run) : undefined;
   const recordArtifacts =
     retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? [];
@@ -1702,88 +1730,140 @@ function RunEvidence({
       <RunTemplate label="Retained run evidence">
         <Fault error={error} />
         <Fault error={pollError} />
-        <div className="lab-run-summary">
+        <div className="lab-run-toolbar">
+          {selector}
           <Badge>{run?.state ?? "Loading"}</Badge>
-          <span>
-            <strong>Run:</strong> {id}
-          </span>
-          <span>
-            <strong>Start after:</strong>{" "}
-            {run?.spec?.schedule?.not_before ?? "Immediately"}
-          </span>
-          <details>
-            <summary>Specification digest</summary>
-            <code>{run?.spec_digest ?? "Awaiting retained specification"}</code>
+          <Button size="sm" onClick={() => setDetailsOpen(true)}>
+            Run details
+          </Button>
+          <details className="records-command-menu">
+            <summary>Run actions</summary>
+            <div className="records-command-options">
+              <Button
+                disabled={busy || !run || isTerminal(run.state)}
+                onClick={() => command("cancel")}
+              >
+                Cancel run
+              </Button>
+              <Button
+                disabled={
+                  busy ||
+                  !run ||
+                  !["failed", "cancelled", "canceled", "lost"].includes(
+                    run.state,
+                  )
+                }
+                onClick={() => command("retry")}
+              >
+                Retry run
+              </Button>
+              <Button
+                disabled={busy || run?.state !== "running" || !run?.target_id}
+                onClick={() => command("recover")}
+              >
+                Recover expired runner
+              </Button>
+              <Button disabled={busy} onClick={() => setRefresh((v) => v + 1)}>
+                Refresh evidence
+              </Button>
+              {run && (
+                <Button
+                  disabled={busy || !isTerminal(run.state)}
+                  onClick={async () => {
+                    const signal = controller.current?.signal;
+                    if (!signal || signal.aborted || busy) return;
+                    setBusy(true);
+                    setError(null);
+                    try {
+                      const submitted = await studio.api.post<LabOperation>(
+                        `/api/lab/runs/${enc(id)}/exports`,
+                        { idempotency_key: crypto.randomUUID() },
+                        signal,
+                      );
+                      onOperationChanged();
+                      try {
+                        const operation = await waitForOperation(
+                          studio.api,
+                          submitted,
+                          signal,
+                          setExportOperation,
+                        );
+                        await downloadOperation(
+                          studio.api,
+                          operation.id,
+                          signal,
+                          `laboratory-${id}.zip`,
+                        );
+                      } finally {
+                        if (!signal.aborted) onOperationChanged();
+                      }
+                    } catch (e: any) {
+                      if (!signal.aborted && e.name !== "AbortError")
+                        setError(e);
+                    } finally {
+                      if (!signal.aborted) setBusy(false);
+                    }
+                  }}
+                >
+                  Export manifest bundle
+                </Button>
+              )}
+            </div>
           </details>
         </div>
-        <div className="lab-actions">
-          <Button
-            disabled={busy || !run || isTerminal(run.state)}
-            onClick={() => command("cancel")}
-          >
-            Cancel run
-          </Button>
-          <Button
-            disabled={
-              busy ||
-              !run ||
-              !["failed", "cancelled", "canceled", "lost"].includes(run.state)
-            }
-            onClick={() => command("retry")}
-          >
-            Retry run
-          </Button>
-          <Button
-            disabled={busy || run?.state !== "running" || !run?.target_id}
-            onClick={() => command("recover")}
-          >
-            Recover expired runner
-          </Button>
-          <Button disabled={busy} onClick={() => setRefresh((v) => v + 1)}>
-            Refresh evidence
-          </Button>
-          {run && (
-            <Button
-              disabled={busy || !isTerminal(run.state)}
-              onClick={async () => {
-                const signal = controller.current?.signal;
-                if (!signal || signal.aborted || busy) return;
-                setBusy(true);
-                setError(null);
-                try {
-                  const submitted = await studio.api.post<LabOperation>(
-                    `/api/lab/runs/${enc(id)}/exports`,
-                    { idempotency_key: crypto.randomUUID() },
-                    signal,
-                  );
-                  onOperationChanged();
-                  try {
-                    const operation = await waitForOperation(
-                      studio.api,
-                      submitted,
-                      signal,
-                      setExportOperation,
-                    );
-                    await downloadOperation(
-                      studio.api,
-                      operation.id,
-                      signal,
-                      `laboratory-${id}.zip`,
-                    );
-                  } finally {
-                    if (!signal.aborted) onOperationChanged();
-                  }
-                } catch (e: any) {
-                  if (!signal.aborted && e.name !== "AbortError") setError(e);
-                } finally {
-                  if (!signal.aborted) setBusy(false);
-                }
-              }}
+        <Modal
+          open={detailsOpen}
+          title="Run details"
+          onClose={() => setDetailsOpen(false)}
+          className="lab-run-details-dialog"
+        >
+          <div className="lab-transfer-viewport">
+            <div
+              className="lab-transfer-scroll"
+              onScroll={(event) =>
+                event.currentTarget.parentElement?.style.setProperty(
+                  "--lab-transfer-fade",
+                  String(Math.min(1, event.currentTarget.scrollTop / 24)),
+                )
+              }
             >
-              Export manifest bundle
-            </Button>
-          )}
-        </div>
+              <div className="lab-run-summary">
+                <Badge>{run?.state ?? "Loading"}</Badge>
+                <span>
+                  <strong>Run:</strong> {id}
+                </span>
+                <span>
+                  <strong>Start after:</strong>{" "}
+                  {run?.spec?.schedule?.not_before ?? "Immediately"}
+                </span>
+                <details>
+                  <summary>Specification digest</summary>
+                  <code>
+                    {run?.spec_digest ?? "Awaiting retained specification"}
+                  </code>
+                </details>
+              </div>
+              <dl>
+                <dt>Definition ID</dt>
+                <dd>{run?.definition_id ?? "Loading"}</dd>
+                <dt>Target ID</dt>
+                <dd>{run?.target_id ?? "Not recorded"}</dd>
+                <dt>Created</dt>
+                <dd>{run?.created ?? "Not recorded"}</dd>
+              </dl>
+              <h3>Result and attempts</h3>
+              <pre>
+                {json({ result: run?.result, attempts: run?.attempts })}
+              </pre>
+            </div>
+            <div className="lab-transfer-fade" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </div>
+          </div>
+        </Modal>
+        {busy && <p role="status">Run operation in progress…</p>}
         {recovery != null && (
           <Evidence label="Laboratory runner recovery" data={recovery}>
             <details open>
@@ -1890,6 +1970,7 @@ function RunEvidence({
               rawRecords={rawRecords}
               events={events}
               run={run}
+              active={active && runView === "replay"}
             />
           )}
         </section>

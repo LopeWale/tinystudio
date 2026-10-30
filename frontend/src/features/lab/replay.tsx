@@ -2,7 +2,7 @@ import { useStudio } from "../../app/StudioContext";
 import { RepresentationInspector } from "./representation-inspector";
 import { CoverageInspector, type CoverageSource } from "./coverage-inspector";
 import { eventAvailableForDecision } from "./clock";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTrendController } from "./trend-controller";
 import { TrendWorkbench } from "./trend-workbench";
 import { dataArtifacts } from "./evidence";
@@ -19,6 +19,7 @@ import {
 import { Input } from "../../components/boardui/base/input/input";
 import { DefinitionGraph } from "./graph";
 import type { ExperimentDefinition, LabRun } from "./definition";
+import { InspectionWorkspace } from "../../components/studio/workspace";
 import "../data/analytical-workspace.css";
 export const replayViews = [
   "Episode replay",
@@ -63,11 +64,13 @@ export function ReplayViews({
   rawRecords,
   events,
   run,
+  active = true,
 }: {
   records: any[];
   rawRecords: any[];
   events: any[];
   run: LabRun;
+  active?: boolean;
 }) {
   const { scopeKey } = useStudio();
   const [coverageSelectionState, setCoverageSelectionState] = useState<{
@@ -78,6 +81,7 @@ export function ReplayViews({
     coverageSelectionState?.scopeKey === scopeKey
       ? coverageSelectionState.source
       : undefined;
+  const [inspecting, setInspecting] = useState(false);
   const [view, setView] = useState(replayViews[0]);
   const episodes = useMemo(
     () => [
@@ -158,6 +162,9 @@ export function ReplayViews({
   const cursor = Math.max(0, trend.cursor),
     playing = trend.playing,
     setPlaying = trend.setPlaying;
+  useEffect(() => {
+    if (!active) setPlaying(false);
+  }, [active, setPlaying]);
   const point = trend.selected?.record;
   const result = run.result as any;
   const timedEvents = events.filter((event) =>
@@ -165,81 +172,242 @@ export function ReplayViews({
   );
   return (
     <section className="lab-replay" aria-label="Replay workbench">
-      <div className="lab-actions" role="group" aria-label="Evidence views">
-        {replayViews.map((name) => (
-          <Button
-            key={name}
-            size="sm"
-            variant={view === name ? "secondary" : "ghost"}
-            aria-pressed={view === name}
-            onClick={() => {
-              setView(name);
+      <div className="lab-actions lab-evidence-controls">
+        <Select
+          size="sm"
+          aria-label="Evidence view"
+          selectedKey={view}
+          onSelectionChange={(key) => {
+            if (key !== null) {
+              setView(String(key));
               setPlaying(false);
-            }}
+              setInspecting(false);
+            }
+          }}
+        >
+          {replayViews.map((name) => (
+            <SelectItem id={name} key={name}>
+              {name}
+            </SelectItem>
+          ))}
+        </Select>
+        {replayViews.slice(0, 4).includes(view) && (
+          <>
+            <div className="lab-actions lab-replay-controls">
+              <Select
+                size="sm"
+                aria-label="Replay episode"
+                selectedKey={episode}
+                onSelectionChange={(key) => {
+                  setChosenEpisode(String(key));
+                  trend.reset();
+                }}
+              >
+                {episodes.map((id) => (
+                  <SelectItem id={id} key={id}>
+                    {id}
+                  </SelectItem>
+                ))}
+              </Select>
+              <Button
+                size="sm"
+                disabled={trend.samples.length < 2}
+                onClick={() => setPlaying((old) => !old)}
+              >
+                {playing ? "Pause replay" : "Play replay"}
+              </Button>
+              <Button
+                size="sm"
+                disabled={trend.cursor <= 0}
+                onClick={() => trend.navigate(trend.cursor - 1)}
+              >
+                Previous frame
+              </Button>
+              <Input
+                className="lab-replay-frame"
+                aria-label="Replay frame"
+                size="small"
+                type="number"
+                value={String(cursor)}
+                onChange={(value) =>
+                  trend.navigate(Math.trunc(Number(value)) || 0)
+                }
+              />
+              <Button
+                size="sm"
+                disabled={trend.cursor >= trend.samples.length - 1}
+                onClick={() => trend.navigate(trend.cursor + 1)}
+              >
+                Next frame
+              </Button>
+            </div>
+          </>
+        )}
+        {view === replayViews[0] && (
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={inspecting}
+            onClick={() => setInspecting((value) => !value)}
           >
-            {name}
+            {inspecting ? "Close observation" : "Inspect observation"}
           </Button>
-        ))}
+        )}
       </div>
-      <p className="lab-evidence-window text-text-secondary">
-        Loaded window: {records.length} processed · {rawRecords.length} original
-        records · up to 1,000 per artifact. Original and derived time
-        coordinates remain independent.
-      </p>
       {replayViews.slice(0, 4).includes(view) && (
-        <>
-          <div className="lab-actions lab-replay-controls">
-            <Select
-              size="sm"
-              aria-label="Replay episode"
-              selectedKey={episode}
-              onSelectionChange={(key) => {
-                setChosenEpisode(String(key));
-                trend.reset();
-              }}
-            >
-              {episodes.map((id) => (
-                <SelectItem id={id} key={id}>
-                  {id}
-                </SelectItem>
-              ))}
-            </Select>
-            <Button
-              size="sm"
-              disabled={trend.samples.length < 2}
-              onClick={() => setPlaying((old) => !old)}
-            >
-              {playing ? "Pause replay" : "Play replay"}
-            </Button>
-            <Button
-              size="sm"
-              disabled={trend.cursor <= 0}
-              onClick={() => trend.navigate(trend.cursor - 1)}
-            >
-              Previous frame
-            </Button>
-            <Input
-              className="lab-replay-frame"
-              aria-label="Replay frame"
-              size="small"
-              type="number"
-              value={String(cursor)}
-              onChange={(value) =>
-                trend.navigate(Math.trunc(Number(value)) || 0)
-              }
-            />
-            <Button
-              size="sm"
-              disabled={trend.cursor >= trend.samples.length - 1}
-              onClick={() => trend.navigate(trend.cursor + 1)}
-            >
-              Next frame
-            </Button>
-          </div>
-        </>
-      )}
-      {replayViews.slice(0, 4).includes(view) && (
-        <div className="analytical-evidence-grid lab-replay-evidence">
+        <InspectionWorkspace
+          label={view === replayViews[0] ? "Selected observation" : view}
+          inspector={
+            view !== replayViews[0] || inspecting ? (
+              <div className="lab-evidence-details">
+                {view === replayViews[0] && (
+                  <>
+                    <h4>Selected observation</h4>
+                    {point ? (
+                      <dl className="lab-selected-observation">
+                        {trend.fields.map((field) => (
+                          <div key={field} className="lab-observation-field">
+                            <dt>{field}</dt>
+                            <dd>
+                              {exactNumber(fieldValue(point, field))}{" "}
+                              {field === "value"
+                                ? (point.units ?? "units not recorded")
+                                : (point.field_units?.[field] ??
+                                  "units not recorded")}
+                            </dd>
+                          </div>
+                        ))}
+                        <dt>Event / sample time</dt>
+                        <dd>
+                          {point.event_time ?? point.time ?? "Not recorded"}
+                        </dd>
+                        <dt>Available at</dt>
+                        <dd>
+                          {point.fit_availability?.clock_comparable === false
+                            ? `Fitted-value availability unknown; source observation ${point.available_at ?? "not recorded"}`
+                            : (point.available_at ?? "Not recorded")}
+                        </dd>
+                        <dt>Observation</dt>
+                        <dd>
+                          {point.estimated === true
+                            ? "Estimated"
+                            : point.observed === true
+                              ? "Observed"
+                              : "Not established"}
+                        </dd>
+                        <dt>Source records</dt>
+                        <dd>
+                          {trend.selected?.identity.sourceRecordIds.join(
+                            ", ",
+                          ) || "Not recorded"}
+                        </dd>
+                      </dl>
+                    ) : (
+                      <EmptyState>No observation selected.</EmptyState>
+                    )}
+                    <details>
+                      <summary>Full selected record</summary>
+                      <pre>{JSON.stringify(point ?? null, null, 2)}</pre>
+                    </details>
+                    <h4>Events available at this decision</h4>
+                    {timedEvents.length ? (
+                      <ol>
+                        {timedEvents.map((event) => (
+                          <li key={event.seq}>
+                            {event.kind} · t={event.payload.time}
+                            <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <EmptyState>
+                        No events have matching episode, clock and availability
+                        metadata for this decision. All run events remain in the
+                        event timeline below.
+                      </EmptyState>
+                    )}
+                  </>
+                )}
+                {view === replayViews[1] && (
+                  <>
+                    {spec ? (
+                      <FrozenTopology definition={spec} />
+                    ) : (
+                      <EmptyState>
+                        A frozen run definition is required to inspect topology.
+                        The editor graph is not substituted for retained run
+                        state.
+                      </EmptyState>
+                    )}
+                    <h4>Retained state at frame {cursor}</h4>
+                    {point ? (
+                      <pre>{JSON.stringify(point, null, 2)}</pre>
+                    ) : (
+                      <EmptyState>
+                        No state records retained for this run.
+                      </EmptyState>
+                    )}
+                  </>
+                )}
+                {view === replayViews[2] && (
+                  <>
+                    <CoverageInspector
+                      runId={run.id}
+                      available={retained.all.some(
+                        (artifact) => artifact.role === "transformed_dataset",
+                      )}
+                      onSelect={(source) => {
+                        setCoverageSelectionState({ scopeKey, source });
+                        const loaded = trend.samples.find(
+                          (p) =>
+                            p.identity.artifactId ===
+                              source.identity.artifact_id &&
+                            p.identity.rowIndex === source.identity.row_index &&
+                            p.identity.runId === source.identity.run_id,
+                        );
+                        if (loaded) trend.select(loaded.identity.key);
+                      }}
+                    />
+                    {coverageSelection?.identity.run_id === run.id && (
+                      <>
+                        <p>
+                          Inspecting exact retained artifact{" "}
+                          {coverageSelection.identity.artifact_id} row{" "}
+                          {coverageSelection.identity.row_index}.{" "}
+                          {trend.samples.some(
+                            (p) =>
+                              p.identity.artifactId ===
+                                coverageSelection.identity.artifact_id &&
+                              p.identity.rowIndex ===
+                                coverageSelection.identity.row_index,
+                          )
+                            ? "This row is loaded in the chart."
+                            : "This row is outside the loaded chart window; the chart pin has not moved."}
+                        </p>
+                        <RepresentationInspector
+                          identity={coverageSelection.identity}
+                        />
+                      </>
+                    )}
+                  </>
+                )}
+                {view === replayViews[3] && (
+                  <RepresentationInspector
+                    identity={
+                      trend.selected
+                        ? {
+                            run_id: trend.selected.identity.runId,
+                            artifact_id: trend.selected.identity.artifactId,
+                            row_index: trend.selected.identity.rowIndex,
+                          }
+                        : undefined
+                    }
+                  />
+                )}
+              </div>
+            ) : undefined
+          }
+        >
           <Evidence
             label="Laboratory trend component state"
             data={{
@@ -263,152 +431,13 @@ export function ReplayViews({
           >
             <TrendWorkbench controller={trend} />
           </Evidence>
-          <aside
-            className="lab-evidence-details"
-            aria-label="Selected record evidence"
-          >
-            {view === replayViews[0] && (
-              <>
-                <h4>Selected observation</h4>
-                {point ? (
-                  <dl className="lab-selected-observation">
-                    {trend.fields.map((field) => (
-                      <div key={field} className="lab-observation-field">
-                        <dt>{field}</dt>
-                        <dd>
-                          {exactNumber(fieldValue(point, field))}{" "}
-                          {field === "value"
-                            ? (point.units ?? "units not recorded")
-                            : (point.field_units?.[field] ??
-                              "units not recorded")}
-                        </dd>
-                      </div>
-                    ))}
-                    <dt>Event / sample time</dt>
-                    <dd>{point.event_time ?? point.time ?? "Not recorded"}</dd>
-                    <dt>Available at</dt>
-                    <dd>
-                      {point.fit_availability?.clock_comparable === false
-                        ? `Fitted-value availability unknown; source observation ${point.available_at ?? "not recorded"}`
-                        : (point.available_at ?? "Not recorded")}
-                    </dd>
-                    <dt>Observation</dt>
-                    <dd>
-                      {point.estimated === true
-                        ? "Estimated"
-                        : point.observed === true
-                          ? "Observed"
-                          : "Not established"}
-                    </dd>
-                    <dt>Source records</dt>
-                    <dd>
-                      {trend.selected?.identity.sourceRecordIds.join(", ") ||
-                        "Not recorded"}
-                    </dd>
-                  </dl>
-                ) : (
-                  <EmptyState>No observation selected.</EmptyState>
-                )}
-                <details>
-                  <summary>Full selected record</summary>
-                  <pre>{JSON.stringify(point ?? null, null, 2)}</pre>
-                </details>
-                <h4>Events available at this decision</h4>
-                {timedEvents.length ? (
-                  <ol>
-                    {timedEvents.map((event) => (
-                      <li key={event.seq}>
-                        {event.kind} · t={event.payload.time}
-                        <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <EmptyState>
-                    No events have matching episode, clock and availability
-                    metadata for this decision. All run events remain in the
-                    event timeline below.
-                  </EmptyState>
-                )}
-              </>
-            )}
-            {view === replayViews[1] && (
-              <>
-                {spec ? (
-                  <FrozenTopology definition={spec} />
-                ) : (
-                  <EmptyState>
-                    A frozen run definition is required to inspect topology. The
-                    editor graph is not substituted for retained run state.
-                  </EmptyState>
-                )}
-                <h4>Retained state at frame {cursor}</h4>
-                {point ? (
-                  <pre>{JSON.stringify(point, null, 2)}</pre>
-                ) : (
-                  <EmptyState>
-                    No state records retained for this run.
-                  </EmptyState>
-                )}
-              </>
-            )}
-            {view === replayViews[2] && (
-              <>
-                <CoverageInspector
-                  runId={run.id}
-                  available={retained.all.some(
-                    (artifact) => artifact.role === "transformed_dataset",
-                  )}
-                  onSelect={(source) => {
-                    setCoverageSelectionState({ scopeKey, source });
-                    const loaded = trend.samples.find(
-                      (p) =>
-                        p.identity.artifactId === source.identity.artifact_id &&
-                        p.identity.rowIndex === source.identity.row_index &&
-                        p.identity.runId === source.identity.run_id,
-                    );
-                    if (loaded) trend.select(loaded.identity.key);
-                  }}
-                />
-                {coverageSelection?.identity.run_id === run.id && (
-                  <>
-                    <p>
-                      Inspecting exact retained artifact{" "}
-                      {coverageSelection.identity.artifact_id} row{" "}
-                      {coverageSelection.identity.row_index}.{" "}
-                      {trend.samples.some(
-                        (p) =>
-                          p.identity.artifactId ===
-                            coverageSelection.identity.artifact_id &&
-                          p.identity.rowIndex ===
-                            coverageSelection.identity.row_index,
-                      )
-                        ? "This row is loaded in the chart."
-                        : "This row is outside the loaded chart window; the chart pin has not moved."}
-                    </p>
-                    <RepresentationInspector
-                      identity={coverageSelection.identity}
-                    />
-                  </>
-                )}
-              </>
-            )}
-            {view === replayViews[3] && (
-              <RepresentationInspector
-                identity={
-                  trend.selected
-                    ? {
-                        run_id: trend.selected.identity.runId,
-                        artifact_id: trend.selected.identity.artifactId,
-                        row_index: trend.selected.identity.rowIndex,
-                      }
-                    : undefined
-                }
-              />
-            )}
-          </aside>
-        </div>
+        </InspectionWorkspace>
       )}
+      <p className="lab-evidence-window text-text-secondary">
+        Loaded window: {records.length} processed · {rawRecords.length} original
+        records · up to 1,000 per artifact. Original and derived time
+        coordinates remain independent.
+      </p>
       {view === replayViews[4] && (
         <>
           {result?.baseline_comparison ? (

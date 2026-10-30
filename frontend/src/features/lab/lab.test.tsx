@@ -171,6 +171,7 @@ describe("laboratory authoring and execution", () => {
       "true",
     );
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith(
         "/api/lab/runs/recovery-run",
@@ -249,6 +250,7 @@ describe("laboratory authoring and execution", () => {
     );
     mount(studio);
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     expect(screen.getByRole("tab", { name: "Replay" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -402,6 +404,7 @@ describe("laboratory authoring and execution", () => {
     const { studio, api } = runFixture("succeeded");
     mount(studio);
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -539,6 +542,7 @@ describe("laboratory authoring and execution", () => {
       if (source === "import") api.post.mockImplementationOnce(() => pending);
       mount(studio);
       fireEvent.click(await findRetainedRun("succeeded"));
+      openRunActions();
       await screen.findByRole("button", { name: "Export manifest bundle" });
       closeAuthoring();
       fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
@@ -897,6 +901,7 @@ describe("laboratory authoring and execution", () => {
       const { api, studio } = runFixture(state);
       mount(studio);
       fireEvent.click(await findRetainedRun(state));
+      openRunActions();
       const retry = await screen.findByRole("button", { name: "Retry run" });
       await waitFor(() =>
         expect(
@@ -926,6 +931,7 @@ describe("laboratory authoring and execution", () => {
     api.post.mockResolvedValueOnce(response);
     mount(studio);
     fireEvent.click(await findRetainedRun("running"));
+    openRunActions();
     const recover = await screen.findByRole("button", {
       name: "Recover expired runner",
     });
@@ -980,6 +986,7 @@ describe("laboratory authoring and execution", () => {
     });
     const view = mount(studio);
     fireEvent.click(await findRetainedRun("running"));
+    openRunActions();
     await waitFor(() => expect(resolveStatus).toBeTypeOf("function"));
     const prematureEventRead = api.get.mock.calls.some(([path]) =>
       path.includes("/events?"),
@@ -1056,6 +1063,7 @@ describe("laboratory authoring and execution", () => {
     });
     mount(studio);
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     fireEvent.click(screen.getByRole("tab", { name: "Events" }));
     const timeline = await screen.findByRole("table", {
       name: "Run event timeline",
@@ -1115,6 +1123,7 @@ describe("laboratory authoring and execution", () => {
     );
     mount(studio);
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     fireEvent.click(screen.getByRole("tab", { name: "Records" }));
     const table = await screen.findByRole("table", {
       name: "Retained records",
@@ -1182,6 +1191,7 @@ describe("laboratory authoring and execution", () => {
     );
     mount(studio);
     fireEvent.click(await findRetainedRun("succeeded"));
+    openRunActions();
     expect(screen.getByText("Loading", { exact: true })).toBeVisible();
     await act(async () => finish(run));
     expect(await screen.findByText("succeeded", { exact: true })).toBeVisible();
@@ -1211,6 +1221,7 @@ describe("laboratory authoring and execution", () => {
     vi.useFakeTimers();
     try {
       fireEvent.click(row);
+      openRunActions();
       await act(async () => {});
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -1265,6 +1276,7 @@ describe("laboratory authoring and execution", () => {
       vi.useFakeTimers();
       try {
         fireEvent.click(row);
+        openRunActions();
         await act(async () => {});
         fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
         await act(async () => {});
@@ -1314,6 +1326,7 @@ describe("laboratory authoring and execution", () => {
       vi.useFakeTimers();
       try {
         fireEvent.click(row);
+        openRunActions();
         await act(async () => {});
         expect(screen.getByText("Denied evidence read")).toBeInTheDocument();
         await act(async () => {
@@ -1342,6 +1355,7 @@ describe("laboratory authoring and execution", () => {
     vi.useFakeTimers();
     try {
       fireEvent.click(row);
+      openRunActions();
       await act(async () => {});
       await act(async () => {
         await vi.advanceTimersByTimeAsync(33000);
@@ -1472,7 +1486,8 @@ describe("laboratory authoring and execution", () => {
     expect(
       api.post.mock.calls.find(([path]) => path === "/api/lab/runs")?.[1],
     ).not.toHaveProperty("not_before");
-    await screen.findByText("run-1");
+    await screen.findByRole("button", { name: "Run details" });
+    openRunActions();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled(),
     );
@@ -1520,6 +1535,9 @@ describe("laboratory authoring and execution", () => {
           expect.objectContaining({ not_before: "2031-01-02T03:04:00.000Z" }),
           expect.any(AbortSignal),
         ),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Run details" }),
       );
       expect(
         await screen.findByText("2031-01-02T03:04:00.000Z"),
@@ -1638,9 +1656,14 @@ describe("laboratory authoring and execution", () => {
     });
     const view = mount(studio);
     fireEvent.click(await findRunByName("observed-run · running"));
+    openRunActions();
     await screen.findByText("stage_finished");
-    expect(screen.getByText("sha256:retained-spec")).toBeInTheDocument();
     expect(screen.getByText(/"normalize"/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run details" }));
+    fireEvent.click(
+      screen.getByText("Specification digest", { selector: "summary" }),
+    );
+    expect(screen.getByText("sha256:retained-spec")).toBeVisible();
     const reads = api.get.mock.calls.filter(([path]) =>
       path.startsWith("/api/lab/runs/observed-run"),
     );
@@ -1691,6 +1714,7 @@ describe("laboratory authoring and execution", () => {
     try {
       mount(studio);
       fireEvent.click(await findRunByName("finished-run · succeeded"));
+      openRunActions();
       const button = await screen.findByRole("button", {
         name: "Export manifest bundle",
       });
@@ -1745,6 +1769,7 @@ describe("laboratory authoring and execution", () => {
     });
     const view = mount(studio);
     fireEvent.click(await findRunByName("finished-run · succeeded"));
+    openRunActions();
     const button = await screen.findByRole("button", {
       name: "Export manifest bundle",
     });
@@ -1903,44 +1928,20 @@ describe("laboratory authoring and execution", () => {
     );
     const user = userEvent.setup();
     await user.tab();
-    expect(
-      screen.getByRole("button", { name: "Episode replay" }),
-    ).toHaveFocus();
-    await user.tab();
-    expect(
-      screen.getByRole("button", { name: "State / topology" }),
-    ).toHaveFocus();
-    await user.keyboard("{Enter}");
-    expect(
-      screen.getByText(/A frozen run definition is required/),
-    ).toBeInTheDocument();
-    await user.tab();
-    expect(
-      screen.getByRole("button", { name: "Dataset coverage" }),
-    ).toHaveFocus();
-    await user.keyboard("{Enter}");
-    expect(
-      screen.getByText(/Dataset coverage requires retained records/),
-    ).toBeInTheDocument();
-    await user.tab();
-    await user.keyboard("{Enter}");
-    expect(
-      screen.getByText(
-        "A retained record or representation artifact is required.",
-      ),
-    ).toBeInTheDocument();
-    await user.tab();
-    await user.keyboard("{Enter}");
-    expect(
-      screen.getByText(
-        /Baseline comparison requires two compatible retained runs/,
-      ),
-    ).toBeInTheDocument();
-    await user.tab();
-    await user.keyboard("{Enter}");
-    expect(
-      screen.getByText(/Deployment tradeoffs require measured target latency/),
-    ).toBeInTheDocument();
+    const chooser = screen.getByRole("button", { name: /Evidence view/ });
+    expect(chooser).toHaveFocus();
+    const prerequisites = [
+      /A frozen run definition is required/,
+      /Dataset coverage requires retained records/,
+      /A retained record or representation artifact is required/,
+      /Baseline comparison requires two compatible retained runs/,
+      /Deployment tradeoffs require measured target latency/,
+    ];
+    for (const prerequisite of prerequisites) {
+      chooser.focus();
+      await user.keyboard("{Enter}{ArrowDown}{Enter}");
+      expect(screen.getByText(prerequisite)).toBeInTheDocument();
+    }
   });
 });
 
@@ -2250,3 +2251,8 @@ describe("laboratory capability and evidence contracts", () => {
     ).toHaveLength(1);
   });
 });
+
+function openRunActions() {
+  const summary = screen.getByText("Run actions", { selector: "summary" });
+  if (!summary.closest("details")?.open) fireEvent.click(summary);
+}

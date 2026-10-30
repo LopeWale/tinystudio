@@ -36,6 +36,15 @@
 - [x] Preserve disabled/loading/default type and controlled state. Test callbacks, focus/labels and responsive DOM presence.
 - [x] Build interactive illustrative catalog examples with network isolation intact.
 
+## Task 1A — Shared typography contract and template consistency
+
+- [ ] Audit rendered font families, fallback/loading behavior, sizes, weights, line heights and letter spacing across the existing templates and actual routes, including dialogs, controls, tables, chart axes/tooltips and the assistant.
+- [ ] Define one reusable semantic typography contract using the existing BoardUI type ramp: page title, section title, body, label, control, table header/cell, caption, chart text and code/technical values. Preserve intentional hierarchy; use the same treatment for the same role everywhere.
+- [ ] Apply the contract through shared components and all seven templates; consolidate conflicting global, vendor-adapter and feature overrides at their shared owner. Keep monospace limited to justified code/technical content and tabular numerals to suitable numerical displays.
+- [ ] Document the role-to-token mapping and allowed exceptions in DESIGN.md, with an in-app typography specimen in the existing component catalog; do not introduce another standalone preview or duplicate component library.
+- [ ] Add checks for unauthorized local typography overrides and representative computed-style regressions; verify readable labels, chart text, font-loading fallback, light/dark modes, keyboard zoom and desktop/tablet/phone layouts in the actual application.
+- [ ] Obtain independent review and user visual acceptance of template consistency before marking this task complete or accepting affected route typography.
+
 ## Task 2 — Shell and navigation
 
 - [x] Centralize destinations and role visibility; reuse for sidebar, search and assistant actions.
