@@ -1001,64 +1001,134 @@ function LabWorkspace() {
                                   />
                                 )}
                               {definition?.engine === "retrieval.index" && (
-                                <Choice
-                                  label="Retrieval mode"
-                                  value={String(
-                                    definition.parameters.mode ?? "lexical",
-                                  )}
-                                  options={[
-                                    "lexical",
-                                    "structured",
-                                    "semantic",
-                                    "hybrid",
-                                    "episode",
-                                  ].map((id) => ({ id, name: id }))}
-                                  onChange={(mode) =>
-                                    change({
-                                      parameters: {
-                                        ...definition.parameters,
-                                        mode,
+                                <>
+                                  <Choice
+                                    label="Retrieval operation"
+                                    value={String(
+                                      definition.parameters.operation ??
+                                        "build",
+                                    )}
+                                    options={[
+                                      { id: "build", name: "Build an index" },
+                                      {
+                                        id: "query",
+                                        name: "Query a retained index",
                                       },
-                                    })
-                                  }
-                                />
+                                    ]}
+                                    onChange={(operation) =>
+                                      change({
+                                        parameters: {
+                                          ...definition.parameters,
+                                          operation,
+                                        },
+                                      })
+                                    }
+                                  />
+                                  <Choice
+                                    label="Retrieval mode"
+                                    value={String(
+                                      definition.parameters.mode ??
+                                        definition.retrieval?.mode ??
+                                        (definition.parameters.operation ===
+                                        "query"
+                                          ? "inherited"
+                                          : "lexical"),
+                                    )}
+                                    options={[
+                                      ...(definition.parameters.operation ===
+                                      "query"
+                                        ? [
+                                            {
+                                              id: "inherited",
+                                              name: "From retained index",
+                                            },
+                                          ]
+                                        : []),
+                                      ...[
+                                        "lexical",
+                                        "structured",
+                                        "semantic",
+                                        "hybrid",
+                                        "episode",
+                                      ].map((id) => ({ id, name: id })),
+                                    ]}
+                                    onChange={(mode) => {
+                                      const parameters = {
+                                        ...definition.parameters,
+                                      };
+                                      const retrieval = {
+                                        ...definition.retrieval,
+                                      };
+                                      if (mode === "inherited") {
+                                        delete parameters.mode;
+                                        delete retrieval.mode;
+                                      } else {
+                                        parameters.mode = mode;
+                                        if ("mode" in retrieval)
+                                          retrieval.mode = mode;
+                                      }
+                                      change({
+                                        parameters,
+                                        ...(definition.retrieval
+                                          ? { retrieval }
+                                          : {}),
+                                      });
+                                    }}
+                                  />
+                                  {definition.parameters.operation ===
+                                    "query" && (
+                                    <p className="muted">
+                                      Attach a retained index in Inputs. Its
+                                      corpus stays unchanged. Semantic and
+                                      hybrid indexes also require their original
+                                      embedding model. Remove fresh corpus
+                                      inputs before checking compatibility.
+                                    </p>
+                                  )}
+                                </>
                               )}
                               {Object.entries(
                                 definition.engine === "data.pipeline"
                                   ? {}
                                   : definition.parameters,
-                              ).map(([key, value]) => (
-                                <Input
-                                  key={key}
-                                  label={key.replaceAll("_", " ")}
-                                  value={
-                                    typeof value === "object"
-                                      ? JSON.stringify(value)
-                                      : String(value ?? "")
-                                  }
-                                  onChange={(next) => {
-                                    let parsed: unknown = next;
-                                    if (typeof value === "number")
-                                      parsed = Number(next);
-                                    else if (
-                                      typeof value === "object" ||
-                                      typeof value === "boolean"
-                                    ) {
-                                      try {
-                                        parsed = JSON.parse(next);
-                                      } catch {
-                                        return;
-                                      }
+                              )
+                                .filter(
+                                  ([key]) =>
+                                    definition.engine !== "retrieval.index" ||
+                                    !["mode", "operation"].includes(key),
+                                )
+                                .map(([key, value]) => (
+                                  <Input
+                                    key={key}
+                                    label={key.replaceAll("_", " ")}
+                                    value={
+                                      typeof value === "object"
+                                        ? JSON.stringify(value)
+                                        : String(value ?? "")
                                     }
-                                    change({
-                                      parameters: {
-                                        ...definition!.parameters,
-                                        [key]: parsed,
-                                      },
-                                    });
-                                  }}
-                                />
-                              ))}
+                                    onChange={(next) => {
+                                      let parsed: unknown = next;
+                                      if (typeof value === "number")
+                                        parsed = Number(next);
+                                      else if (
+                                        typeof value === "object" ||
+                                        typeof value === "boolean"
+                                      ) {
+                                        try {
+                                          parsed = JSON.parse(next);
+                                        } catch {
+                                          return;
+                                        }
+                                      }
+                                      change({
+                                        parameters: {
+                                          ...definition!.parameters,
+                                          [key]: parsed,
+                                        },
+                                      });
+                                    }}
+                                  />
+                                ))}
                               <p className="lab-wide text-text-secondary">
                                 Use Definition JSON for advanced adapter
                                 settings.

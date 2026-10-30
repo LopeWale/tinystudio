@@ -38,6 +38,15 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
           "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
+    if engine == "retrieval.index":
+        from .retrieval_selection import validate_retrieval_selection
+        try:
+            validate_retrieval_selection(definition.model_dump())
+        except (ValueError, KeyError, TypeError) as exc:
+            check("retrieval_selection", False, str(exc))
+        else:
+            check("retrieval_selection", True,
+                  "Retrieval choices are compatible; retained index contents and model identity are verified at execution.")
     if engine == "learning.language":
         from .learning_selection import validate_language_selection
         try:

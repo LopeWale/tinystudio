@@ -283,9 +283,19 @@ export const templates: Template[] = [
     id: "retrieval.index",
     name: "Lexical / semantic / hybrid retrieval",
     domain: "retrieval",
-    parameters: { mode: "lexical", queries: ["pressure"], top_k: 5 },
+    parameters: {
+      operation: "build",
+      mode: "lexical",
+      queries: ["pressure"],
+      top_k: 5,
+    },
     inputs: [
       input("source", "Document, structured or episode JSON/JSONL evidence"),
+      input(
+        "retrieval_index",
+        "Retained index to query without rebuilding its corpus",
+        false,
+      ),
       input(
         "embedding_model",
         "Required only for semantic/hybrid; local encoder archive",
@@ -548,6 +558,20 @@ export function inputExpectations(
   definition: ExperimentDefinition,
 ): InputExpectation[] {
   const rows = templates.find((t) => t.id === definition.engine)?.inputs ?? [];
+  if (definition.engine === "retrieval.index") {
+    const query = definition.parameters.operation === "query";
+    const mode = definition.parameters.mode ?? definition.retrieval?.mode;
+    return rows.map((row) => ({
+      ...row,
+      required:
+        row.role === "retrieval_index"
+          ? query
+          : row.role === "source"
+            ? !query && !Array.isArray(definition.parameters.records)
+            : row.role === "embedding_model" &&
+              ["semantic", "hybrid"].includes(String(mode)),
+    }));
+  }
   const selected = (value: unknown) =>
     value && typeof value === "object" && "kind" in value
       ? String(value.kind)

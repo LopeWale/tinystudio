@@ -110,3 +110,30 @@ def test_external_unassigned_file_keeps_content_and_is_qualified(tmp_path):
     result = execute_retrieval(spec, tmp_path / "out", lambda _: None, lambda: False)
     assert result["records"][0]["hits"][0]["content"] == {"text": "pressure", "split": "unassigned"}
     assert result["qualification"]["qualified"] is True
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_execution_dispatch_preserves_restricted_corpus_bindings(tmp_path, override):
+    from tinystudio.lab.execution import execute
+
+    bindings, paths = [], {}
+    for name, visibility in (("ordinary", "model"), ("heldout", "evaluation")):
+        path = tmp_path / (name + ".json")
+        path.write_text(json.dumps([{"text": name + " pressure", "partition": "train"}]))
+        bindings.append({"artifact_id": name, "role": "source", "visibility": visibility,
+                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        paths[name] = str(path)
+    spec = {"definition": {"engine": "retrieval.index", "inputs": bindings,
+                           "parameters": {"query": "pressure"},
+                           "research_overrides": [OVERRIDE] if override else []}}
+    if not override:
+        with pytest.raises(ValueError, match="research override"):
+            execute(spec, tmp_path / "run", lambda _: None, lambda: False, context={"input_paths": paths})
+        return
+    result = execute(spec, tmp_path / "run", lambda _: None, lambda: False, context={"input_paths": paths})
+    assert result["qualification"]["qualified"] is False
+    assert result["qualification"]["research_only"] is True
+    trace_file = next(item for item in result["artifacts"] if item["role"] == "retrieval_trace")
+    trace = json.loads(Path(trace_file["path"]).read_text())[0]
+    assert {hit["provenance"]["binding"]["artifact_id"] for hit in trace["hits"]} == {"ordinary", "heldout"}
+    assert next(hit for hit in trace["hits"] if hit["source"].endswith("heldout.json"))["provenance"]["protection"] == "evaluation"

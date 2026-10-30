@@ -12,6 +12,7 @@ from typing import Callable
 from tinystudio.lab.learning import artifact, resolved_inputs
 from tinystudio.lab.compatibility import directory_manifest, resolve_role
 from tinystudio.lab.partitioning import source_protection
+from tinystudio.lab.retrieval_selection import MODES, validate_retrieval_selection
 
 
 def _canonical(value) -> bytes:
@@ -143,6 +144,7 @@ def build_index(paths: list[str | Path | dict], output_dir: Path, mode: str = "l
         if encoder is None:
             raise ValueError("semantic/hybrid retrieval requires an immutable local embedding_model artifact")
         vectors = encoder.encode([_document_text(document) for document in documents])
+        _validate_vectors(vectors, len(documents), encoder.identity().get("dimension"))
         for document, vector in zip(documents, vectors):
             document["embedding"] = vector
         payload["embedding_model"] = encoder.identity()
@@ -159,6 +161,82 @@ def build_index(paths: list[str | Path | dict], output_dir: Path, mode: str = "l
     return {"path": str(target), "corpus_sha256": digest, "documents": len(documents), "mode": mode, "research_only": bool(restricted)}
 
 
+def _validate_vectors(vectors, count: int, dimension: int):
+    if (type(dimension) is not int or dimension < 1 or not isinstance(vectors, list)
+            or len(vectors) != count):
+        raise ValueError("embedding vectors must match document count and exact dimension")
+    for vector in vectors:
+        if (not isinstance(vector, list) or len(vector) != dimension
+                or any(type(value) not in {int, float} or not math.isfinite(value) for value in vector)
+                or not any(vector)):
+            raise ValueError("embedding vectors must be finite nonzero vectors with exact dimension")
+        # SemanticEncoder stores float32-normalized vectors. Their dot product
+        # is cosine similarity only while both corpus and query remain unit vectors.
+        if not math.isclose(math.hypot(*vector), 1.0, rel_tol=1e-5, abs_tol=1e-5):
+            raise ValueError("embedding vectors must have unit length for cosine scoring")
+
+
+def _validate_index(payload: dict):
+    if not isinstance(payload, dict) or payload.get("format") != "tinystudio.retrieval.v1":
+        raise ValueError("unsupported retrieval index format")
+    if not isinstance(payload.get("mode"), str) or payload["mode"] not in MODES:
+        raise ValueError("unsupported local retrieval mode")
+    documents = payload.get("documents")
+    if not isinstance(documents, list) or not documents:
+        raise ValueError("retrieval index requires nonempty documents")
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError("retrieval index requires source metadata")
+    source_bindings = {}
+    for source in sources:
+        if (not isinstance(source, dict) or not isinstance(source.get("path"), str)
+                or not isinstance(source.get("sha256"), str) or not isinstance(source.get("binding"), dict)
+                or not isinstance(source.get("metadata"), dict)):
+            raise ValueError("malformed retrieval index source metadata")
+        _evidence_protection({"binding": source["binding"], "metadata": source["metadata"]})
+        key = (source["path"], source["sha256"])
+        metadata = {"binding": source["binding"], "metadata": source["metadata"]}
+        if key in source_bindings and source_bindings[key] != metadata:
+            raise ValueError("inconsistent retrieval index source metadata")
+        source_bindings[key] = metadata
+    restricted = []
+    seen = set()
+    for document in documents:
+        if (not isinstance(document, dict) or not isinstance(document.get("content"), dict)
+                or not isinstance(document.get("provenance"), dict)
+                or not isinstance(document.get("id"), str) or not document["id"]
+                or document["id"] in seen or not isinstance(document.get("source"), str)
+                or not isinstance(document.get("source_sha256"), str) or type(document.get("row")) is not int):
+            raise ValueError("malformed retrieval index document")
+        seen.add(document["id"])
+        if document["source"] != "inline":
+            source_metadata = source_bindings.get((document["source"], document["source_sha256"]))
+            if source_metadata is None or any(document["provenance"].get(key) != value for key, value in source_metadata.items()):
+                raise ValueError("retrieval index document provenance differs from source metadata")
+        protection = _evidence_protection({"record": document["content"], "provenance": document["provenance"]})
+        if document["provenance"].get("protection") != protection:
+            raise ValueError("retrieval index protection metadata is inconsistent")
+        if protection != "model":
+            restricted.append({"source": document["source"], "row": document["row"],
+                               "reasons": [f"restricted {protection} evidence"], "provenance": document["provenance"]})
+        body = {key: value for key, value in document.items() if key not in {"id", "embedding"}}
+        if hashlib.sha256(_canonical(body)).hexdigest() != document["id"]:
+            raise ValueError("retrieval index document identity does not match content")
+    override = payload.get("research_override")
+    if payload.get("restricted_evidence") != restricted or (not restricted and override is not None):
+        raise ValueError("retrieval index restricted evidence metadata is inconsistent")
+    if restricted and not (isinstance(override, dict)
+            and override.get("kind") == "retrieval.include_restricted_evidence"
+            and isinstance(override.get("reason"), str) and override["reason"].strip()):
+        raise ValueError("retrieval index restricted evidence requires recorded research override")
+    if payload["mode"] in {"semantic", "hybrid"}:
+        identity = payload.get("embedding_model")
+        if not isinstance(identity, dict) or any(not identity.get(key) for key in ("artifact_id", "sha256", "artifact_sha256", "pooling")):
+            raise ValueError("retrieval index requires immutable embedding model identity")
+        _validate_vectors([document.get("embedding") for document in documents], len(documents), identity.get("dimension"))
+    return payload
+
+
 def query_index(path: str | Path, query: str, top_k: int = 5, filters: dict | None = None,
                 encoder: SemanticEncoder | None = None) -> dict:
     path = Path(path)
@@ -166,12 +244,12 @@ def query_index(path: str | Path, query: str, top_k: int = 5, filters: dict | No
     digest = hashlib.sha256(data).hexdigest()
     if path.stem != f"index-{digest}":
         raise ValueError("retrieval index digest does not match immutable filename")
-    payload = json.loads(data)
-    if payload.get("format") != "tinystudio.retrieval.v1":
-        raise ValueError("unsupported retrieval index format")
-    if not 1 <= top_k <= 100:
-        raise ValueError("top_k must be between 1 and 100")
-    filters = filters or {}
+    payload = _validate_index(json.loads(data))
+    if type(top_k) is not int or not 1 <= top_k <= 100:
+        raise ValueError("top_k must be an integer between 1 and 100")
+    if not isinstance(query, str) or (filters is not None and not isinstance(filters, dict)):
+        raise ValueError("query must be a string and filters must be an object")
+    filters = filters if filters is not None else {}
     documents = payload["documents"]
     term_counts = [Counter(_terms(json.dumps(document["content"], ensure_ascii=False))) for document in documents]
     query_terms = sorted(set(_terms(query)))
@@ -183,7 +261,9 @@ def query_index(path: str | Path, query: str, top_k: int = 5, filters: dict | No
     if semantic:
         if encoder is None or encoder.identity() != payload["embedding_model"]:
             raise ValueError("query embedding model must match the immutable index")
-        query_vector = encoder.encode([query])[0]
+        vectors = encoder.encode([query])
+        _validate_vectors(vectors, 1, payload["embedding_model"]["dimension"])
+        query_vector = vectors[0]
     ranked = []
     for document, counts, length in zip(documents, term_counts, lengths):
         if any(document["content"].get(key) != value for key, value in filters.items()):
@@ -220,37 +300,64 @@ def execute_retrieval(spec: dict, output_dir: Path, emit: Callable[[dict], None]
                       cancelled: Callable[[], bool]) -> dict:
     definition = spec["definition"]
     params = definition.get("parameters", {})
-    mode = params.get("mode", (definition.get("retrieval") or {}).get("mode", "lexical"))
+    selection = validate_retrieval_selection(definition)
+    operation, mode = selection["operation"], selection["mode"]
     if cancelled():
         return {"records": [], "artifacts": [], "metrics": {}, "qualification": {"status": "cancelled"}}
-    if any(key in params for key in {"embedding_model", "embedding_model_path"}):
-        raise ValueError("embedding model sources must use immutable input artifact roles")
+    origin = None
+    retained = None
+    if operation == "query":
+        retained = resolve_role(spec, "retrieval_index")
+        original = Path(retained["path"]).read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        if digest != retained["sha256"]:
+            raise ValueError("retrieval_index input checksum mismatch")
+        payload = _validate_index(json.loads(original))
+        if mode is not None and mode != payload["mode"]:
+            raise ValueError("query mode must match the immutable index")
+        mode = payload["mode"]
+        origin = {"artifact_id": retained["artifact_id"], "sha256": digest}
+    else:
+        mode = mode or "lexical"
+    # Validate inherited mode against the actual selected model role as well.
+    validate_retrieval_selection({**definition, "parameters": {**params, "mode": mode}})
     binding = resolve_role(spec, "embedding_model", directory=True, extract_dir=output_dir / "embedding-input") if mode in {"semantic", "hybrid"} else None
     encoder = SemanticEncoder(binding) if binding else None
-    declared = definition.get("inputs", [])
-    # Retrieval must inspect every frozen corpus binding, including restricted
-    # ones. Filtering model-only inputs first both hid restrictions and broke
-    # positional correspondence with the declared roles.
-    all_paths = resolved_inputs(spec, visibilities=None)
-    if declared:
-        paths = []
-        supplied = spec.get("input_paths", {})
-        for number, (item, path) in enumerate(zip(declared, all_paths)):
-            if item.get("role") == "embedding_model":
-                continue
-            raw = supplied.get(item["artifact_id"]) if isinstance(supplied, dict) else supplied[number]
-            paths.append({**item, **path, "resolved_source": raw if isinstance(raw, dict) else {}})
+    if retained:
+        if encoder and encoder.identity() != payload["embedding_model"]:
+            raise ValueError("query embedding model must match the immutable index")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = output_dir / f"index-{digest}.json"
+        if target.exists() and target.read_bytes() != original:
+            raise ValueError("immutable index collision or altered content")
+        if not target.exists():
+            with target.open("xb") as handle:
+                handle.write(original)
+        index = {"path": str(target), "corpus_sha256": digest, "documents": len(payload["documents"]),
+                 "mode": mode, "research_only": bool(payload["restricted_evidence"])}
     else:
-        paths = [path for path in all_paths if path.get("role") != "embedding_model"]
-    override = next((item for item in definition.get("research_overrides", [])
-                     if item.get("kind") == "retrieval.include_restricted_evidence"), None)
-    index = build_index(paths, output_dir, mode, params.get("records"), encoder=encoder, research_override=override)
-    queries = params.get("queries", [params.get("query", "")])
+        declared = definition.get("inputs", [])
+        all_paths = resolved_inputs(spec, visibilities=None)
+        if declared:
+            paths = []
+            supplied = spec.get("input_paths", {})
+            for number, (item, path) in enumerate(zip(declared, all_paths)):
+                if item.get("role") == "embedding_model":
+                    continue
+                raw = supplied.get(item["artifact_id"]) if isinstance(supplied, dict) else supplied[number]
+                paths.append({**item, **path, "resolved_source": raw if isinstance(raw, dict) else {}})
+        else:
+            paths = [path for path in all_paths if path.get("role") != "embedding_model"]
+        override = next((item for item in definition.get("research_overrides", [])
+                         if item.get("kind") == "retrieval.include_restricted_evidence"), None)
+        index = build_index(paths, output_dir, mode, params.get("records"), encoder=encoder, research_override=override)
+    queries = selection["queries"]
     traces = []
     for query in queries:
         if cancelled():
             break
-        row = query_index(index["path"], query, int(params.get("top_k", 5)), params.get("filters"), encoder=encoder)
+        row = query_index(index["path"], query, selection["top_k"], selection["filters"], encoder=encoder)
+        row["trace"].update(operation=operation, origin_index=origin)
         traces.append(row)
         emit({"type": "retrieval", "query": query, "hits": len(row["hits"])})
     trace_path = output_dir / "queries.json"
@@ -261,6 +368,7 @@ def execute_retrieval(spec: dict, output_dir: Path, emit: Callable[[dict], None]
                         "corpus_sha256": index["corpus_sha256"]},
             "qualification": {"status": "completed" if len(traces) == len(queries) else "cancelled",
                 "immutable_corpus": True, "mode": mode, "generation": False,
+                "operation": operation, "origin_index": origin,
                 "scope": "local existing Embedder with retained dense vectors and lexical RRF" if encoder else "local lexical scoring with exact structured filters and preserved episode records",
                 "embedding_model_sha256": binding["directory_sha256"] if binding else None,
                 "research_only": index["research_only"],

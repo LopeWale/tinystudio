@@ -316,6 +316,27 @@ Chat export accepts explicit authored messages for unchanged observations. A tra
 
 Every transformed record exposes `observation_sha256`, binding its retained source, scientific values, timestamps, units, masks and dependencies. `parameters.annotations` maps `record_id` and that checksum to explicit `labels` and/or `messages`, with a `label_source` declaring `kind`, `actor` and evidence `reference`. A changed observation, missing record, duplicate annotation or missing source is rejected. Label kinds are human, simulator assertion, solver, reviewed teacher or imported; these are authored provenance claims, not independent proof that a target is correct. Optional target availability is retained separately from observation input. These mappings are versioned with the definition and recorded in the manifest. Software qualification uses disposable fixtures; users select and run their own research studies.
 
+## Retained retrieval queries
+
+The existing `retrieval.index` engine supports `parameters.operation: "build"`
+(the default) and `"query"`. Laboratory authoring exposes both operations through
+the existing experiment dialog. Query requires one model-visible
+`retrieval_index` artifact binding and rejects fresh corpus inputs or inline
+records. It inherits the retained index mode when mode is omitted; an explicitly
+selected mode must match. Semantic/hybrid queries also require the original
+immutable embedding-model binding.
+
+The runner authenticates the downloaded artifact, validates its document
+identities, source metadata, restrictions and vector dimensions/normalization,
+then republishes the identical index bytes from its output directory. Query
+traces retain `origin_index` with the original artifact ID and SHA, the corpus
+digest and original hit identities. New queries never refit embeddings or rebuild
+the corpus. A retained research override remains visible and unqualified.
+Retrieval receives all declared corpus bindings so restricted evidence is checked
+instead of silently disappearing at dispatch; model-training visibility rules
+remain separate. This retrieval operation produces evidence, not model-generated
+answers. Independent model/retrieval composition remains part of D.
+
 ## Language initialization
 
 `learning.language` separates three operations. Scratch initialization constructs a

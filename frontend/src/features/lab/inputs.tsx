@@ -66,6 +66,7 @@ export const artifactRoles = [
   "snapshot",
   "pretrained_model",
   "embedding_model",
+  "retrieval_index",
   "resume",
   "initial_weights",
   "teacher",

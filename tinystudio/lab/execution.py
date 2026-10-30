@@ -53,7 +53,7 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
     view["_runtime_grants"] = dict(context.get("_runtime_grants", {}))
     view["_runtime_secrets"] = dict(context.get("_runtime_secrets", {}))
     engine = view["definition"]["engine"]
-    if engine.startswith("learning.") or engine == "retrieval.index":
+    if engine.startswith("learning."):
         visible = [ref for ref in view["definition"].get("inputs", []) if ref.get("visibility", "model") == "model"]
         validation = [ref for ref in view["definition"].get("inputs", []) if engine.startswith("learning.")
                       and ref.get("visibility") == "evaluation" and ref.get("role") == "validation"]

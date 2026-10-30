@@ -1969,6 +1969,60 @@ function readJSON() {
   );
 }
 describe("laboratory capability and evidence contracts", () => {
+  it("authors retained-index queries in the actual experiment dialog without discarding bindings", async () => {
+    const { api, studio } = fixture();
+    mount(studio);
+    await choose("Experiment engine", "Lexical / semantic / hybrid retrieval");
+    let definition = readJSON();
+    definition.inputs = [
+      {
+        artifact_id: "retained-index",
+        sha256: "a".repeat(64),
+        role: "retrieval_index",
+        visibility: "model",
+      },
+    ];
+    definition.retrieval = { mode: "lexical" };
+    fireEvent.change(screen.getByLabelText("Experiment definition JSON"), {
+      target: { value: JSON.stringify(definition) },
+    });
+    await choose("Retrieval operation", "Query a retained index");
+    await choose("Retrieval mode", "From retained index");
+    definition = readJSON();
+    expect(definition.parameters).toMatchObject({
+      operation: "query",
+      queries: ["pressure"],
+      top_k: 5,
+    });
+    expect(definition.parameters).not.toHaveProperty("mode");
+    expect(definition.retrieval).not.toHaveProperty("mode");
+    expect(definition.inputs).toEqual([
+      {
+        artifact_id: "retained-index",
+        sha256: "a".repeat(64),
+        role: "retrieval_index",
+        visibility: "model",
+      },
+    ]);
+    fireEvent.click(screen.getByRole("tab", { name: "Inputs" }));
+    expect(
+      screen.getByText(/Retained index to query without rebuilding/),
+    ).toHaveTextContent("Required");
+    api.post.mockResolvedValueOnce({ compatible: true, checks: [] });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check compatibility" }),
+    );
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        "/api/lab/preflight",
+        { definition, target_id: "local" },
+        expect.any(AbortSignal),
+      ),
+    );
+    await choose("Retrieval operation", "Build an index");
+    expect(readJSON().inputs).toEqual(definition.inputs);
+  });
+
   it("retains unknown and unavailable engine IDs rather than substituting a signal", async () => {
     expect(makeDefinition("vendor.unavailable").engine).toBe(
       "vendor.unavailable",
