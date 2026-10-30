@@ -192,6 +192,10 @@ def manifest_for(row: dict) -> dict:
             "Frozen case/model/index identities, exact conventional outputs, project isolation and cancellation during artifact publication.",
             "Run success and complete method/case coverage are required; a retained aggregate alone does not establish completion.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_qlora_workflow.py", evidence_required=[
+            "Actual isolated registered-route generation from retained SFT, causal-LM and DPO QLoRA bundles on the pinned compatible runtime.",
+            "Packed NF4 state preservation, exact generated-token replay after unload/reload, context bounds and cancellation cleanup.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.language":
         fixtures.append(FixtureRequirement(path="tests/test_lab_scratch_qualification.py", evidence_required=[
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",

@@ -120,7 +120,7 @@ def test_authenticated_application_to_docker_qlora_and_retained_reload(
                         "sha256": checksum({"image": IMAGE, "runtime": image_runtime})}
     profile = {"schema_version": 1, "backends": {"container": {
         "enabled": True, "profiles": ["isolated"], "image": IMAGE,
-        "engines": ["learning.pretrained"], "runtime_evidence": runtime_evidence,
+        "engines": ["learning.pretrained", "evaluation.compare"], "runtime_evidence": runtime_evidence,
         "limits": {"cpu": 1, "memory_bytes": 2 * 1024**3, "pids": 128}}}}
     target_response = client.post(prefix + "/targets", json={"name": "d-qlora-" + objective})
     assert target_response.status_code == 201, target_response.text
@@ -184,6 +184,87 @@ def test_authenticated_application_to_docker_qlora_and_retained_reload(
     transport_root.mkdir()
     bundle = transport_root / "downloaded.tar"
     bundle.write_bytes(downloaded["pretrained_model_bundle"])
+    # Reuse the retained trained artifact through the registered generation
+    # engine, with evaluator-only numeric truth and the same isolated Runner.
+    trained_bundle = next(item for item in result["artifacts"] if item["role"] == "pretrained_model_bundle")
+    model_ref = {"artifact_id": trained_bundle["id"], "sha256": trained_bundle["sha256"],
+                 "role": "model", "visibility": "model"}
+    assert model_ref["sha256"] == hashlib.sha256(bundle.read_bytes()).hexdigest()
+    assert client.get(other_prefix + "/artifacts/" + model_ref["artifact_id"]).status_code == 404
+    cases_content = json.dumps({"format": "tinystudio.evaluation-cases.v1", "cases": [
+        {"source_id": "d-qlora-heldout-" + objective, "episode_id": "d-independent-generation",
+         "partition": "test", "prompt": "sensor ready", "expected": "-987654321", "unit": "Pa"}
+    ]}).encode()
+    uploaded_cases = client.post(prefix + "/inputs", files={"file": (
+        "generation-cases.json", cases_content, "application/json")})
+    assert uploaded_cases.status_code == 201, uploaded_cases.text
+    cases_artifact = uploaded_cases.json()
+    assert cases_artifact["sha256"] == hashlib.sha256(cases_content).hexdigest()
+    cases_ref = {"artifact_id": cases_artifact["id"], "sha256": cases_artifact["sha256"],
+                 "role": "cases", "visibility": "evaluation"}
+    assert client.get(other_prefix + "/artifacts/" + cases_ref["artifact_id"]).status_code == 404
+    generation_definition = {"name": "D retained QLoRA generation " + objective,
+        "engine": "evaluation.compare", "execution": definition["execution"],
+        "parameters": {"operation": "generate", "max_new_tokens": 4, "device": "cpu"},
+        "inputs": [model_ref, cases_ref]}
+    checked = client.post(prefix + "/preflight", json={"definition": generation_definition, "target_id": target["id"]})
+    assert checked.status_code == 200 and checked.json()["compatible"], checked.text
+    saved_generation = client.post(prefix + "/definitions", json={"definition": generation_definition})
+    assert saved_generation.status_code == 201, saved_generation.text
+    admitted_generation = client.post(prefix + "/runs", json={
+        "definition_id": saved_generation.json()["id"], "revision": saved_generation.json()["revision"],
+        "target_id": target["id"], "idempotency_key": "d-qlora-generate-" + objective})
+    assert admitted_generation.status_code == 202, admitted_generation.text
+    generation_id = admitted_generation.json()["id"]
+    with TestClient(app, headers={"Authorization": "Bearer " + target["token"]}) as generation_machine:
+        generation_runner = Runner("http://127.0.0.1", target["id"], target["token"],
+            client=generation_machine, profile_config=profile)
+        generation_runner.advertise()
+        assert generation_runner.run_once(run_id=generation_id)
+    generated_run = client.get(prefix + "/runs/" + generation_id).json()
+    assert generated_run["state"] == "succeeded", generated_run
+    assert generated_run["spec"]["runtime"] == image_runtime
+    frozen_inputs = generated_run["spec"]["definition"]["inputs"]
+    assert {item["role"]: (item["artifact_id"], item["sha256"], item["visibility"]) for item in frozen_inputs} == {
+        item["role"]: (item["artifact_id"], item["sha256"], item["visibility"]) for item in (model_ref, cases_ref)}
+    generated_result = generated_run["result"]
+    assert generated_result["metrics"] == {"cases": 1, "predictions": 1}
+    generation_receipt = generated_result["execution_receipt"]
+    assert generation_receipt["runtime"] == image_runtime
+    generation_manifest = generation_receipt["profile_manifest"]
+    assert generation_manifest["backend"] == "container" and generation_manifest["image"] == IMAGE
+    assert generation_manifest["network_default"] == "deny"
+    assert generation_manifest["grants"]["secret_file_count"] == generation_manifest["grants"]["device_count"] == 0
+    generation_artifacts = {}
+    for item in generated_result["artifacts"]:
+        fetched = client.get(prefix + "/artifacts/" + item["id"])
+        assert fetched.status_code == 200, fetched.text
+        assert hashlib.sha256(fetched.content).hexdigest() == item["sha256"]
+        assert client.get(other_prefix + "/artifacts/" + item["id"]).status_code == 404
+        generation_artifacts[item["role"]] = fetched.content
+    generation_report_bytes = generation_artifacts["independent_evaluation"]
+    generation_report = json.loads(generation_report_bytes)
+    assert generation_report["format"] == "tinystudio.generation-evaluation.v1"
+    assert generation_report["model"]["sha256"] == model_ref["sha256"]
+    assert generation_report["model"]["provenance"] == retained
+    assert generation_report["model"]["provenance"]["training_type"] == "qlora"
+    assert generation_report["model"]["provenance"]["output_kind"] == "quantized_adapter"
+    assert len(generation_report["records"]) == 1
+    generation_row = generation_report["records"][0]
+    assert generation_row["model"] == {key: model_ref[key] for key in ("artifact_id", "sha256")}
+    assert generation_row["cases"] == {key: cases_ref[key] for key in ("artifact_id", "sha256")}
+    assert generation_row["partition"] == "test" and generation_row["arm"] == "without_retrieval"
+    assert generation_row["expected"] == "-987654321" and generation_row["unit"] == "Pa"
+    assert "-987654321" not in generation_row["output"]["prompt"]
+    assert generation_row["output"]["prompt"] == "Evidence:\n\n\nQuestion:\nsensor ready\nAnswer:\n"
+    assert generation_row["output"]["max_new_tokens"] == 4
+    # Success means execution completed; arbitrary neural text need not solve
+    # this held-out numeric case. Preserve the real report for independent replay.
+    (transport_root / "generation-report.json").write_bytes(generation_report_bytes)
+    for ref, expected_bytes in ((model_ref, bundle.read_bytes()), (cases_ref, cases_content)):
+        frozen = client.get(prefix + "/artifacts/" + ref["artifact_id"])
+        assert frozen.status_code == 200 and frozen.content == expected_bytes
+        assert hashlib.sha256(frozen.content).hexdigest() == ref["sha256"]
     # Snapshot current implementation into an owned mount; never expose repo,
     # credentials, shared artifact stores or other sessions to this process.
     package = Path(__file__).resolve().parents[1] / "tinystudio"
@@ -219,13 +300,143 @@ for index, inputs in enumerate(probes["inputs"]):
 assert state_digest(model, base_only=True) == manifest["quantization"]["state_sha256"]
 encoded = {name: value for name, value in tokenizer("sensor ready", return_tensors="pt").items() if name in {"input_ids", "attention_mask"}}
 with torch.no_grad(): assert torch.isfinite(model(**encoded).logits).all()
+# Exercise the consumer against the transported archive, preserving packed NF4.
+from tinystudio.lab.model_session import ModelSession
+from tinystudio.lab.engine import ExecutionCancelled
+from transformers import GenerationConfig
+session_work = root / "session-work"
+archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+prompt, max_new_tokens = "sensor ready", 4
+prompt_batch = tokenizer(prompt, return_tensors="pt", add_special_tokens=True, truncation=False)
+input_ids = prompt_batch["input_ids"][0].tolist()
+# Independent direct retained-loader oracle, with the same explicit HF arguments.
+configuration = GenerationConfig(do_sample=False, num_beams=1, max_new_tokens=max_new_tokens,
+    eos_token_id=model.generation_config.eos_token_id,
+    pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id)
+model.eval()
+with torch.inference_mode():
+    direct = model.generate(**prompt_batch, generation_config=configuration)
+expected_tokens = direct[0, len(input_ids):].tolist()
+expected_completion = tokenizer.decode(expected_tokens, skip_special_tokens=True)
+assert expected_tokens, "fixture must execute actual token generation"
+
+def assert_quantized(session):
+    modules = [module for module in session._model.modules() if isinstance(module, Linear4bit)]
+    assert len(modules) == 7
+    assert all(module.weight.dtype == torch.uint8 and module.weight.quant_state.nested for module in modules)
+    assert state_digest(session._model, base_only=True) == manifest["quantization"]["state_sha256"]
+
+def assert_closed(session):
+    assert session._model is None and session._tokenizer is None
+    assert not list(session_work.iterdir()), "session leaked owned extracted files"
+    try: session.generate(prompt, 1)
+    except RuntimeError as error: assert "closed" in str(error)
+    else: raise AssertionError("closed quantized model session accepted inference")
+
+session = ModelSession(archive, archive_sha, session_work, device="cpu")
+with session:
+    metadata = session.metadata
+    assert metadata["kind"] == "pretrained_language"
+    assert metadata["provenance"] == manifest
+    assert metadata["sha256"] == archive_sha and metadata["device"] == "cpu"
+    assert metadata["model_devices"] == ["cpu"] and metadata["network_downloads"] is False
+    assert metadata["context_capacity"] == model.config.max_position_embeddings == 64
+    # Metadata is an independent snapshot; consumers cannot mutate provenance.
+    metadata["provenance"]["objective"] = "mutated consumer copy"
+    assert session.metadata["provenance"]["objective"] == manifest["objective"]
+    assert_quantized(session)
+    generated = session.generate(prompt, max_new_tokens)
+    assert generated["input_token_ids"] == input_ids
+    assert generated["prompt_tokens"] == len(input_ids)
+    assert generated["token_ids"] == expected_tokens
+    assert generated["completion"] == expected_completion
+    assert generated["generated_tokens"] == len(expected_tokens)
+    assert generated["max_new_tokens"] == max_new_tokens
+    assert generated["context_capacity"] == 64
+    registered = json.loads((root / "generation-report.json").read_bytes())
+    assert registered["model"]["sha256"] == archive_sha
+    assert registered["model"]["provenance"] == manifest
+    reported = registered["records"][0]["output"]
+    replayed = session.generate(reported["prompt"], reported["max_new_tokens"])
+    assert replayed == reported, "registered QLoRA generation differs from independent session replay"
+    registered_batch = tokenizer(reported["prompt"], return_tensors="pt", add_special_tokens=True, truncation=False)
+    with torch.inference_mode():
+        registered_direct = model.generate(**registered_batch, generation_config=configuration)
+    registered_ids = registered_batch["input_ids"][0].tolist()
+    registered_tokens = registered_direct[0, len(registered_ids):].tolist()
+    assert replayed["input_token_ids"] == registered_ids
+    assert replayed["token_ids"] == registered_tokens
+    assert replayed["completion"] == tokenizer.decode(registered_tokens, skip_special_tokens=True)
+    assert_quantized(session)
+assert_closed(session)
+
+# Fresh extraction and load must reproduce deterministic tokens after unload.
+reloaded = ModelSession(archive, archive_sha, session_work, device="cpu")
+with reloaded:
+    assert_quantized(reloaded)
+    assert reloaded.generate(prompt, max_new_tokens) == generated
+    # The exact capacity is accepted with no generation reservation.
+    boundary_prompt = " ".join(["sensor"] * 64)
+    assert len(tokenizer(boundary_prompt)["input_ids"]) == 64
+    boundary = reloaded.generate(boundary_prompt, 0)
+    assert boundary["prompt_tokens"] == 64 and boundary["token_ids"] == []
+assert_closed(reloaded)
+
+# Reservation is checked before generation, even if EOS might arrive early.
+overflow = ModelSession(archive, archive_sha, session_work, device="cpu")
+try: overflow.generate(boundary_prompt, 1)
+except ValueError as error: assert "context capacity" in str(error)
+else: raise AssertionError("quantized inference exceeded reserved context")
+assert_closed(overflow)
+
+# Observe the real HF call, distinguishing interruption inside generate from
+# cancellation detected only after it returns. The controlled omission below
+# must fail that oracle even though the later cancellation check still raises.
+def assert_interrupted_in_generation(observed):
+    assert observed["entered"] and not observed["returned"], "generation completed before cancellation"
+
+for threshold, suppress_stopping in ((1, False), (3, False), (3, True)):
+    cancelled_session = ModelSession(archive, archive_sha, session_work, device="cpu")
+    checks = [0]
+    observed = {"entered": False, "returned": False}
+    original_generate = cancelled_session._model.generate
+    def observe_generate(*args, **kwargs):
+        observed["entered"] = True
+        if suppress_stopping:
+            kwargs.pop("stopping_criteria")
+        result = original_generate(*args, **kwargs)
+        observed["returned"] = True
+        return result
+    cancelled_session._model.generate = observe_generate
+    def cancelled():
+        checks[0] += 1
+        return checks[0] >= threshold
+    try: cancelled_session.generate(prompt, max_new_tokens, cancelled=cancelled)
+    except ExecutionCancelled: pass
+    else: raise AssertionError("quantized inference ignored cancellation")
+    assert checks[0] >= threshold
+    if threshold == 1:
+        assert not observed["entered"]
+    elif suppress_stopping:
+        assert observed == {"entered": True, "returned": True}
+        try: assert_interrupted_in_generation(observed)
+        except AssertionError: pass
+        else: raise AssertionError("cancellation oracle accepted a completed generation")
+    else:
+        assert_interrupted_in_generation(observed)
+    assert_closed(cancelled_session)
+    del original_generate
+assert hashlib.sha256(archive.read_bytes()).hexdigest() == archive_sha
+assert state_digest(model, base_only=True) == manifest["quantization"]["state_sha256"]
 weights = next((extracted / "quantized-base").glob("*.safetensors"))
 weights.write_bytes(weights.read_bytes() + b"corrupt")
 try: load_pretrained_output(extracted, device="cpu")
 except ValueError as error: assert "checksum mismatch" in str(error), str(error)
 else: raise AssertionError("corrupt retained base was accepted")
-print(json.dumps({"reload": "equal", "corruption": "rejected", "objective": manifest["objective"]}))
+print(json.dumps({"reload": "equal", "corruption": "rejected", "objective": manifest["objective"],
+                  "model_session": "quantized_equal_reloaded_context_cancel_clean"}))
 '''.replace("EXPECTED", repr(hashlib.sha256(bundle.read_bytes()).hexdigest()))
     reload = docker_python(script, mounts=[(source, "/source", False), (transport_root, "/proof", True)],
         environment={"PYTHONPATH": "/source", "HOME": "/proof", "TMPDIR": "/proof"})
-    assert json.loads(reload) == {"reload": "equal", "corruption": "rejected", "objective": objective}
+    assert json.loads(reload) == {"reload": "equal", "corruption": "rejected", "objective": objective,
+                                  "model_session": "quantized_equal_reloaded_context_cancel_clean"}

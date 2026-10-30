@@ -176,3 +176,10 @@ def test_fresh_import_orders_register_all_laboratory_tables(first):
     import sys
     source = f"import {first}; from tinystudio.db.models import Base; from tinystudio.lab.models import TABLES; assert {{t.name for t in TABLES}} <= set(Base.metadata.tables)"
     subprocess.run([sys.executable, "-c", source], check=True, timeout=15)
+
+
+def test_generation_contract_requires_quantized_consumer_fixture_without_global_qualification():
+    evaluation = next(row for row in catalog()["methods"] if row["id"] == "evaluation.compare")
+    fixtures = {row["path"] for row in evaluation["manifest"]["fixtures"]}
+    assert "tests/test_lab_qlora_workflow.py" in fixtures
+    assert evaluation["manifest"]["qualification"] == "unqualified"
