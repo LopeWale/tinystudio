@@ -182,6 +182,11 @@ def manifest_for(row: dict) -> dict:
             "Authenticated registered-route/native-child build and retained query for lexical, structured, episode, semantic and hybrid modes.",
             "Unchanged index bytes and hit identities after definition edits, original encoder binding and cross-project access denial.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+    if implemented and id_ == "evaluation.compare":
+        fixtures.append(FixtureRequirement(path="tests/test_lab_generation_workflow.py", evidence_required=[
+            "Authenticated frozen model and held-out case admission with real native generation, both retrieval arms and all five index modes.",
+            "Exact model inputs, original index bytes, stable case identities, wrong-output scoring and cross-project artifact denial.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.language":
         fixtures.append(FixtureRequirement(path="tests/test_lab_scratch_qualification.py", evidence_required=[
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
@@ -248,6 +253,11 @@ def input_contracts(id_: str) -> list[PortContract]:
     elif id_ == "evaluation.compare":
         for role in ("examples", "candidate", "baseline", "provenance"):
             add(role, visibility=["evaluation", "truth"], media=["application/json", "application/x-ndjson"])
+        add("cases", visibility=["evaluation", "truth"], media=["application/json"], when="operation=generate")
+        add("model", when="operation=generate without checkpoint")
+        add("checkpoint", when="operation=generate without model")
+        add("retrieval_index", media=["application/json"], when="operation=generate and compare_retrieval=true")
+        add("embedding_model", when="operation=generate with semantic/hybrid index")
     elif id_ == "data.pipeline":
         for role in ("source", "dataset", "recorded"):
             add(role, maximum=128, visibility=["model", "evaluation", "truth"],

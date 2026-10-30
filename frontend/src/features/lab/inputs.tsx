@@ -73,6 +73,7 @@ export const artifactRoles = [
   "validation",
   "demonstrations",
   "examples",
+  "cases",
   "candidate",
   "baseline",
   "provenance",

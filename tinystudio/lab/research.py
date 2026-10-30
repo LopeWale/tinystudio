@@ -9,6 +9,9 @@ from .evaluation import audit_leakage, compare_baselines, evaluate_examples
 
 def execute_evaluation(spec, output_dir, emit, cancelled):
     definition = spec["definition"]
+    from .evaluation_generation import validate_generation_selection, execute_generation_evaluation
+    if validate_generation_selection(definition) is not None:
+        return execute_generation_evaluation(spec, output_dir, emit, cancelled)
     parameters = definition.get("parameters", {})
     inputs = {}
     for ref in definition.get("inputs", []):

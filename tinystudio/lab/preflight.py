@@ -47,6 +47,17 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("retrieval_selection", True,
                   "Retrieval choices are compatible; retained index contents and model identity are verified at execution.")
+    if engine == "evaluation.compare":
+        from .evaluation_generation import validate_generation_selection
+        try:
+            selected = validate_generation_selection(definition.model_dump())
+            if selected and not (runtime or {}).get("torch"):
+                raise ValueError("generation evaluation requires a target with the torch dependency pack")
+        except (ValueError, KeyError, TypeError) as exc:
+            check("evaluation_selection", False, str(exc))
+        else:
+            check("evaluation_selection", True,
+                  "Evaluation choices are compatible; model format, placement, context and index contents are checked at execution.")
     if engine == "learning.language":
         from .learning_selection import validate_language_selection
         try:

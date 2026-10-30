@@ -911,6 +911,84 @@ function LabWorkspace() {
                             description="Configure the adapter for this experiment."
                           >
                             <div className="lab-fields">
+                              {definition.engine === "evaluation.compare" && (
+                                <>
+                                  <Choice
+                                    label="Evaluation operation"
+                                    value={String(
+                                      definition.parameters.operation ??
+                                        "precomputed",
+                                    )}
+                                    options={[
+                                      {
+                                        id: "precomputed",
+                                        name: "Score retained predictions",
+                                      },
+                                      {
+                                        id: "generate",
+                                        name: "Generate and evaluate",
+                                      },
+                                    ]}
+                                    onChange={(operation) =>
+                                      change({
+                                        parameters: {
+                                          ...(operation === "generate"
+                                            ? {
+                                                max_new_tokens: 16,
+                                                device: "cpu",
+                                                compare_retrieval: false,
+                                              }
+                                            : {}),
+                                          ...definition.parameters,
+                                          operation,
+                                        },
+                                      })
+                                    }
+                                  />
+                                  {definition.parameters.operation ===
+                                    "generate" && (
+                                    <>
+                                      <Choice
+                                        label="Retrieval comparison"
+                                        value={
+                                          definition.parameters
+                                            .compare_retrieval === true
+                                            ? "paired"
+                                            : "single"
+                                        }
+                                        options={[
+                                          {
+                                            id: "single",
+                                            name: "Selected model and optional retrieval",
+                                          },
+                                          {
+                                            id: "paired",
+                                            name: "Same model with and without retrieval",
+                                          },
+                                        ]}
+                                        onChange={(value) =>
+                                          change({
+                                            parameters: {
+                                              ...definition.parameters,
+                                              compare_retrieval:
+                                                value === "paired",
+                                            },
+                                          })
+                                        }
+                                      />
+                                      <p className="muted">
+                                        Attach a frozen model and held-out cases
+                                        in Inputs. Numeric scoring uses the
+                                        entire completion; malformed outputs
+                                        remain failed cases. Context overflow
+                                        fails instead of dropping evidence. A
+                                        retrieval index requires its original
+                                        encoder for semantic or hybrid modes.
+                                      </p>
+                                    </>
+                                  )}
+                                </>
+                              )}
                               {definition?.engine === "learning.pretrained" && (
                                 <>
                                   <Choice
@@ -1094,8 +1172,14 @@ function LabWorkspace() {
                               )
                                 .filter(
                                   ([key]) =>
-                                    definition.engine !== "retrieval.index" ||
-                                    !["mode", "operation"].includes(key),
+                                    (definition.engine !== "retrieval.index" ||
+                                      !["mode", "operation"].includes(key)) &&
+                                    (definition.engine !==
+                                      "evaluation.compare" ||
+                                      ![
+                                        "operation",
+                                        "compare_retrieval",
+                                      ].includes(key)),
                                 )
                                 .map(([key, value]) => (
                                   <Input

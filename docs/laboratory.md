@@ -554,3 +554,21 @@ npm run typecheck
 ```
 
 These commands exercise source and fixture checks; Docker execution and authenticated workflow receipts are recorded separately. Keep optional engines in separately pinned environments. Qualification environments used during development are disposable and are not deployment dependencies. Before enabling a runner, install and lock the selected engine pack on that host, enroll it, and inspect its advertised runtime. Capability mismatches do not silently choose a fallback or mutate a submitted specification.
+
+### Frozen model and retrieval evaluation
+
+The existing `evaluation.compare` engine retains `operation=precomputed` as its default. Select **Generate and evaluate** in the Laboratory experiment dialog to use `operation=generate`. Bind exactly one model/checkpoint artifact and a `cases` artifact with evaluation or truth visibility. Optional `retrieval_index` and original `embedding_model` bindings reuse the immutable index; `compare_retrieval=true` requires an index and runs the same model on both arms of each case. All model and index bindings remain model-visible; expected answers do not enter the generation session.
+
+Cases use a versioned JSON envelope:
+
+```json
+{"format":"tinystudio.evaluation-cases.v1","cases":[{"source_id":"sensor-case-1","episode_id":"episode-7","partition":"test","prompt":"Report pressure as a decimal in Pa.","query":"pressure reference","expected":"-12.75","unit":"Pa"}]}
+```
+
+This mode currently scores numeric cases. It preserves the entire completion and uses the existing strict numeric/unit validators; prose, malformed numbers and empty responses remain failed cases rather than being stripped or omitted. A paired report compares numeric errors on the same held-out identities. A failed prediction does not mean the execution failed, and scientific qualification does not require the retrieval arm to outperform the baseline.
+
+Generation parameters are `max_new_tokens` (1–512), explicit `device` (CPU by default), and `compare_retrieval`. Optional `retrieval` settings are `top_k`, exact `filters`, and `fields` (default `["text"]`) identifying the content fields permitted in the prompt. Each prompt uses the recorded `tinystudio.evidence-question.v1` format. Selected fields are JSON-encoded in retrieval order; no document metadata or expected answers are automatically serialized into the prompt. Missing selected fields fail explicitly. The baseline uses the same format with an empty evidence section. Queries default to the case prompt and must be nonempty.
+
+The attempt-owned model session reuses existing scratch and Hugging Face/retained full/adapter loaders, verifies the outer artifact and retained manifests, loads locally, and releases tensors and extracted files on completion or failure. It records exact input/output token IDs, effective context capacity and output reservation. Unknown context capacity and prompt-plus-output overflow fail; evidence and questions are never silently truncated. Incompatible devices or retained quantization runtimes fail without fallback. A supported loader is not qualification of every model family or hardware target.
+
+The run publishes unchanged index bytes, query traces, prediction records and `generation-evaluation.json`. Known retrieval restrictions and overlaps with case source/episode identities remain visible and research-only. Missing lineage and overlap with the model's training corpus are explicitly not established; a frozen index is not a claim of leakage-free evaluation. Existing run records, artifacts and the baseline comparison evidence expose these results. Compatible-runtime QLoRA generation, broader text/policy metrics and the full D method matrix require their own acceptance evidence.

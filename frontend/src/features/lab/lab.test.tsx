@@ -1969,6 +1969,70 @@ function readJSON() {
   );
 }
 describe("laboratory capability and evidence contracts", () => {
+  it("authors matched generation in the actual dialog and retains artifact bindings", async () => {
+    const { api, studio } = fixture();
+    mount(studio);
+    await choose(
+      "Experiment engine",
+      "Independent evaluation / paired comparison",
+    );
+    await choose("Evaluation operation", "Generate and evaluate");
+    await choose(
+      "Retrieval comparison",
+      "Same model with and without retrieval",
+    );
+    let definition = readJSON();
+    expect(definition.parameters).toMatchObject({
+      operation: "generate",
+      compare_retrieval: true,
+      max_new_tokens: 16,
+      device: "cpu",
+    });
+    definition.inputs = [
+      {
+        artifact_id: "model",
+        sha256: "a".repeat(64),
+        role: "model",
+        visibility: "model",
+      },
+      {
+        artifact_id: "cases",
+        sha256: "b".repeat(64),
+        role: "cases",
+        visibility: "evaluation",
+      },
+      {
+        artifact_id: "index",
+        sha256: "c".repeat(64),
+        role: "retrieval_index",
+        visibility: "model",
+      },
+    ];
+    fireEvent.change(screen.getByLabelText("Experiment definition JSON"), {
+      target: { value: JSON.stringify(definition) },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Inputs" }));
+    expect(
+      screen.getByText(/Versioned held-out numeric cases/),
+    ).toHaveTextContent("Required");
+    expect(screen.getByText(/Optional frozen index/)).toHaveTextContent(
+      "Required",
+    );
+    api.post.mockResolvedValueOnce({ compatible: true, checks: [] });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check compatibility" }),
+    );
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        "/api/lab/preflight",
+        { definition, target_id: "local" },
+        expect.any(AbortSignal),
+      ),
+    );
+    await choose("Evaluation operation", "Score retained predictions");
+    expect(readJSON().inputs).toEqual(definition.inputs);
+  });
+
   it("authors retained-index queries in the actual experiment dialog without discarding bindings", async () => {
     const { api, studio } = fixture();
     mount(studio);

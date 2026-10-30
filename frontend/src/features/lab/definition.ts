@@ -320,7 +320,7 @@ export const templates: Template[] = [
     id: "evaluation.compare",
     name: "Independent evaluation / paired comparison",
     domain: "evaluation",
-    parameters: {},
+    parameters: { operation: "precomputed" },
     inputs: [
       input(
         "examples",
@@ -329,6 +329,26 @@ export const templates: Template[] = [
       input("candidate", "Candidate paired records", false),
       input("baseline", "Matching baseline paired records", false),
       input("provenance", "Retained data lineage", false),
+      input(
+        "cases",
+        "Versioned held-out numeric cases; answers stay evaluation-only",
+        false,
+      ),
+      input(
+        "model",
+        "Frozen model archive or checkpoint for generation",
+        false,
+      ),
+      input(
+        "retrieval_index",
+        "Optional frozen index for retrieval-conditioned generation",
+        false,
+      ),
+      input(
+        "embedding_model",
+        "Original encoder for semantic or hybrid indexes",
+        false,
+      ),
     ],
   },
   {
@@ -558,6 +578,28 @@ export function inputExpectations(
   definition: ExperimentDefinition,
 ): InputExpectation[] {
   const rows = templates.find((t) => t.id === definition.engine)?.inputs ?? [];
+  if (definition.engine === "evaluation.compare") {
+    const generate = definition.parameters.operation === "generate";
+    return rows
+      .filter((row) =>
+        generate
+          ? ["cases", "model", "retrieval_index", "embedding_model"].includes(
+              row.role,
+            )
+          : ["examples", "candidate", "baseline", "provenance"].includes(
+              row.role,
+            ),
+      )
+      .map((row) => ({
+        ...row,
+        required: generate
+          ? row.role === "cases" ||
+            row.role === "model" ||
+            (row.role === "retrieval_index" &&
+              definition.parameters.compare_retrieval === true)
+          : row.required,
+      }));
+  }
   if (definition.engine === "retrieval.index") {
     const query = definition.parameters.operation === "query";
     const mode = definition.parameters.mode ?? definition.retrieval?.mode;
@@ -604,6 +646,7 @@ export function defaultVisibility(
     ? "truth"
     : [
           "examples",
+          "cases",
           "candidate",
           "baseline",
           "provenance",
