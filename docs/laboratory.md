@@ -340,10 +340,16 @@ distillation. Checkpoint paths cannot be supplied in portable parameters.
 Conflicting or unused checkpoint bindings fail. In particular, an older edited
 definition declaring `scratch` while supplying a `resume` artifact must explicitly
 select `resume` before a new submission; it no longer silently resumes. The
-compatibility check validates declared mode/role consistency without opening
-checkpoint files. Actual content, architecture and tokenizer compatibility are
-checked by the executor. Reports distinguish fresh versus restored optimizer
-state and actual initialization; successful weight restart is not reported as
+compatibility check validates authored language selections without opening
+checkpoint files or importing the training runtime. The same validator runs at
+execution: unsupported objectives and updates, conflicting family/dimension or
+representation settings, and provably invalid Transformer dimensions fail
+before training. Omitted checkpoint dimensions and teacher/checkpoint tokenizer
+settings remain inherited; their actual content compatibility is checked by the
+executor. Nonempty retrieval selections on this language trainer are rejected
+until explicitly composed with frozen retrieval evidence; a compatible engine
+does not imply that it consumes every authored field. Reports distinguish fresh
+versus restored optimizer state and actual initialization; successful weight restart is not reported as
 training from random weights.
 
 The actual Laboratory language editor uses the shared settings sections, form

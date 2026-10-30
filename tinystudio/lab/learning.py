@@ -343,6 +343,8 @@ def _windows(texts: list[str], tokenizer: ByteTokenizer, context: int):
 
 def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                      cancelled: Callable[[], bool]) -> dict:
+    from .learning_selection import validate_language_selection
+    validate_language_selection(spec["definition"])
     from tinystudio.training.runtime import training_session
     with training_session():
         return _execute_learning(spec, output_dir, emit, cancelled)
@@ -350,15 +352,15 @@ def execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
 
 def _execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None],
                       cancelled: Callable[[], bool]) -> dict:
+    from .learning_selection import validate_language_selection
+    definition = spec["definition"]
+    axes = validate_language_selection(definition)
     import torch
     from torch.nn import functional as F
 
-    definition = spec["definition"]
     params = dict(definition.get("parameters", {}))
     learning = definition.get("learning") or {}
-    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
-    axes = runtime_axes(learning, params, strategies={"adamw", "full", "full_parameter", "full_finetune"},
-        default_strategy="adamw", initializations={"scratch", "from_scratch", "random", "weights", "resume"})
+    from .learning_axes import architecture as requested_architecture, selector, learning_rate
     initialization = axes["initialization"]
     from .learning_initialization import checkpoint_binding, inherited_configuration
     binding, teacher_binding = checkpoint_binding(spec, initialization)
@@ -370,9 +372,7 @@ def _execute_learning(spec: dict, output_dir: Path, emit: Callable[[dict], None]
             restored_model, restored_tokenizer, saved = load_checkpoint(binding["path"], expected_sha256=binding["sha256"])
         inherited_configuration(learning, params, saved["architecture"], restored_tokenizer,
                                 saved.get("tokenizer_configuration"))
-    objective = selector(learning.get("objective", "causal_lm"), "objective")
-    if objective not in {"causal_lm", "next_token", "cross_entropy", "distillation"}:
-        raise ValueError(f"unsupported learning objective {objective!r}")
+    objective = axes["objective"]
     from .distillation import FrozenTeacher, distillation_loss, training_evidence
     teacher = FrozenTeacher.load(teacher_binding) if objective == "distillation" else None
     family = selector(learning.get("family", params.get("family", saved["architecture"]["family"] if saved else "transformer")), "family")

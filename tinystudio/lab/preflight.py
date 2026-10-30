@@ -39,20 +39,14 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
     if engine == "learning.language":
-        from .learning_axes import selector
-        from .learning_initialization import validate_initialization_bindings
-        learning, parameters = definition.learning or {}, definition.parameters
+        from .learning_selection import validate_language_selection
         try:
-            initialization = selector(learning.get("initialization", parameters.get("initialization", "scratch")), "initialization")
-            if ("initialization" in learning and "initialization" in parameters
-                and initialization != selector(parameters["initialization"], "initialization")):
-                raise ValueError("conflicting learning.initialization and parameters.initialization")
-            validate_initialization_bindings(definition.model_dump(), initialization)
+            validate_language_selection(definition.model_dump())
         except (ValueError, KeyError, TypeError) as exc:
             check("model_initialization", False, str(exc))
         else:
             check("model_initialization", True,
-                  "Initialization bindings are declared consistently; checkpoint contents, architecture and tokenizer compatibility are verified at execution.")
+                  "Authored language selections are compatible; checkpoint contents and inherited architecture/tokenizer compatibility are verified at execution.")
     if engine == "learning.pretrained":
         from .learning_axes import pretrained_method
         try:
