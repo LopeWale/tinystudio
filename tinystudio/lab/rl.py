@@ -218,35 +218,19 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
 
     definition = spec["definition"]
     params = dict(definition.get("parameters", {}))
-    if "resume_from" in params:
-        raise ValueError("checkpoint sources must use immutable input artifact roles")
-    from .compatibility import resolve_role
-    resume_binding = resolve_role(spec, "resume", required=False)
+    learning = definition.get("learning") or {}
+    from .policy_selection import validate_policy_selection, resume_configuration, matching_resume_configuration
+    from .learning_initialization import checkpoint_binding
+    from .learning_axes import learning_rate
+    selected = validate_policy_selection(definition, "learning.control_rl")
+    algorithm = selected["objective"]
+    resume_binding, _ = checkpoint_binding(spec, selected["initialization"])
     if resume_binding:
         params["resume_from"] = resume_binding["path"]
-    learning = definition.get("learning") or {}
-    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
-    axes = runtime_axes(learning, params, strategies={"full", "adam", "full_parameter", "full_finetune"},
-        default_strategy="full", initializations={"scratch", "from_scratch", "random", "resume"})
-    objective = selector(learning.get("objective", params.get("algorithm", "ppo")), "objective")
-    aliases = {"reinforcement_learning": "ppo", "imitation": "behavioral_cloning", "bc": "behavioral_cloning",
-               "grpo": "grpo_tool_bandit", "tool_grpo": "grpo_tool_bandit", "offline_rl": "dqn"}
-    algorithm = aliases.get(objective, objective)
-    if "objective" in learning and "algorithm" in params and aliases.get(params["algorithm"], params["algorithm"]) != algorithm:
-        raise ValueError("conflicting objective and algorithm axes")
-    requested_family = learning.get("family", params.get("family", "mlp"))
-    if selector(requested_family, "family") != "mlp":
-        raise ValueError("control/tool policies currently support family=mlp only")
-    if "family" in learning and "family" in params and learning["family"] != params["family"]:
-        raise ValueError("conflicting family axes")
-    if learning.get("representation") is not None and selector(learning["representation"], "representation") not in {"numeric", "state_vector"}:
-        raise ValueError("control/tool policies require numeric state vectors")
-    if algorithm not in {"ppo", "dqn", "behavioral_cloning", "grpo_tool_bandit", "ppo_tool_bandit"}:
-        raise ValueError(f"unsupported RL objective {objective!r}")
     tools_mode = algorithm in {"grpo_tool_bandit", "ppo_tool_bandit"}
     offline = algorithm in {"dqn", "behavioral_cloning"}
     iterations, batch_size = int(params.get("steps", 8)), int(params.get("batch_size", 16))
-    dimensions = requested_architecture(learning, params, {"hidden_size": (16, 4, 512), "layers": (1, 1, 8)})
+    dimensions = selected["dimensions"]
     hidden = dimensions["hidden_size"]
     agents = int(params.get("agents", 1))
     epochs = int(params.get("update_epochs", 2))
@@ -266,9 +250,6 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
     lr = learning_rate(params, 0.003)
     if not 0 <= gamma <= 1 or not 0 < epsilon < 1 or not 0 < lr <= 1:
         raise ValueError("invalid discount, clipping epsilon or learning rate")
-    initialization = axes["initialization"]
-    if initialization == "resume" and not params.get("resume_from"):
-        raise ValueError("resume initialization requires an immutable resume artifact")
     from .learning import evaluator_validation_inputs
     if evaluator_validation_inputs(spec):
         raise ValueError("control/tool RL does not consume external validation artifacts; use the documented independent environment evaluator")
@@ -302,6 +283,7 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 raise ValueError("expected division task must have nonzero divisor")
     configuration = {"learning": {key: value for key, value in learning.items() if key != "initialization"},
         "parameters": {key: value for key, value in params.items() if key not in {"steps", "resume_from"}}, "seed": seed}
+    configuration = resume_configuration(configuration)
     config_digest = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
     corpus_digest = hashlib.sha256(json.dumps(data if offline else tasks if tools_mode else [], sort_keys=True).encode()).hexdigest()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +311,7 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 model, saved = load_policy(params["resume_from"])
                 if (saved["algorithm"] != algorithm or saved["architecture"] != architecture
                     or saved["backend"] != "cpu" or saved["torch_version"] != str(torch.__version__)
-                    or saved["config_sha256"] != config_digest or saved["corpus_sha256"] != corpus_digest):
+                    or not matching_resume_configuration(saved, configuration) or saved["corpus_sha256"] != corpus_digest):
                     raise ValueError("resume policy does not match configuration, corpus or backend")
                 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
                 optimizer.load_state_dict(saved["optimizer"])

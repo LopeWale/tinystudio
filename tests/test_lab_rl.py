@@ -14,6 +14,7 @@ def spec(objective="ppo", **parameters):
         "parameters": {"steps": 3, "batch_size": 8, "hidden_size": 8, **parameters}}}
     path = value["definition"]["parameters"].pop("resume_from", None)
     if path:
+        value["definition"]["learning"]["initialization"] = "resume"
         value["definition"]["inputs"] = [{"artifact_id": "resume", "role": "resume",
             "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}]
         value["input_paths"] = {"resume": str(path)}
@@ -115,16 +116,22 @@ def test_missing_offline_transitions_and_optional_torchrl_are_explicit(tmp_path)
 
 
 @pytest.mark.parametrize("algorithm", ["ppo", "grpo", "ppo_tool_bandit", "dqn", "behavioral_cloning"])
-def test_policy_resume_matches_uninterrupted_updates(tmp_path, algorithm):
+@pytest.mark.parametrize("location", ["learning", "parameters"])
+def test_policy_resume_matches_uninterrupted_updates(tmp_path, algorithm, location):
     extra = {}
     if algorithm in {"dqn", "behavioral_cloning"}:
         extra["transitions"] = [{"observation": [0.5, 0, 0], "action": 0, "reward": -0.4,
             "next_observation": [0.4, -0.1, 0], "done": False},
             {"observation": [-0.5, 0, 0], "action": 2, "reward": -0.4,
             "next_observation": [-0.4, 0.1, 0], "done": True}]
-    execute_rl(spec(algorithm, steps=4, **extra), tmp_path / "whole", lambda row: None, lambda: False)
-    execute_rl(spec(algorithm, steps=2, **extra), tmp_path / "first", lambda row: None, lambda: False)
-    result = execute_rl(spec(algorithm, steps=4, resume_from=str(tmp_path / "first/policy.pt"), **extra),
+    def experiment(**parameters):
+        value = spec(algorithm, **parameters)
+        value["definition"]["learning"].pop("initialization", None)
+        value["definition"][location]["initialization"] = "resume" if parameters.get("resume_from") else "scratch"
+        return value
+    execute_rl(experiment(steps=4, **extra), tmp_path / "whole", lambda row: None, lambda: False)
+    execute_rl(experiment(steps=2, **extra), tmp_path / "first", lambda row: None, lambda: False)
+    result = execute_rl(experiment(steps=4, resume_from=str(tmp_path / "first/policy.pt"), **extra),
         tmp_path / "resumed", lambda row: None, lambda: False)
     expected = load_policy(tmp_path / "whole/policy.pt")[1]["model"]
     actual = load_policy(tmp_path / "resumed/policy.pt")[1]["model"]

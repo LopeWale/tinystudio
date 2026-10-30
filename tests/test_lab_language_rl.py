@@ -52,11 +52,17 @@ def test_multiple_sampled_argument_tokens_have_actual_model_gradients(tmp_path):
 
 
 @pytest.mark.parametrize("algorithm", ["ppo", "grpo"])
-def test_token_language_resume_matches_uninterrupted_policy(tmp_path, algorithm):
-    execute_language_rl(spec(algorithm, steps=4), tmp_path / "whole", lambda row: None, lambda: False)
-    execute_language_rl(spec(algorithm, steps=2), tmp_path / "first", lambda row: None, lambda: False)
+@pytest.mark.parametrize("location", ["learning", "parameters"])
+def test_token_language_resume_matches_uninterrupted_policy(tmp_path, algorithm, location):
+    def experiment(steps):
+        value = spec(algorithm, steps=steps)
+        value["definition"][location]["initialization"] = "scratch"
+        return value
+    execute_language_rl(experiment(steps=4), tmp_path / "whole", lambda row: None, lambda: False)
+    execute_language_rl(experiment(steps=2), tmp_path / "first", lambda row: None, lambda: False)
     path = tmp_path / "first/language-policy.pt"
-    resumed = spec(algorithm, steps=4)
+    resumed = experiment(steps=4)
+    resumed["definition"][location]["initialization"] = "resume"
     resumed["definition"]["inputs"] = [{"artifact_id": "resume-1", "role": "resume", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}]
     resumed["input_paths"] = {"resume-1": str(path)}
     result = execute_language_rl(resumed, tmp_path / "resumed", lambda row: None, lambda: False)

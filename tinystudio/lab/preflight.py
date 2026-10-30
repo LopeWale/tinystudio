@@ -67,6 +67,15 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("model_initialization", True,
                   "Authored language selections are compatible; checkpoint contents and inherited architecture/tokenizer compatibility are verified at execution.")
+    from .policy_selection import POLICY_ENGINES, validate_policy_selection
+    if engine in POLICY_ENGINES:
+        try:
+            validate_policy_selection(definition.model_dump())
+        except (ValueError, KeyError, TypeError) as exc:
+            check("policy_selection", False, str(exc))
+        else:
+            check("policy_selection", True,
+                  "Numeric/policy selections are compatible; checkpoint contents are verified at execution.")
     if engine == "learning.pretrained":
         from .learning_axes import pretrained_method
         try:

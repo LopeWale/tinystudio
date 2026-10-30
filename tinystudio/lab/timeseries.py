@@ -128,40 +128,16 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
 
     definition = spec["definition"]
     params = dict(definition.get("parameters", {}))
-    if "resume_from" in params:
-        raise ValueError("checkpoint sources must use immutable input artifact roles")
-    from .compatibility import resolve_role
-    resume_binding = resolve_role(spec, "resume", required=False)
+    learning = definition.get("learning") or {}
+    from .policy_selection import validate_policy_selection, resume_configuration, matching_resume_configuration
+    from .learning_initialization import checkpoint_binding
+    from .learning_axes import learning_rate
+    selected = validate_policy_selection(definition, "learning.multimodal" if multimodal else "learning.timeseries")
+    objective, family = selected["objective"], selected["family"]
+    resume_binding, _ = checkpoint_binding(spec, selected["initialization"])
     if resume_binding:
         params["resume_from"] = resume_binding["path"]
-    learning = definition.get("learning") or {}
-    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
-    objective = selector(learning.get("objective", "regression" if multimodal else "forecasting"), "objective")
-    if objective not in ({"regression", "classification"} if multimodal else {"forecasting", "regression"}):
-        raise ValueError("unsupported research objective")
-    axes = runtime_axes(learning, params, strategies={"full", "adam", "full_parameter", "full_finetune"},
-        default_strategy="full", initializations={"scratch", "from_scratch", "random", "resume"})
-    initialization = axes["initialization"]
-    if initialization == "resume" and not params.get("resume_from"):
-        raise ValueError("resume initialization requires an immutable resume artifact")
-    requested_family = selector(learning.get("family", params.get("family", "multimodal" if multimodal else "gru")), "family")
-    if "family" in learning and "family" in params and learning["family"] != params["family"]:
-        raise ValueError("conflicting family axes")
-    family = requested_family
-    if family not in ({"multimodal"} if multimodal else {"gru", "transformer", "mlp"}):
-        raise ValueError("unsupported family for the selected numeric/fusion engine")
-    representation = learning.get("representation")
-    if representation is not None and selector(representation, "representation") not in ({"multimodal", "raw_arrays", "byte_histogram_fusion"} if multimodal else {"numeric"}):
-        raise ValueError("unsupported representation for the selected numeric/fusion learner")
-    fields = {"hidden_size": (16, 4, 512), "layers": (1, 1, 8)}
-    if multimodal:
-        # Encoders currently have exactly one hidden layer.
-        fields["layers"] = (1, 1, 1)
-    else:
-        fields["context"] = (8, 1, 512)
-        if family == "transformer":
-            fields["heads"] = (2, 1, 16)
-    dimensions = requested_architecture(learning, params, fields)
+    dimensions = selected["dimensions"]
     hidden, context, heads = dimensions["hidden_size"], dimensions.get("context", 1), dimensions.get("heads", 1)
     steps, horizon = int(params.get("steps", 40)), int(params.get("horizon", 1))
     lr = learning_rate(params, 0.01)
@@ -259,6 +235,7 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
     corpus_digest = hashlib.sha256(json.dumps(corpus, sort_keys=True).encode()).hexdigest()
     configuration = {"learning": {key: value for key, value in learning.items() if key != "initialization"},
         "parameters": {key: value for key, value in params.items() if key not in {"steps", "resume_from"}}, "seed": seed}
+    configuration = resume_configuration(configuration)
     config_digest = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
     def select(indices):
         return {name: tensor[indices] for name, tensor in inputs.items()} if multimodal else inputs[indices]
@@ -277,7 +254,7 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
                 model, saved = load_research_checkpoint(params["resume_from"])
                 if (saved["architecture"] != architecture or saved["objective"] != objective
                     or saved["backend"] != "cpu" or saved["torch_version"] != str(torch.__version__)
-                    or saved["config_sha256"] != config_digest or saved["corpus_sha256"] != corpus_digest):
+                    or not matching_resume_configuration(saved, configuration) or saved["corpus_sha256"] != corpus_digest):
                     raise ValueError("resume model does not match corpus, configuration or backend")
                 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
                 optimizer.load_state_dict(saved["optimizer"])

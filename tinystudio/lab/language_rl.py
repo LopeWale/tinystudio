@@ -14,7 +14,6 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from .compatibility import resolve_role
 from .learning import artifact, build_model
 from .rl import LocalTools, _policy_version, clipped_policy_loss
 
@@ -158,25 +157,12 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
     definition = spec["definition"]
     params = definition.get("parameters", {})
     learning = definition.get("learning") or {}
-    if any(key in params for key in {"resume_from", "model_path", "teacher_checkpoint"}):
-        raise ValueError("language RL checkpoints must use immutable role inputs")
-    from .learning_axes import architecture as requested_architecture, runtime_axes, selector, learning_rate
-    axes = runtime_axes(learning, params, strategies={"full", "adam", "full_parameter", "full_finetune"},
-        default_strategy="full", initializations={"scratch", "from_scratch", "random", "resume"})
-    algorithm = selector(learning.get("objective", params.get("algorithm", "grpo")), "objective")
-    if "objective" in learning and "algorithm" in params and algorithm != params["algorithm"]:
-        raise ValueError("conflicting objective and algorithm axes")
-    if algorithm not in {"ppo", "grpo"}:
-        raise ValueError("token-level language RL objective must be ppo or grpo")
-    initialization = axes["initialization"]
-    family = selector(learning.get("family", params.get("family", "gru")), "family")
-    family = {"tiny_transformer": "transformer"}.get(family, family)
-    if "family" in learning and "family" in params and family != params["family"]:
-        raise ValueError("conflicting family axes")
-    if family not in {"gru", "transformer"}:
-        raise ValueError("language RL family must be gru or transformer")
-    if learning.get("representation") is not None and selector(learning["representation"], "representation") not in {"tool_dsl", "engineering_vocabulary", "state_tokens"}:
-        raise ValueError("language RL currently requires its explicit engineering tool-call vocabulary")
+    from .policy_selection import validate_policy_selection, resume_configuration, matching_resume_configuration
+    from .learning_initialization import checkpoint_binding
+    from .learning_axes import learning_rate
+    selected = validate_policy_selection(definition, "learning.language_rl")
+    algorithm, family = selected["objective"], selected["family"]
+    resume, _ = checkpoint_binding(spec, selected["initialization"])
     from .learning import evaluator_validation_inputs
     if evaluator_validation_inputs(spec):
         raise ValueError("language RL heldout tasks currently use parameters.heldout_tasks; external validation artifacts are unsupported")
@@ -195,10 +181,7 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
     steps, group_size = int(params.get("steps", 8)), int(params.get("group_size", params.get("batch_size", 8)))
     if "group_size" in params and "batch_size" in params and params["group_size"] != params["batch_size"]:
         raise ValueError("conflicting group_size and batch_size parameters")
-    fields = {"hidden_size": (16, 4, 256), "layers": (1, 1, 4), "context": (32, 16, 512)}
-    if family == "transformer":
-        fields["heads"] = (2, 1, 16)
-    dimensions = requested_architecture(learning, params, fields)
+    dimensions = selected["dimensions"]
     epochs, hidden = int(params.get("update_epochs", 2)), dimensions["hidden_size"]
     layers, heads = dimensions["layers"], dimensions.get("heads", 1)
     lr, epsilon = learning_rate(params, 0.003), float(params.get("clip_epsilon", 0.2))
@@ -216,10 +199,8 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
         raise ValueError("reward weights must be supported finite nonnegative values")
     config = {"learning": {key: value for key, value in learning.items() if key != "initialization"},
               "parameters": {key: value for key, value in params.items() if key != "steps"}, "seed": seed}
+    config = resume_configuration(config)
     config_digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-    resume = resolve_role(spec, "resume", required=False)
-    if initialization == "resume" and not resume:
-        raise ValueError("resume initialization requires an immutable resume artifact")
     output_dir.mkdir(parents=True, exist_ok=True)
     previous_threads = torch.get_num_threads()
     with torch.random.fork_rng(devices=[]):
@@ -236,7 +217,7 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
             start = 0
             if resume:
                 model, value_head, language, saved = load_language_rl_checkpoint(resume["path"])
-                if (saved["config_sha256"] != config_digest or saved["architecture"] != architecture
+                if (not matching_resume_configuration(saved, config) or saved["architecture"] != architecture
                     or saved["algorithm"] != algorithm or saved["torch_version"] != str(torch.__version__) or saved["backend"] != "cpu"):
                     raise ValueError("resume language policy does not match configuration or backend")
                 reference.load_state_dict(saved["reference_model"])

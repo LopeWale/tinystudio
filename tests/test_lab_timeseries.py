@@ -86,10 +86,12 @@ def test_cancellation_retains_partial_model(tmp_path):
 
 
 @pytest.mark.parametrize("family", ["gru", "transformer", "mlp", "multimodal"])
-def test_research_resume_matches_uninterrupted_updates(tmp_path, family):
+@pytest.mark.parametrize("location", ["learning", "parameters"])
+def test_research_resume_matches_uninterrupted_updates(tmp_path, family, location):
     def experiment(steps, resume_from=None):
         value = multimodal_spec() if family == "multimodal" else spec(family)
         value["definition"]["parameters"]["steps"] = steps
+        value["definition"][location]["initialization"] = "resume" if resume_from else "scratch"
         if resume_from:
             value["definition"]["inputs"] = [{"artifact_id": "resume", "role": "resume",
                 "sha256": hashlib.sha256(resume_from.read_bytes()).hexdigest()}]
