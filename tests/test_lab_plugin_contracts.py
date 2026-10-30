@@ -146,6 +146,30 @@ def test_language_qualification_declares_the_full_scratch_matrix_without_inventi
     assert pending["qualification"] == "unqualified"  # Catalog presence is not a target receipt.
 
 
+def test_retained_retrieval_contract_advertises_query_binding_and_real_fixture():
+    from tinystudio.lab.plugins import input_contracts
+    from tinystudio.lab.retrieval_selection import validate_retrieval_selection
+
+    ports = {port.role: port for port in input_contracts("retrieval.index") if port.role}
+    retained = ports["retrieval_index"]
+    assert retained.binding == "immutable_artifact"
+    assert retained.visibility == ["model"]
+    assert retained.media_types == ["application/json"]
+    assert (retained.min_items, retained.max_items) == (0, 1)
+    assert retained.required_when == "operation=query"
+    definition = {"parameters": {"operation": "query"}, "inputs": [
+        {"artifact_id": "index-1", "role": retained.role, "sha256": "a" * 64, "visibility": "model"}]}
+    assert validate_retrieval_selection(definition)["operation"] == "query"
+    for inputs in ([], definition["inputs"] * 2):
+        with pytest.raises(ValueError, match="exactly one"):
+            validate_retrieval_selection({**definition, "inputs": inputs})
+    portfolio = catalog()
+    retrieval = next(row for row in portfolio["methods"] if row["id"] == "retrieval.index")
+    assert "tests/test_lab_retained_retrieval_workflow.py" in {
+        row["path"] for row in retrieval["manifest"]["fixtures"]}
+    assert retrieval["manifest"]["qualification"] == "unqualified"
+
+
 @pytest.mark.parametrize("first", ["tinystudio.db.models", "tinystudio.lab.models"])
 def test_fresh_import_orders_register_all_laboratory_tables(first):
     import subprocess

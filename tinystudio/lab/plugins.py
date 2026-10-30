@@ -177,6 +177,11 @@ def manifest_for(row: dict) -> dict:
         "Exact plugin source hash, input hashes and dependency/target versions.",
         "Actual execution of the selected operation on the compatible target; skipped/mocked execution remains unqualified.",
         "Independent outcome checks, cancellation and retained output manifest."])] if implemented else []
+    if implemented and id_ == "retrieval.index":
+        fixtures.append(FixtureRequirement(path="tests/test_lab_retained_retrieval_workflow.py", evidence_required=[
+            "Authenticated registered-route/native-child build and retained query for lexical, structured, episode, semantic and hybrid modes.",
+            "Unchanged index bytes and hit identities after definition edits, original encoder binding and cross-project access denial.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.language":
         fixtures.append(FixtureRequirement(path="tests/test_lab_scratch_qualification.py", evidence_required=[
             "Actual registered-route/native-child execution for Transformer and GRU with byte, BPE and engineering representations.",
@@ -259,6 +264,7 @@ def input_contracts(id_: str) -> list[PortContract]:
             add("teacher", when="objective=distillation")
             add("validation", visibility=["evaluation"])
         if id_ == "retrieval.index":
+            add("retrieval_index", when="operation=query", media=["application/json"])
             add("embedding_model", when="retrieval mode=semantic|hybrid")
         if id_ == "learning.control_rl":
             add("demonstrations", when="objective=dqn|behavioral_cloning")
