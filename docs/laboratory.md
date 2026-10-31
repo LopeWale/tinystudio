@@ -602,3 +602,31 @@ The existing `tinystudio.evaluation-cases.v1` JSON envelope accepts an optional 
 The portable operation is `parameters.operation: "matrix"`, with `methods`, `baseline_method`, `max_new_tokens` and `device`. Each model method has `id`, `label`, `kind: "model"`, `artifact_id` and an explicit `retrieval` boolean. Each conventional method has `kind: "affine"`, `coefficients` and `intercept` instead. Preflight checks references, roles, visibility and declared dependencies. Execution verifies actual model/index/case contents, placement and context capacity. Conventional-only matrices do not require Torch; model methods load sequentially through the existing owned inference session.
 
 The versioned `tinystudio.method-matrix.v1` aggregate retains complete method receipts, predictions, exact case identities/hashes, per-method evaluations and comparisons against the selected baseline. Child evaluation reports retain distinct artifact names and the `method_evaluation` role; the aggregate alone uses `independent_evaluation` and is uploaded after record sidecars. Full evidence stays in artifacts; the run response carries a compact summary. Records retain an exact-string `expected_display` alongside the untouched original target so large JSON integers remain readable in browser clients. Per-method evaluation examples carry both source and episode identities; individual answer correctness is separate from whether a baseline/candidate pair can be compared. Invalid model completions remain failed cases, and invalid/missing pairs suppress comparable aggregate metrics. A matrix is complete only with successful run execution and exact method/case coverage. Cancellation, an uploaded file, or a method label cannot establish qualification or neural superiority. The existing precomputed, single-model and control reports remain readable in the same comparison view.
+
+## Retained tool-policy comparisons
+
+Both categorical tool-bandit PPO/GRPO and autoregressive tool-language PPO/GRPO
+retain a versioned `tinystudio.tool-evaluation.v1` comparison. Each authored
+held-out task is compared with the **incoming policy before this attempt's
+updates** and the final policy loaded from the retained checkpoint. On resume,
+the incoming baseline is the resumed policy, not the original random model.
+The tasks are frozen with the definition. Duplicate held-out tasks and overlap
+with training tasks are rejected using operation and numeric operand identity.
+The bounded local arithmetic tool registry remains the execution boundary.
+
+The report binds the checkpoint checksum and retains actual tool names,
+arguments, results, errors and policy versions. Requested-operation correctness
+is measured independently of the training reward. Greedy evaluation runs without
+gradients, verifies unchanged weights, and restores module modes and RNG state.
+A cancelled evaluation retains unavailable cases as missing outcomes and cannot
+claim a complete comparison. Accuracy denominators count executed cases; missing
+cases are not counted as correct, wrong, or tool failures. Wrong answers remain
+valid evaluation evidence and do not make a successful execution fail.
+
+The existing baseline-comparison view loads the checksummed retained report,
+shows matched incoming/final calls and outcomes, and exposes the selected original
+trace through the shared evidence inspector and assistant selection. Historical
+unversioned tool reports remain downloadable but are not silently promoted to
+qualified comparisons. Training-update records never stand in for held-out tool
+outcomes. The existing language artifact retains its `initial`, `final` and
+`evaluation_policy` fields; the versioned comparison envelope is additive.

@@ -85,6 +85,15 @@ def test_numeric_comparisons_require_actual_workflow_and_outcome_qualification(e
     assert row["manifest"]["qualification"] == "unqualified"
 
 
+@pytest.mark.parametrize("engine", ["learning.language_rl", "learning.tool_rl"])
+def test_tool_comparisons_require_actual_workflow_outcomes_and_parameter_qualification(engine):
+    row = next(row for row in catalog()["methods"] if row["id"] == engine)
+    fixtures = {item["path"] for item in row["manifest"]["fixtures"]}
+    assert {"tests/test_lab_tool_workflow.py", "tests/test_lab_tool_evaluation.py",
+            "tests/test_lab_parameter_updates.py"} <= fixtures
+    assert row["manifest"]["qualification"] == "unqualified"
+
+
 def test_missing_optional_implementation_preserves_the_rest_of_the_catalog(monkeypatch):
     exists, read_bytes = Path.exists, Path.read_bytes
     def optional_missing(path):

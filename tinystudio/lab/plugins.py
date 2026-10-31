@@ -191,6 +191,17 @@ def manifest_for(row: dict) -> dict:
             "Independent multi-output baseline, source-lineage, finite inference/metric and cancellation checks, including controlled mismatched inference.",
             "Validation-only comparison status is distinct from final-test qualification and model superiority.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+    if implemented and id_ in {"learning.language_rl", "learning.tool_rl"}:
+        fixtures.append(FixtureRequirement(path="tests/test_lab_tool_workflow.py", evidence_required=[
+            "Authenticated registered-route/native-child PPO and GRPO execution, frozen disjoint held-out tasks and checksummed retained policy reload.",
+            "Actual incoming and final policy tool calls, errors and independently calculated signed/fractional outcomes on identical held-out cases.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_tool_evaluation.py", evidence_required=[
+            "Actual immutable greedy evaluation, held-out overlap rejection, finite results and truthful partial cancellation.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_parameter_updates.py", evidence_required=[
+            "Objective-trained policy groups and PPO value updates, fixed unused GRPO value heads and immutable reference parameters.",
+            "Actual optimizer ownership, saved parameter equality, unload and fresh inference on a compatible target; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "evaluation.compare":
         fixtures.append(FixtureRequirement(path="tests/test_lab_generation_workflow.py", evidence_required=[
             "Authenticated frozen model and held-out case admission with real native generation, both retrieval arms and all five index modes.",

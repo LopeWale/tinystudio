@@ -46,6 +46,9 @@ def validate_policy_selection(definition, engine=None):
         supported = {"ppo", "grpo"} if language else {"ppo", "dqn", "behavioral_cloning", "grpo_tool_bandit", "ppo_tool_bandit"}
     if objective not in supported:
         raise ValueError(f"unsupported learning objective {objective!r}")
+    if language or objective in {"grpo_tool_bandit", "ppo_tool_bandit"}:
+        from .tool_evaluation import task_partitions
+        task_partitions(params, language=language)
     environment = None
     if language or numeric or objective in {"grpo_tool_bandit", "ppo_tool_bandit"}:
         if "environment" in params:

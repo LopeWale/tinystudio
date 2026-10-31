@@ -6,6 +6,7 @@ Token GRPO uses group-relative advantages and has no learned value objective.
 References are inference-only, except DQN's explicitly scheduled target copy.
 """
 import gc
+import weakref
 
 import pytest
 import torch
@@ -179,6 +180,65 @@ def test_dqn_target_changes_only_at_scheduled_copy(tmp_path, monkeypatch):
     assert_updated(per_update[0][1], per_update[1][1], ["body", "actor"])
     assert_fixed(per_update[1][1], per_update[2][1])
     assert_updated(per_update[1][0], per_update[2][0], ["body", "actor"])
+
+
+@pytest.mark.parametrize("objective", ["ppo_tool_bandit", "grpo_tool_bandit"])
+def test_categorical_tool_policy_updates_objective_groups_and_reconstructs_inference(tmp_path, monkeypatch, objective):
+    observed = TrainingObserver(monkeypatch, rl, "_policy")
+    rl.execute_rl(control_spec(objective, steps=3, batch_size=32, update_epochs=2,
+                  evaluation={"seeds": [1009]}), tmp_path, lambda row: None, lambda: False)
+    trained, before = observed.models[0]
+    reference = observed.models[1][0]
+    after = snapshot(trained)
+    # PPO fits tool rewards with a learned baseline. Group-relative GRPO trains
+    # its categorical policy without a value loss or reference-policy updates.
+    uses_value = objective == "ppo_tool_bandit"
+    assert_updated(before, after, ["body", "actor"] + (["value"] if uses_value else []))
+    assert_fixed(before, snapshot(reference))
+    assert all(parameter.grad is None for parameter in reference.parameters())
+    intended = [parameter for name, parameter in trained.named_parameters()
+                if uses_value or not name.startswith("value.")]
+    unused = [] if uses_value else list(trained.value.parameters())
+    observed.assert_optimizer(intended, reference.parameters(), unused)
+    optimizer = observed.optimizers[0]
+    # Membership alone cannot establish that Adam actually trained the groups.
+    assert all(parameter in optimizer.state for parameter in intended)
+    assert all(parameter not in optimizer.state for parameter in reference.parameters())
+    if not uses_value:
+        assert_fixed({name: value for name, value in before.items() if name.startswith("value.")},
+                     {name: value for name, value in after.items() if name.startswith("value.")})
+        for parameter in unused:
+            assert parameter.grad is None
+            assert parameter not in optimizer.state
+
+    checkpoint = tmp_path / "policy.pt"
+    restored, state = rl.load_policy(checkpoint)
+    assert restored is not trained
+    assert state["algorithm"] == objective
+    assert state["architecture"]["observation_size"] == 6
+    assert state["architecture"]["actions"] == 4
+    assert_fixed(after, snapshot(restored))
+    # Numeric operands followed by add/subtract/multiply/divide indicators:
+    # cover every categorical operation, including an unseen operand pair.
+    probe = torch.tensor([[0.2, 0.3, 1, 0, 0, 0], [0.7, 0.4, 0, 1, 0, 0],
+                          [0.3, 0.4, 0, 0, 1, 0], [-0.6, 0.2, 0, 0, 0, 1]])
+    trained.eval()
+    with torch.no_grad():
+        expected_logits, expected_values = (value.clone() for value in trained(probe))
+    assert expected_logits.shape == (4, 4)
+    assert expected_values.shape == (4,)
+    live_models = [weakref.ref(model) for model in (trained, reference, restored)]
+    observed.models.clear()
+    observed.optimizers.clear()
+    del trained, reference, restored, optimizer, intended, unused
+    gc.collect()
+    assert all(model() is None for model in live_models), "live policy survived unload"
+    restored, _ = rl.load_policy(checkpoint)
+    with torch.no_grad():
+        actual_logits, actual_values = restored(probe)
+    assert torch.equal(expected_logits, actual_logits)
+    assert torch.equal(expected_values, actual_values)
+    assert torch.equal(expected_logits.argmax(-1), actual_logits.argmax(-1))
 
 
 @pytest.mark.parametrize("objective,family", [("ppo", "gru"), ("grpo", "gru"), ("ppo", "transformer"), ("grpo", "transformer")])

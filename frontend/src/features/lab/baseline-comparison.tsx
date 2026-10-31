@@ -24,6 +24,7 @@ import {
 import { SegmentedControl } from "../../components/affectui/controls";
 import { ControlTrajectories } from "./control-trajectories";
 import { NumericComparison, validateNumericReport } from "./numeric-comparison";
+import { ToolComparison, validateToolReport } from "./tool-comparison";
 import "./baseline-comparison.css";
 
 type RecordValue = Record<string, unknown>;
@@ -150,15 +151,26 @@ export function RetainedBaselineComparison({
   execution?: string;
   runState?: string;
 }) {
-  const artifact = artifacts.find(
-    (item) => item.role === "independent_evaluation",
-  );
+  const artifact =
+    artifacts.find((item) => item.role === "independent_evaluation") ??
+    artifacts.find((item) => item.role === "heldout_tool_evaluation");
   const identity = JSON.stringify([
     props.scopeKey,
     props.runId,
     artifact?.id,
     artifact?.sha256,
   ]);
+  if (
+    !artifact &&
+    object(props.comparison).format === "tinystudio.tool-evaluation.v1"
+  )
+    return (
+      <EmptyState>
+        This tool run has no retained independent comparison report. Original
+        artifacts remain downloadable; training updates are not evaluation
+        evidence.
+      </EmptyState>
+    );
   if (
     !artifact &&
     (object(props.comparison).format === "tinystudio.numeric-evaluation.v1" ||
@@ -217,6 +229,18 @@ function RetainedReport({
             throw new Error("Retained report checksum mismatch.");
         }
         const report = object(JSON.parse(new TextDecoder().decode(bytes)));
+        const tool = report.format === "tinystudio.tool-evaluation.v1";
+        if (tool) {
+          if (!artifact.sha256)
+            throw new Error(
+              "Tool comparison requires a retained report SHA-256 checksum.",
+            );
+          validateToolReport(report);
+        } else if (artifact.role === "heldout_tool_evaluation") {
+          throw new Error(
+            "Historical unversioned tool artifact: comparison unavailable. The original artifact remains downloadable; a new run is required.",
+          );
+        }
         const numeric = report.format === "tinystudio.numeric-evaluation.v1";
         if (numeric) {
           if (!artifact.sha256)
@@ -237,6 +261,7 @@ function RetainedReport({
           !precomputed &&
           !matrix &&
           !numeric &&
+          !tool &&
           ((!control && !generation) ||
             !Array.isArray(report.records) ||
             report.records.some(
@@ -247,7 +272,7 @@ function RetainedReport({
           throw new Error(
             "Retained evaluation report has an unsupported or invalid record envelope.",
           );
-        if (objects(report.records).some(unsafeExpectedWithoutDisplay))
+        if (!tool && objects(report.records).some(unsafeExpectedWithoutDisplay))
           throw new Error(
             "This retained report lacks exact target display for an integer outside the browser safe range. Inspect the original retained artifact.",
           );
@@ -280,6 +305,21 @@ function RetainedReport({
   if (!state.report)
     return <p role="status">Loading retained independent evaluation report…</p>;
   const report = state.report;
+  if (report.format === "tinystudio.tool-evaluation.v1")
+    return (
+      <>
+        <p className="text-caption-1-regular text-text-secondary">
+          Retained report: {artifact.name} · SHA-256 verified ·{" "}
+          {objects(report.records).length} heldout tasks
+        </p>
+        <ToolComparison
+          report={report}
+          runId={props.runId}
+          scopeKey={props.scopeKey}
+          runState={props.runState}
+        />
+      </>
+    );
   if (report.format === "tinystudio.numeric-evaluation.v1")
     return (
       <>

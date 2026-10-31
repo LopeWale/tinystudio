@@ -181,8 +181,10 @@ class LocalTools:
                 result = left / right
             else:
                 raise ValueError("unknown local tool")
+            if not math.isfinite(result):
+                raise ValueError("tool result is non-finite")
             return {"name": name, "arguments": dict(arguments), "result": result, "error": None}
-        except (KeyError, ValueError, ZeroDivisionError, TypeError) as cause:
+        except (KeyError, ValueError, ZeroDivisionError, TypeError, OverflowError) as cause:
             return {"name": name, "arguments": dict(arguments), "result": None,
                     "error": {"type": type(cause).__name__, "message": str(cause)}}
 
@@ -304,19 +306,8 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
             raise ValueError("DQN requires next_observation, reward and boolean done")
         if algorithm == "dqn" and (not math.isfinite(float(row["reward"])) or not all(math.isfinite(float(value)) for value in row["next_observation"])):
             raise ValueError("offline next observations and rewards must be finite")
-    tasks = params.get("tasks", [{"left": 2, "right": 3, "operation": "add"},
-        {"left": 8, "right": 2, "operation": "divide"}, {"left": 7, "right": 4, "operation": "subtract"},
-        {"left": 3, "right": 4, "operation": "multiply"}])
-    if tools_mode:
-        if not tasks:
-            raise ValueError("tool learning requires tasks")
-        for task in tasks:
-            if task.get("operation") not in LocalTools.names:
-                raise ValueError("unknown task operation")
-            _finite(task["left"], "left")
-            _finite(task["right"], "right")
-            if task["operation"] == "divide" and float(task["right"]) == 0:
-                raise ValueError("expected division task must have nonzero divisor")
+    from .tool_evaluation import task_partitions, evaluate_pass, categorical_call, comparison_report
+    tasks, held_out = task_partitions(params) if tools_mode else ([], [])
     configuration = {"learning": {key: value for key, value in learning.items() if key != "initialization"},
         "parameters": {key: value for key, value in params.items() if key not in {"steps", "resume_from"}}, "seed": seed}
     configuration = resume_configuration(configuration)
@@ -367,6 +358,9 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 if iterations <= start:
                     raise ValueError("resume steps must exceed checkpoint step")
                 initial_version = _policy_version(model)
+            initial_evaluation, initial_cancelled = (evaluate_pass(
+                [model], held_out, lambda task: categorical_call(model, task), cancelled)
+                if tools_mode else ([], False))
             model.train()
             transitions, updates = [], []
             completed = start
@@ -495,7 +489,16 @@ def execute_rl(spec: dict, output_dir: Path, emit: Callable[[dict], None], cance
                 reload_equal = torch.equal(expected, reloaded(probe)[0])
             evaluation = None
             evaluation_artifacts = []
-            if not tools_mode:
+            if tools_mode:
+                final_evaluation, final_cancelled = evaluate_pass(
+                    [reloaded], held_out, lambda task: categorical_call(reloaded, task), cancelled)
+                evaluation = comparison_report("categorical", checkpoint, held_out, initial_evaluation,
+                    final_evaluation, completed=completed == iterations,
+                    interrupted=initial_cancelled or final_cancelled, reload_equal=reload_equal and _policy_version(reloaded) == final_version)
+                evaluation_path = output_dir / "heldout-evaluation.json"
+                evaluation_path.write_text(json.dumps(evaluation, indent=2, allow_nan=False))
+                evaluation_artifacts.append(artifact(evaluation_path, "heldout_tool_evaluation"))
+            else:
                 from .control_evaluation import evaluate_control_policy
                 evaluation = evaluate_control_policy(reloaded, params, seed=seed, agents=agents, cancelled=cancelled)
                 evaluation["format"] = "tinystudio.control-evaluation.v1"

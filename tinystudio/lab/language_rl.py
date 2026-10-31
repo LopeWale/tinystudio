@@ -76,15 +76,8 @@ def _reward(evaluation, weights):
 
 
 def _validate_tasks(tasks, language):
-    if not isinstance(tasks, list) or not tasks or len(tasks) > 1000:
-        raise ValueError("training and held-out task lists must contain 1..1000 tasks")
-    for task in tasks:
-        if task.get("operation") not in language.tools:
-            raise ValueError("task operation must be in the tool whitelist")
-        if any(type(task.get(name)) is not int or not -16 <= task[name] <= 16 for name in ("left", "right")):
-            raise ValueError("tool tasks require integer operands in [-16, 16]")
-        if task["operation"] == "divide" and task["right"] == 0:
-            raise ValueError("requested division task cannot have zero divisor")
+    from .tool_evaluation import validate_language_tasks
+    validate_language_tasks(tasks, language.tools)
 
 
 def _masked(logits, allowed):
@@ -102,11 +95,16 @@ def sample_call(model, value_head, language: CallLanguage, task: dict, generator
     with torch.no_grad():
         for allowed in grammar:
             logits = model(torch.tensor([prompt + generated]))[0, -1]
+            if not torch.isfinite(logits).all():
+                raise ValueError("tool policy produced non-finite logits")
             log_probs = _masked(logits, allowed).log_softmax(-1)
             token = int(log_probs.argmax()) if greedy else int(torch.multinomial(log_probs.exp(), 1, generator=generator))
             generated.append(token)
             logs.append(float(log_probs[token]))
-            values.append(float(value_head(logits).squeeze()))
+            value = float(value_head(logits).squeeze())
+            if not math.isfinite(value):
+                raise ValueError("tool policy produced non-finite values")
+            values.append(value)
     text = language.decode(generated)
     name, arguments = language.parse(text)
     tool = LocalTools().execute(name, arguments)
@@ -167,17 +165,10 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
     if evaluator_validation_inputs(spec):
         raise ValueError("language RL heldout tasks currently use parameters.heldout_tasks; external validation artifacts are unsupported")
     language = CallLanguage(params.get("tools"))
-    training_tasks = params.get("tasks", [{"operation": "add", "left": 2, "right": 3},
-        {"operation": "subtract", "left": 7, "right": 4}, {"operation": "multiply", "left": 3, "right": 4},
-        {"operation": "divide", "left": 8, "right": 2}])
-    held_out = params.get("heldout_tasks", [{"operation": "add", "left": 5, "right": 2},
-        {"operation": "subtract", "left": 6, "right": 1}, {"operation": "multiply", "left": 2, "right": 5},
-        {"operation": "divide", "left": 9, "right": 3}])
+    from .tool_evaluation import task_partitions, evaluate_pass, comparison_report
+    training_tasks, held_out = task_partitions(params, language=True)
     _validate_tasks(training_tasks, language)
     _validate_tasks(held_out, language)
-    identities = lambda tasks: {(task["operation"], task["left"], task["right"]) for task in tasks}
-    if identities(training_tasks) & identities(held_out):
-        raise ValueError("held-out tool tasks must not overlap training tasks")
     steps, group_size = int(params.get("steps", 8)), int(params.get("group_size", params.get("batch_size", 8)))
     if "group_size" in params and "batch_size" in params and params["group_size"] != params["batch_size"]:
         raise ValueError("conflicting group_size and batch_size parameters")
@@ -229,11 +220,8 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
                 if steps <= start:
                     raise ValueError("resume steps must exceed checkpoint step")
             initial_version = _policy_version(model)
-            def evaluate():
-                model.eval()
-                return [{**sample_call(model, value_head, language, task, greedy=True),
-                         "policy_version": _policy_version(model), "partition": "heldout"} for task in held_out]
-            initial_evaluation = evaluate()
+            initial_evaluation, initial_cancelled = evaluate_pass([model, value_head], held_out,
+                lambda task: sample_call(model, value_head, language, task, greedy=True), cancelled)
             trajectories, updates, completed = [], [], start
             for update in range(start, steps):
                 if cancelled():
@@ -294,7 +282,6 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
                     "sampled_decision_tokens": sum(sum(row["sampled_token_mask"]) for row in batch)}
                 updates.append(record)
                 emit({"type": "metric", **record})
-            final_evaluation = evaluate()
             state = {"format": "tinystudio.language_rl.v1", "algorithm": algorithm, "architecture": architecture,
                 "tokens": language.tokens, "tools": language.tools, "model": model.state_dict(), "value_head": value_head.state_dict(),
                 "reference_model": reference.state_dict(), "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
@@ -304,29 +291,36 @@ def execute_language_rl(spec: dict, output_dir: Path, emit: Callable[[dict], Non
             torch.save(state, checkpoint)
             expected = sample_call(model, value_head, language, held_out[0], greedy=True)
             final_version = _policy_version(model)
+            final_value_version = _policy_version(value_head)
             del model, value_head, optimizer
             restored, restored_value, restored_language, _ = load_language_rl_checkpoint(checkpoint)
             actual = sample_call(restored, restored_value, restored_language, held_out[0], greedy=True)
             reload_equal = (expected["generated_token_ids"] == actual["generated_token_ids"]
                             and expected["generation_log_probs"] == actual["generation_log_probs"])
+            final_evaluation, final_cancelled = evaluate_pass([restored, restored_value], held_out,
+                lambda task: sample_call(restored, restored_value, restored_language, task, greedy=True), cancelled)
+            comparison = comparison_report("autoregressive", checkpoint, held_out, initial_evaluation,
+                final_evaluation, completed=completed == steps, interrupted=initial_cancelled or final_cancelled,
+                reload_equal=reload_equal and _policy_version(restored) == final_version
+                    and _policy_version(restored_value) == final_value_version)
             trace_path = output_dir / "language-trajectories.jsonl"
             trace_path.write_text("".join(json.dumps(row) + "\n" for row in trajectories))
             evaluation_path = output_dir / "heldout-evaluation.json"
-            evaluation_path.write_text(json.dumps({"initial": initial_evaluation, "final": final_evaluation,
-                "evaluation_policy": "independent requested-operation correctness; rewards not used to optimize heldout tasks"}, indent=2))
+            evaluation_path.write_text(json.dumps({**comparison, "initial": initial_evaluation, "final": final_evaluation,
+                "evaluation_policy": "independent requested-operation correctness; rewards not used to optimize heldout tasks"}, indent=2, allow_nan=False))
             updates_path = output_dir / "updates.json"
             updates_path.write_text(json.dumps(updates, indent=2))
-            return {"records": updates, "metrics": {"steps": completed, "parameters_changed": initial_version != final_version,
+            return {"records": updates, "baseline_comparison": {key: comparison[key] for key in ("format", "metrics", "qualification")}, "metrics": {"steps": completed, "parameters_changed": initial_version != final_version,
                 "reload_generation_equal": reload_equal, "trajectories": len(trajectories),
                 "sampled_decision_tokens": sum(sum(row["sampled_token_mask"]) for row in trajectories),
-                "heldout_accuracy": sum(row["evaluation"]["correct"] for row in final_evaluation) / len(final_evaluation),
-                "initial_heldout_accuracy": sum(row["evaluation"]["correct"] for row in initial_evaluation) / len(initial_evaluation),
+                "heldout_accuracy": comparison["metrics"]["final"]["accuracy"],
+                "initial_heldout_accuracy": comparison["metrics"]["initial"]["accuracy"],
                 "training_tasks": len(training_tasks), "heldout_tasks": len(held_out),
                 "tool_calls": len(trajectories), "tool_errors": sum(row["tool"]["error"] is not None for row in trajectories)},
                 "artifacts": [artifact(checkpoint, "language_policy_checkpoint", "application/octet-stream"),
                     artifact(trace_path, "token_tool_trajectories", "application/x-ndjson"),
                     artifact(evaluation_path, "heldout_tool_evaluation"), artifact(updates_path, "policy_updates")],
-                "qualification": {"status": "completed" if completed == steps else "cancelled", "algorithm": algorithm,
+                "qualification": {"status": comparison["qualification"]["status"], "algorithm": algorithm,
                     "token_level_autoregressive_policy": True, "grammar": "CALL <whitelisted-tool> ( <integer> , <integer> ) END",
                     "constraints": "tool and argument positions sampled when their allowed set has multiple values; arguments restricted to requested operands and zero; syntax forced",
                     "loss_variant": "clipped per-token ratios, mean per completion, exact masked-policy/reference KL",

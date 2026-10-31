@@ -114,3 +114,39 @@ def test_legacy_resume_configuration_is_verified_before_normalization():
     assert not matching_resume_configuration(saved, current)
     saved["configuration"]["parameters"]["lr"] = 0.02
     assert not matching_resume_configuration(saved, current)  # Corrupt metadata cannot bypass the original digest.
+
+
+@pytest.mark.parametrize("engine,objective", [("learning.language_rl", "ppo"), ("learning.tool_rl", "grpo_tool_bandit")])
+@pytest.mark.parametrize("heldout,reason", [
+    ([{"operation": "add", "left": 2.0, "right": 3}], "overlap"),
+    ([{"operation": "add", "left": 4, "right": 1}] * 2, "duplicate"),
+    ([{"operation": "divide", "left": 1, "right": 1e-310}], "finite outcome"),
+])
+def test_tool_partition_errors_fail_actual_preflight_before_execution(engine, objective, heldout, reason):
+    authored = {"name": "tool partition preflight", "engine": engine,
+                "learning": {"objective": objective}, "parameters": {"heldout_tasks": heldout},
+                "execution": {"profile": "trusted_native", "backend": "native"}}
+    with pytest.raises(ValueError, match=reason):
+        validate_policy_selection(authored)
+    checks = execution_checks(ExperimentDefinition(**authored), {"torch": "installed"})
+    failure = next(row for row in checks if row["code"] == "policy_selection")
+    assert failure["passed"] is False
+
+
+@pytest.mark.parametrize("parameters,reason", [
+    ({"heldout_tasks": [{"operation": "add", "left": 10**400, "right": 1}]}, "bounded"),
+    ({"heldout_tasks": [{"operation": "add", "left": 1.5, "right": 2}]}, "integer operands"),
+    ({"heldout_tasks": [{"operation": "add", "left": 17, "right": 2}]}, "integer operands"),
+    ({"tools": ["add"], "tasks": [{"operation": "add", "left": 1, "right": 2}],
+      "heldout_tasks": [{"operation": "subtract", "left": 1, "right": 2}]}, "whitelist"),
+])
+def test_language_task_boundaries_agree_between_preflight_and_execution(tmp_path, parameters, reason):
+    authored = {"name": "language task admission", "engine": "learning.language_rl",
+                "learning": {"objective": "ppo"}, "parameters": parameters,
+                "execution": {"profile": "trusted_native", "backend": "native"}}
+    checks = execution_checks(ExperimentDefinition(**authored), {"torch": "installed"})
+    assert next(row for row in checks if row["code"] == "policy_selection")["passed"] is False
+    from tinystudio.lab.language_rl import execute_language_rl
+    with pytest.raises(ValueError, match=reason):
+        execute_language_rl({"definition": authored}, tmp_path / "invalid", lambda row: None, lambda: False)
+    assert not (tmp_path / "invalid").exists()
