@@ -495,8 +495,10 @@ floating-point base. Legacy serving, merged export and refinement reject these
 new outputs until those consumers have a compatible quantized execution path;
 durable configuration/status markers cover running and failed checkpoints too.
 Missing retained state is an error. Existing nonquantized v1 outputs remain
-readable. Retrieval composition is still an outstanding D task; unsupported
-retrieval selections fail visibly.
+readable. Training-time retrieval selections remain unsupported on this trainer
+and fail visibly. Frozen retrieval is independently composable with retained
+model generation through `evaluation.compare`, including the matched-method
+matrix described below.
 
 Native runners execute these operations in child processes. In-process trainer
 calls are serialized while they own PyTorch thread and RNG state, which is

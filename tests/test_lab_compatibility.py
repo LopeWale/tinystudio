@@ -1,9 +1,11 @@
 """Local generated HF fixtures exercise TinyStudio's real existing trainer."""
+import gc
 import hashlib
 import json
 import io
 import tarfile
 import zipfile
+import weakref
 from pathlib import Path
 
 import pytest
@@ -88,6 +90,20 @@ def test_real_existing_trainer_from_immutable_local_model(tmp_path, local_pretra
 @pytest.mark.parametrize("objective", ["sft", "causal_lm", "dpo"])
 @pytest.mark.parametrize("strategy", ["full", "lora"])
 def test_independent_objective_update_placement_and_reload(tmp_path, local_pretrained_spec, monkeypatch, objective, strategy):
+    _check_objective_update_placement_and_reload(tmp_path, local_pretrained_spec, monkeypatch, objective, strategy)
+
+
+def _assert_live_policy_restored(model, observed):
+    actual = dict(model.named_parameters())
+    assert actual.keys() == observed["parameters"].keys(), "live policy parameter names changed on reload"
+    for name, expected in observed["parameters"].items():
+        assert torch.equal(expected, actual[name]), f"live policy parameter changed on reload: {name}"
+    with torch.no_grad():
+        assert torch.equal(observed["logits"], model(**observed["probe"]).logits), "live policy logits changed on reload"
+
+
+def _check_objective_update_placement_and_reload(tmp_path, local_pretrained_spec, monkeypatch, objective, strategy,
+                                                *, corrupt_save=False):
     from trl import DPOTrainer, SFTTrainer
     experiment = local_pretrained_spec
     experiment["definition"]["learning"].update(objective=objective, update_strategy=strategy, device="cpu", dtype="float32")
@@ -113,6 +129,12 @@ def test_independent_objective_update_placement_and_reload(tmp_path, local_pretr
         trainable = {name for name, parameter in trainer.model.named_parameters() if parameter.requires_grad}
         assert trainable
         assert all("lora_" in name for name in trainable) if strategy == "lora" else all("lora_" not in name for name in trainable)
+        probe = trainer.processing_class("pressure high", return_tensors="pt")
+        was_training = trainer.model.training
+        trainer.model.eval()
+        with torch.no_grad():
+            observed["initial_logits"] = trainer.model(**probe).logits.detach().clone()
+        trainer.model.train(was_training)
         reference_before, ref_logps_before = {}, None
         if objective == "dpo":
             reference = trainer.ref_model if trainer.ref_model is not None else trainer.model
@@ -133,11 +155,38 @@ def test_independent_objective_update_placement_and_reload(tmp_path, local_pretr
             assert all(torch.equal(left, right) for left, right in zip(ref_logps_before, after))
             if trainer.ref_model is not None:
                 assert optimizer.isdisjoint({id(parameter) for parameter in trainer.ref_model.parameters()})
-        observed.update(changed=sorted(changed), trainable=sorted(trainable))
+        trainer.model.eval()
+        with torch.no_grad():
+            logits = trainer.model(**probe).logits.detach().clone()
+        observed.update(changed=sorted(changed), trainable=sorted(trainable), probe=probe,
+                        parameters={name: parameter.detach().clone() for name, parameter in trainer.model.named_parameters()},
+                        logits=logits, live_model=weakref.ref(trainer.model))
+        if corrupt_save:
+            # Reproduce a stale saved weight without altering the trained policy.
+            # Other updates survive, so changed/finite/repeatable inference still passes.
+            name = sorted(changed)[0]
+            stale = before[name].clone()
+            original_save = type(trainer.model).save_pretrained
+
+            def save_stale_parameter(model, *save_args, **save_kwargs):
+                parameter = dict(model.named_parameters())[name]
+                trained = parameter.detach().clone()
+                try:
+                    with torch.no_grad():
+                        parameter.copy_(stale)
+                    return original_save(model, *save_args, **save_kwargs)
+                finally:
+                    with torch.no_grad():
+                        parameter.copy_(trained)
+                    observed["fault_restored_live_parameter"] = torch.equal(parameter, observed["parameters"][name])
+
+            monkeypatch.setattr(type(trainer.model), "save_pretrained", save_stale_parameter)
         return result
 
     monkeypatch.setattr(trainer_type, "train", observe_training)
     result = execute_pretrained(experiment, tmp_path / "independent", lambda row: None, lambda: False)
+    gc.collect()
+    assert observed["live_model"]() is None, "the acceptance observer must not keep the trained model alive"
     model, tokenizer, manifest = load_pretrained_output(tmp_path / "independent")
     assert manifest["objective"] == objective and manifest["update_strategy"] == strategy
     assert manifest["output_kind"] == ("model" if strategy == "full" else "adapter")
@@ -154,12 +203,34 @@ def test_independent_objective_update_placement_and_reload(tmp_path, local_pretr
     probe = tokenizer("pressure high", return_tensors="pt")
     with torch.no_grad():
         expected = model(**probe).logits.clone()
+    assert torch.isfinite(expected).all()
+    assert not torch.equal(observed["initial_logits"], expected)
+    first_parameters = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+    loaded_ref = weakref.ref(model)
     del model
+    gc.collect()
+    assert loaded_ref() is None, "the first reloaded model must be unloaded before fresh inference"
     restored, _, _ = load_pretrained_output(tmp_path / "independent")
     with torch.no_grad():
         assert torch.equal(expected, restored(**probe).logits)
+    assert all(torch.equal(first_parameters[name], parameter) for name, parameter in restored.named_parameters())
+    if corrupt_save:
+        assert observed["fault_restored_live_parameter"]
+    # All earlier changed/finite/two-reload checks above can pass for a stale save.
+    # Compare both loaded parameter snapshots to the original post-training policy.
+    for name, trained in observed["parameters"].items():
+        assert torch.equal(trained, first_parameters[name]), f"live policy parameter changed on reload: {name}"
+    assert torch.equal(observed["logits"], expected), "live policy logits changed on reload"
+    _assert_live_policy_restored(restored, observed)
     import os
     assert os.environ["TINYSTUDIO_DEVICE"] == "cuda:7" and os.environ["TINYSTUDIO_DTYPE"] == "bf16"
+
+
+@pytest.mark.parametrize("strategy", ["full", "lora"])
+def test_live_policy_reload_oracle_rejects_stale_saved_parameter(tmp_path, local_pretrained_spec, monkeypatch, strategy):
+    with pytest.raises(AssertionError, match="live policy parameter changed on reload"):
+        _check_objective_update_placement_and_reload(tmp_path, local_pretrained_spec, monkeypatch, "sft", strategy,
+                                                    corrupt_save=True)
 
 
 @pytest.mark.parametrize("boundary", ["step", "saved", "bundled"])

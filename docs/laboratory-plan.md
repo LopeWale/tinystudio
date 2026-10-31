@@ -59,13 +59,13 @@
 ## D. Learning methods and retrieval
 
 - [x] Integrate scratch Transformer and recurrent models with byte, subword and engineering-vocabulary tokenizers.
-- [ ] Support independent architecture, initialization, representation, objective, update strategy, retrieval and environment selections with compatibility checks.
-- [ ] Integrate continued pretraining, supervised full/LoRA/QLoRA training, DPO and distillation.
-- [ ] Integrate language/tool PPO/GRPO methods with recorded actual tool interactions and independent evaluation.
-- [ ] Integrate time-series and multimodal PyTorch models.
-- [ ] Integrate offline/online control RL, imitation and multi-agent learning through TorchRL-compatible environments.
-- [ ] Compose lexical, semantic, hybrid, structured and episode retrieval with frozen corpora/indexes.
-- [ ] Verify intended parameter updates and save/unload/reload/inference for every learning method on a compatible target.
+- [x] Support independent architecture, initialization, representation, objective, update strategy, retrieval and environment selections with compatibility checks.
+- [x] Integrate continued pretraining, supervised full/LoRA/QLoRA training, DPO and distillation.
+- [x] Integrate language/tool PPO/GRPO methods with recorded actual tool interactions and independent evaluation.
+- [x] Integrate time-series and multimodal PyTorch models.
+- [x] Integrate offline/online control RL, imitation and multi-agent learning through TorchRL-compatible environments.
+- [x] Compose lexical, semantic, hybrid, structured and episode retrieval with frozen corpora/indexes.
+- [x] Verify intended parameter updates and save/unload/reload/inference for every learning method on a compatible target.
 - [x] Compare conventional, base, specialized, LoRA, RAG and combined methods on matched held-out cases.
 - [ ] Complete baseline comparison views while retaining existing loss and neuron inspection.
 - [ ] Accept D through complete research workflows and independent review.
