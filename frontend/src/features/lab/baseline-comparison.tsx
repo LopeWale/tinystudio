@@ -23,6 +23,7 @@ import {
 } from "../../components/studio/workspace";
 import { SegmentedControl } from "../../components/affectui/controls";
 import { ControlTrajectories } from "./control-trajectories";
+import { NumericComparison, validateNumericReport } from "./numeric-comparison";
 import "./baseline-comparison.css";
 
 type RecordValue = Record<string, unknown>;
@@ -158,6 +159,19 @@ export function RetainedBaselineComparison({
     artifact?.id,
     artifact?.sha256,
   ]);
+  if (
+    !artifact &&
+    (object(props.comparison).format === "tinystudio.numeric-evaluation.v1" ||
+      artifacts.some((item) => item.role === "held_out_predictions"))
+  )
+    return (
+      <EmptyState>
+        This numeric run has no retained independent comparison report. Original
+        predictions remain available in its artifacts; a new run is required to
+        record a baseline comparison. Training updates are not evaluation
+        evidence.
+      </EmptyState>
+    );
   return <RetainedReport key={identity} {...props} artifact={artifact} />;
 }
 function RetainedReport({
@@ -203,6 +217,14 @@ function RetainedReport({
             throw new Error("Retained report checksum mismatch.");
         }
         const report = object(JSON.parse(new TextDecoder().decode(bytes)));
+        const numeric = report.format === "tinystudio.numeric-evaluation.v1";
+        if (numeric) {
+          if (!artifact.sha256)
+            throw new Error(
+              "Numeric comparison requires a retained report SHA-256 checksum.",
+            );
+          validateNumericReport(report);
+        }
         const control = report.format === "tinystudio.control-evaluation.v1";
         const generation =
           report.format === "tinystudio.generation-evaluation.v1";
@@ -214,6 +236,7 @@ function RetainedReport({
         if (
           !precomputed &&
           !matrix &&
+          !numeric &&
           ((!control && !generation) ||
             !Array.isArray(report.records) ||
             report.records.some(
@@ -257,6 +280,21 @@ function RetainedReport({
   if (!state.report)
     return <p role="status">Loading retained independent evaluation report…</p>;
   const report = state.report;
+  if (report.format === "tinystudio.numeric-evaluation.v1")
+    return (
+      <>
+        <p className="text-caption-1-regular text-text-secondary">
+          Retained report: {artifact.name} · SHA-256 verified ·{" "}
+          {objects(report.records).length} validation cases
+        </p>
+        <NumericComparison
+          report={report}
+          runId={props.runId}
+          scopeKey={props.scopeKey}
+          runState={props.runState}
+        />
+      </>
+    );
   if (report.format === "tinystudio.method-matrix.v1")
     return (
       <>

@@ -182,6 +182,15 @@ def manifest_for(row: dict) -> dict:
             "Authenticated registered-route/native-child build and retained query for lexical, structured, episode, semantic and hybrid modes.",
             "Unchanged index bytes and hit identities after definition edits, original encoder binding and cross-project access denial.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+    if implemented and id_ in {"learning.timeseries", "learning.multimodal"}:
+        fixtures.append(FixtureRequirement(path="tests/test_lab_numeric_policy_workflow.py", evidence_required=[
+            "Authenticated registered-route/native-child numeric and fusion training with frozen validation bindings and transported checkpoint inference.",
+            "Checksummed per-case validation comparisons against context-only persistence or training-only mean/majority baselines, with unchanged legacy prediction evidence.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
+        fixtures.append(FixtureRequirement(path="tests/test_lab_numeric_evaluation.py", evidence_required=[
+            "Independent multi-output baseline, source-lineage, finite inference/metric and cancellation checks, including controlled mismatched inference.",
+            "Validation-only comparison status is distinct from final-test qualification and model superiority.",
+            "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "evaluation.compare":
         fixtures.append(FixtureRequirement(path="tests/test_lab_generation_workflow.py", evidence_required=[
             "Authenticated frozen model and held-out case admission with real native generation, both retrieval arms and all five index modes.",

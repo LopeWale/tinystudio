@@ -77,6 +77,14 @@ def test_platform_and_selection_requirements_do_not_hide_catalog_options():
     assert all(item["qualification"] == "unqualified" for item in portfolio["qualification_matrix"])
 
 
+@pytest.mark.parametrize("engine", ["learning.timeseries", "learning.multimodal"])
+def test_numeric_comparisons_require_actual_workflow_and_outcome_qualification(engine):
+    row = next(row for row in catalog()["methods"] if row["id"] == engine)
+    fixtures = {item["path"] for item in row["manifest"]["fixtures"]}
+    assert {"tests/test_lab_numeric_policy_workflow.py", "tests/test_lab_numeric_evaluation.py"} <= fixtures
+    assert row["manifest"]["qualification"] == "unqualified"
+
+
 def test_missing_optional_implementation_preserves_the_rest_of_the_catalog(monkeypatch):
     exists, read_bytes = Path.exists, Path.read_bytes
     def optional_missing(path):

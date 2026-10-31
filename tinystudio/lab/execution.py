@@ -110,7 +110,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
                                         "media_type": "application/x-ndjson", "role": "derived_records"})
         result["record_count"] = len(rows)
         result["records"] = len(rows)
-    if engine == "evaluation.compare" and view["definition"].get("parameters", {}).get("operation") == "matrix":
+    if (engine in {"learning.timeseries", "learning.multimodal"} or
+            engine == "evaluation.compare" and view["definition"].get("parameters", {}).get("operation") == "matrix"):
         # The common record sidecar is created after the executor returns. Keep
         # the aggregate last in the actual runner upload order as well.
         result["artifacts"].sort(key=lambda item: item.get("role") == "independent_evaluation")

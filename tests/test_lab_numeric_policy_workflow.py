@@ -96,6 +96,7 @@ def test_retained_numeric_validation_custody_and_fresh_checkpoint_prediction(int
         runner.advertise()
         run, paths = run_and_download(client, prefix, other_prefix, runner, target, body, root)
     model, state = load_research_checkpoint(paths["model_checkpoint"])
+    assert run["result"]["artifacts"][-1]["role"] == "independent_evaluation"
     assert not model.training
     forecasting = engine.endswith("timeseries")
     normalization = state["normalization"] if forecasting else state["normalization"]["numeric"]
@@ -113,6 +114,32 @@ def test_retained_numeric_validation_custody_and_fresh_checkpoint_prediction(int
     probes = [[[10 + i], [11 + i]] for i in range(4)] if forecasting else validation
     assert predict_from_checkpoint(paths["model_checkpoint"], probes) == retained["predictions"]
     assert run["result"]["metrics"]["reload_predictions_equal"]
+    evaluation = json.loads(paths["independent_evaluation"].read_text())
+    assert evaluation["format"] == "tinystudio.numeric-evaluation.v1"
+    assert evaluation["task"] == objective and evaluation["partition"] == "validation"
+    assert evaluation["model_sha256"] == hashlib.sha256(paths["model_checkpoint"].read_bytes()).hexdigest()
+    assert evaluation["corpus_sha256"] == state["corpus_sha256"]
+    assert evaluation["qualification"]["comparison_complete"]
+    assert evaluation["qualification"]["evaluation_valid"] and evaluation["qualification"]["validation_only"]
+    assert run["result"]["baseline_comparison"] == {key: evaluation[key] for key in ("format", "metrics", "qualification")}
+    assert [row["source_record_ids"] for row in evaluation["records"]] == [row["source_record_ids"] for row in retained["records"]]
+    assert [row["prediction"] for row in evaluation["records"]] == retained["predictions"]
+    assert evaluation["metrics"]["cases"] == len(retained["records"])
+    baseline = evaluation["baseline"]
+    if forecasting:
+        assert baseline["kind"] == "persistence" and baseline["fit_source_record_ids"] == []
+        assert baseline["fit_case_count"] == 0
+        assert evaluation["metrics"]["baseline"] == {"mae": 1, "mse": 1}
+        assert [row["baseline"] for row in evaluation["records"]] == [[11 + i] for i in range(4)]
+        assert evaluation["records"][0]["context_source_record_ids"] == ["validation:0", "validation:1"]
+    else:
+        assert baseline["fit_source_record_ids"] == [f"train:{i}" for i in range(6)]
+        assert baseline["fit_case_count"] == 6
+        assert all(row["context_source_record_ids"] == [] for row in evaluation["records"])
+        assert baseline["kind"] == ("training_majority" if objective == "classification" else "training_mean")
+        assert baseline["constant"] == ("even" if objective == "classification" else [2.5])
+    assert [json.loads(row["raw_target_json"]) for row in evaluation["records"]] == (
+        [[10 + i] for i in expected] if forecasting else [row["target"] for row in validation])
 
 
 @pytest.mark.parametrize("objective,runtime,agents", [("ppo", "native", 1), ("ppo", "torchrl", 2),

@@ -114,8 +114,13 @@ def predict_from_checkpoint(path, values):
         if list(tensor.shape[1:]) != [state["architecture"]["context"], state["architecture"]["input_size"]]:
             raise ValueError("forecast inputs must match saved context and feature size")
         inputs = (tensor - state["normalization"]["mean"]) / state["normalization"]["std"]
+    inference_inputs = inputs.values() if isinstance(inputs, dict) else [inputs]
+    if any(not torch.isfinite(tensor).all() for tensor in inference_inputs):
+        raise ValueError("checkpoint inference inputs must be finite")
     with torch.no_grad():
         outputs = model(inputs)
+    if not torch.isfinite(outputs).all():
+        raise ValueError("checkpoint inference produced non-finite outputs")
     if state["objective"] == "classification":
         return [state["classes"][index] for index in outputs.argmax(-1).tolist()]
     return outputs.tolist()
@@ -247,6 +252,10 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
     def select(indices):
         return {name: tensor[indices] for name, tensor in inputs.items()} if multimodal else inputs[indices]
     train_input, validation_input = select(train_ids), select(validation_ids)
+    for selected_input in (train_input, validation_input):
+        tensors = selected_input.values() if isinstance(selected_input, dict) else [selected_input]
+        if any(not torch.isfinite(tensor).all() for tensor in tensors):
+            raise ValueError("normalized research inputs must be finite")
     output_dir.mkdir(parents=True, exist_ok=True)
     previous_threads = torch.get_num_threads()
     with torch.random.fork_rng(devices=[]):
@@ -294,6 +303,8 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
             with torch.no_grad():
                 predictions = model(validation_input)
                 validation_loss = float(criterion(predictions, targets[validation_ids]))
+            if not all(math.isfinite(value) for value in (initial_validation_loss, validation_loss)):
+                raise ValueError("validation losses must be finite")
             changed = any(not torch.equal(initial[key], value) for key, value in model.state_dict().items())
             checkpoint = output_dir / "model.pt"
             state = {"format": "tinystudio.timeseries.v1", "architecture": architecture, "objective": objective,
@@ -305,12 +316,21 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
             del model, optimizer
             reloaded, _ = load_research_checkpoint(checkpoint)
             with torch.no_grad():
-                reload_equal = torch.equal(predictions, reloaded(validation_input))
+                reloaded_predictions = reloaded(validation_input)
+                if not torch.isfinite(predictions).all() or not torch.isfinite(reloaded_predictions).all():
+                    raise ValueError("validation predictions must be finite")
+                reload_equal = torch.equal(predictions, reloaded_predictions)
             result_path = output_dir / "predictions.json"
             raw_predictions = predict_from_checkpoint(checkpoint, raw_probe)
+            expected_predictions = ([classes[index] for index in reloaded_predictions.argmax(-1).tolist()]
+                                    if objective == "classification" else reloaded_predictions.tolist())
+            if raw_predictions != expected_predictions or not reload_equal:
+                raise ValueError("raw checkpoint inference disagrees with validation predictions")
             raw_targets = targets[validation_ids].tolist()
+            if not raw_predictions or not (len(raw_predictions) == len(raw_targets) == len(prediction_sources) == len(validation_ids)):
+                raise ValueError("validation predictions require exact nonzero case count")
             prediction_records = []
-            for prediction, target, source_indices in zip(raw_predictions, raw_targets, prediction_sources):
+            for prediction, target, source_indices in zip(raw_predictions, raw_targets, prediction_sources, strict=True):
                 row = {"prediction": prediction, "target": target, "partition": "validation",
                        "source_record_ids": [split["source_record_ids"][index] for index in source_indices]}
                 if objective == "classification":
@@ -324,9 +344,9 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
                 # Preserve the existing encoded target array and make its mapping explicit.
                 report.update(classes=classes, target_encoding="class_index",
                               target_labels=[classes[index] for index in raw_targets])
-            result_path.write_text(json.dumps(report, indent=2))
+            result_path.write_text(json.dumps(report, indent=2, allow_nan=False))
             manifest = output_dir / "training.json"
-            manifest.write_text(json.dumps(updates, indent=2))
+            manifest.write_text(json.dumps(updates, indent=2, allow_nan=False))
             metrics = {"steps": completed, "initial_validation_loss": initial_validation_loss,
                        "validation_loss": validation_loss, "parameters_changed": changed,
                        "reload_predictions_equal": reload_equal, "training_examples": len(train_ids),
@@ -336,8 +356,40 @@ def _run(spec: dict, output_dir: Path, emit: Callable[[dict], None], cancelled: 
             else:
                 metrics["validation_mae"] = float((predictions - targets[validation_ids]).abs().mean())
                 metrics["persistence_baseline_mse"] = float(((matrix[torch.tensor([split["windows"][index]["context_rows"][-1] for index in validation_ids]), target_feature, None] - targets[validation_ids]) ** 2).mean()) if not multimodal else None
-            return {"records": updates, "metrics": metrics, "artifacts": [artifact(checkpoint, "model_checkpoint", "application/octet-stream"),
-                artifact(result_path, "held_out_predictions"), artifact(manifest, "training_metrics")],
+            from .numeric_evaluation import build_numeric_evaluation
+            def original_flat(value):
+                if not isinstance(value, (list, tuple)):
+                    return [value]
+                return [item for nested in value for item in original_flat(nested)]
+            cases, persistence = [], []
+            for index, source_indices in zip(validation_ids, prediction_sources, strict=True):
+                context_indices = [] if multimodal else split["windows"][index]["context_rows"]
+                original_target = (records[index][target_key] if multimodal else
+                    [original_flat(records[source].get("features", records[source].get("value")))[target_feature]
+                     for source in source_indices])
+                case = {"case_id": f"validation:{index}",
+                    "source_record_ids": [split["source_record_ids"][source] for source in source_indices],
+                    "context_source_record_ids": [split["source_record_ids"][source] for source in context_indices],
+                    "raw_target_json": json.dumps(original_target, allow_nan=False)}
+                if "episode_id" in records[source_indices[0]]:
+                    case["episode_id"] = records[source_indices[0]]["episode_id"]
+                cases.append(case)
+                if not multimodal:
+                    persistence.append([float(matrix[context_indices[-1], target_feature])] * horizon)
+            evaluation = build_numeric_evaluation(
+                task=objective if multimodal else "forecasting", output_count=1 if objective == "classification" else output_size if multimodal else horizon,
+                predictions=raw_predictions,
+                targets=[classes[index] for index in raw_targets] if objective == "classification" else raw_targets,
+                cases=cases,
+                training_targets=([classes[index] for index in targets[train_ids].tolist()] if objective == "classification"
+                                  else targets[train_ids].tolist()) if multimodal else [],
+                training_source_ids=[split["source_record_ids"][index] for index in train_ids] if multimodal else [],
+                persistence=persistence, model_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+                corpus_sha256=corpus_digest, completed=completed == steps, reload_agreement=reload_equal)
+            evaluation_path = output_dir / "numeric-evaluation.json"
+            evaluation_path.write_text(json.dumps(evaluation, indent=2, allow_nan=False))
+            return {"records": updates, "baseline_comparison": {key: evaluation[key] for key in ("format", "metrics", "qualification")}, "metrics": metrics, "artifacts": [artifact(checkpoint, "model_checkpoint", "application/octet-stream"),
+                artifact(result_path, "held_out_predictions"), artifact(manifest, "training_metrics"), artifact(evaluation_path, "independent_evaluation")],
                 "qualification": {"status": "completed" if completed == steps else "cancelled", "backend": "cpu", "dtype": "float32",
                     "save_unload_reload": reload_equal, "chronological_targets": not multimodal,
                     "scope": "small scratch fusion using byte-histogram text and raw numeric/image/audio arrays" if multimodal else "local supervised numeric forecasting; no state-of-the-art or generalization guarantee",
