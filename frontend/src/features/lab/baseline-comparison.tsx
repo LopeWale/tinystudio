@@ -22,6 +22,7 @@ import {
   WorkspaceDisclosure,
 } from "../../components/studio/workspace";
 import { SegmentedControl } from "../../components/affectui/controls";
+import { ControlTrajectories } from "./control-trajectories";
 import "./baseline-comparison.css";
 
 type RecordValue = Record<string, unknown>;
@@ -346,6 +347,7 @@ function ComparisonWorkspace({
       Object.keys(object(metrics.aggregate)).length > 0;
   const [filter, setFilter] = useState("All");
   const [selectedId, setSelectedId] = useState<string>();
+  const [controlView, setControlView] = useState("trajectories");
   const rows = useMemo<CaseRow[]>(
     () =>
       records.map((value, index) => {
@@ -386,6 +388,7 @@ function ComparisonWorkspace({
           label: "Episode",
           value: (row) => text(row.record.episode),
         },
+        { id: "seed", label: "Seed", value: (row) => text(row.record.seed) },
         { id: "step", label: "Step", value: (row) => text(row.record.step) },
         { id: "arm", label: "Arm", value: (row) => text(row.record.arm) },
         {
@@ -502,6 +505,18 @@ function ComparisonWorkspace({
           </div>
         ))}
       </div>
+      {control && (
+        <SegmentedControl
+          aria-label="Control comparison view"
+          size="sm"
+          value={controlView}
+          onChange={setControlView}
+          options={[
+            { value: "trajectories", label: "Trajectories" },
+            { value: "records", label: "Records" },
+          ]}
+        />
+      )}
       <InspectionWorkspace
         label="Selected evaluation evidence"
         inspector={
@@ -541,43 +556,53 @@ function ComparisonWorkspace({
           ) : undefined
         }
       >
-        <div className="baseline-table-frame">
-          <AdvancedTable
-            label={control ? "Control transitions" : "Evaluation cases"}
-            rows={visible}
-            columns={columns}
-            getRowId={(row) => row.id}
-            scopeKey={JSON.stringify([scopeKey, runId])}
-            layout="fill"
-            toolbarContent={
-              !control ? (
-                <SegmentedControl
-                  aria-label="Evaluation result filter"
-                  size="sm"
-                  value={filter}
-                  onChange={setFilter}
-                  options={["All", "Pass", "Partial", "Fail"].map((value) => ({
-                    value,
-                    label: value,
-                  }))}
-                />
-              ) : undefined
-            }
-            rowProps={(row) => ({
-              tabIndex: 0,
-              "aria-label": `Inspect ${text(row.record.source_id ?? row.record.episode ?? row.id)} ${text(row.record.arm)}`,
-              "aria-selected": selectedId === row.id,
-              onClick: () => setSelectedId(row.id),
-              onKeyDown: (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setSelectedId(row.id);
-                }
-              },
-            })}
-            empty="No retained per-case records are attached. Inspect the reported metrics and qualification below."
+        {control && controlView === "trajectories" ? (
+          <ControlTrajectories
+            rows={rows}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
           />
-        </div>
+        ) : (
+          <div className="baseline-table-frame">
+            <AdvancedTable
+              label={control ? "Control transitions" : "Evaluation cases"}
+              rows={visible}
+              columns={columns}
+              getRowId={(row) => row.id}
+              scopeKey={JSON.stringify([scopeKey, runId])}
+              layout="fill"
+              toolbarContent={
+                !control ? (
+                  <SegmentedControl
+                    aria-label="Evaluation result filter"
+                    size="sm"
+                    value={filter}
+                    onChange={setFilter}
+                    options={["All", "Pass", "Partial", "Fail"].map(
+                      (value) => ({
+                        value,
+                        label: value,
+                      }),
+                    )}
+                  />
+                ) : undefined
+              }
+              rowProps={(row) => ({
+                tabIndex: 0,
+                "aria-label": `Inspect ${text(row.record.source_id ?? row.record.episode ?? row.id)} ${text(row.record.arm)}`,
+                "aria-selected": selectedId === row.id,
+                onClick: () => setSelectedId(row.id),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedId(row.id);
+                  }
+                },
+              })}
+              empty="No retained per-case records are attached. Inspect the reported metrics and qualification below."
+            />
+          </div>
+        )}
       </InspectionWorkspace>
       <WorkspaceDisclosure
         title="Reported metrics and qualification"

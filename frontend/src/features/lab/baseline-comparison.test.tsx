@@ -14,6 +14,20 @@ import {
   BaselineComparison,
   RetainedBaselineComparison,
 } from "./baseline-comparison";
+const chart = vi.hoisted(() => ({ props: {} as Record<string, any> }));
+vi.mock("./chart", () => ({
+  Chart: (props: Record<string, any>) => {
+    chart.props = props;
+    return (
+      <div
+        role="group"
+        aria-label={props.label}
+        tabIndex={0}
+        onKeyDown={props.onKeyDown}
+      />
+    );
+  },
+}));
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -218,10 +232,78 @@ it("labels cancelled control comparisons incomplete without scoring transitions 
     screen.getByText(/Incomplete or unqualified comparison/),
   ).toBeVisible();
   expect(screen.getByText(/Execution: cancelled/)).toBeVisible();
+  fireEvent.click(screen.getByRole("radio", { name: "Records" }));
   expect(
     screen.getByRole("table", { name: "Control transitions" }),
   ).toBeVisible();
   expect(screen.queryByRole("columnheader", { name: "Score" })).toBeNull();
+});
+it("links control trajectory points to original evidence and keeps records as an alternate workspace", () => {
+  const evidence = new EvidenceRegistry();
+  const transitions = ["policy", "baseline"].map((arm, index) => ({
+    source: "heldout_environment",
+    episode: 0,
+    seed: 100003,
+    step: 0,
+    arm,
+    observation: [0.8, 0, 0],
+    next_observation: [index ? 0.5 : 0.7, -0.1, 0],
+    absolute_tracking_error: index ? 0.5 : 0.7,
+    reward: -1,
+    joint_action: [0, 0],
+    constraint_violation: false,
+  }));
+  const report = {
+    format: "tinystudio.control-evaluation.v1",
+    metrics: {},
+    qualification: { comparison_complete: true, status: "completed" },
+  };
+  const mounted = render(
+    view(report, transitions, "project", "control-run", "completed", evidence),
+  );
+  expect(
+    screen.queryByRole("table", { name: "Control transitions" }),
+  ).toBeNull();
+  const series = chart.props.option.series as Array<{
+    data: Array<{ rowId?: string }>;
+  }>;
+  const point = series
+    .flatMap((item) => item.data)
+    .find((item) => item.rowId === "0");
+  expect(point).toBeDefined();
+  act(() => chart.props.onPoint(point));
+  expect(evidence.snapshot()[0].data).toMatchObject({
+    run_id: "control-run",
+    record: transitions[0],
+  });
+  fireEvent.click(screen.getByRole("radio", { name: "Records" }));
+  const table = screen.getByRole("table", { name: "Control transitions" });
+  expect(
+    within(table).getByRole("columnheader", { name: "Seed" }),
+  ).toBeVisible();
+  expect(
+    within(table).getByRole("row", { name: "Inspect 0 policy" }),
+  ).toHaveAttribute("aria-selected", "true");
+  fireEvent.click(
+    within(table).getByRole("row", { name: "Inspect 0 baseline" }),
+  );
+  expect(evidence.snapshot()[0].data).toMatchObject({ record: transitions[1] });
+  fireEvent.click(screen.getByRole("radio", { name: "Trajectories" }));
+  expect(
+    screen.queryByRole("table", { name: "Control transitions" }),
+  ).toBeNull();
+  expect(evidence.snapshot()[0].data).toMatchObject({ record: transitions[1] });
+  mounted.rerender(
+    view(
+      report,
+      transitions,
+      "another-project",
+      "control-run",
+      "completed",
+      evidence,
+    ),
+  );
+  expect(evidence.snapshot()).toHaveLength(0);
 });
 it("shows complete control pairing and separate policy and baseline metrics", () => {
   render(
@@ -324,6 +406,7 @@ it("loads control records from the independent artifact instead of training upda
   expect(screen.getByRole("status")).toHaveTextContent(
     "Loading retained independent evaluation report",
   );
+  fireEvent.click(await screen.findByRole("radio", { name: "Records" }));
   expect(
     await screen.findByRole("row", { name: "Inspect 8 policy" }),
   ).toBeVisible();
@@ -476,6 +559,10 @@ it("never treats training updates as held-out control records when the report is
       />
     </StudioContext.Provider>,
   );
+  expect(
+    screen.queryByRole("group", { name: "Control trajectory chart" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "Records" }));
   expect(
     screen.getByText(/No retained per-case records are attached/),
   ).toBeVisible();
@@ -829,13 +916,22 @@ it("rejects older retained reports with unsafe integer targets and no exact disp
   expect(screen.queryByRole("table")).toBeNull();
 });
 
-it.each(["1" + "0".repeat(309), "-1" + "0".repeat(309)].flatMap((raw) => [
-  raw, `{"value":${raw},"unit":"Pa"}`,
-]))("rejects overflowing legacy target JSON %s", async (raw) => {
-  const download = vi.fn().mockResolvedValue(new Blob([
-    `{"format":"tinystudio.generation-evaluation.v1","records":[{"source_id":"overflow","episode_id":"e","prediction":"0","expected":${raw}}]}`,
-  ]));
+it.each(
+  ["1" + "0".repeat(309), "-1" + "0".repeat(309)].flatMap((raw) => [
+    raw,
+    `{"value":${raw},"unit":"Pa"}`,
+  ]),
+)("rejects overflowing legacy target JSON %s", async (raw) => {
+  const download = vi
+    .fn()
+    .mockResolvedValue(
+      new Blob([
+        `{"format":"tinystudio.generation-evaluation.v1","records":[{"source_id":"overflow","episode_id":"e","prediction":"0","expected":${raw}}]}`,
+      ]),
+    );
   render(retainedView(download));
-  expect(await screen.findByRole("alert")).toHaveTextContent("lacks exact target display");
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "lacks exact target display",
+  );
   expect(screen.queryByRole("table")).toBeNull();
 });
