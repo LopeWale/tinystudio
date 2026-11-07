@@ -590,6 +590,57 @@ export function evaluationParameters(
   };
 }
 
+const controlObjectiveAliases: Readonly<Record<string, string>> = {
+  reinforcement_learning: "ppo",
+  offline_rl: "dqn",
+  imitation: "behavioral_cloning",
+  bc: "behavioral_cloning",
+  grpo: "grpo_tool_bandit",
+  tool_grpo: "grpo_tool_bandit",
+};
+export const normalizeControlObjective = (value: string): string =>
+  Object.hasOwn(controlObjectiveAliases, value)
+    ? controlObjectiveAliases[value]
+    : value;
+
+export function readLearningSelector(value: unknown): string | undefined {
+  if (typeof value === "string") return value || undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 1 && typeof record.kind === "string"
+    ? record.kind || undefined
+    : undefined;
+}
+
+/** Presentation of a valid effective objective; admission remains server-owned. */
+export function controlObjective(
+  definition: ExperimentDefinition,
+): string | undefined {
+  const p = definition.parameters,
+    l = definition.learning ?? {};
+  const objectives = [l, p]
+    .filter((container) => "objective" in container)
+    .map((container) => readLearningSelector(container.objective));
+  if (
+    objectives.some((value) => value === undefined) ||
+    new Set(objectives).size > 1
+  )
+    return undefined;
+  const algorithm =
+    "algorithm" in p ? readLearningSelector(p.algorithm) : undefined;
+  if ("algorithm" in p && algorithm === undefined) return undefined;
+  const objective = objectives[0];
+  if (
+    objective &&
+    algorithm &&
+    normalizeControlObjective(objective) !==
+      normalizeControlObjective(algorithm)
+  )
+    return undefined;
+  return normalizeControlObjective(objective ?? algorithm ?? "ppo");
+}
+
 export function inputExpectations(
   definition: ExperimentDefinition,
 ): InputExpectation[] {
@@ -675,7 +726,7 @@ export function inputExpectations(
         row.role === "embedding_model") ||
       (definition.engine === "learning.control_rl" &&
         ["dqn", "behavioral_cloning"].includes(
-          String(definition.learning?.objective),
+          controlObjective(definition) ?? "",
         ) &&
         row.role === "demonstrations"),
   }));

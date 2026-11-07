@@ -5,7 +5,56 @@ import {
   inputExpectations,
   makeDefinition,
   parseDefinition,
+  controlObjective,
+  normalizeControlObjective,
 } from "./definition";
+
+describe("control input requirements", () => {
+  it.each(["constructor", "__proto__", "toString"])(
+    "preserves the unsupported objective %s as a literal string",
+    (objective) => {
+      const definition = makeDefinition("learning.control_rl");
+      definition.learning = { objective };
+      expect(normalizeControlObjective(objective)).toBe(objective);
+      expect(controlObjective(definition)).toBe(objective);
+    },
+  );
+  it.each([
+    [{ kind: "dqn" }, {}, "dqn"],
+    [{ kind: "imitation" }, {}, "behavioral_cloning"],
+    ["bc", {}, "behavioral_cloning"],
+    [undefined, { objective: { kind: "dqn" } }, "dqn"],
+    [undefined, { algorithm: { kind: "offline_rl" } }, "dqn"],
+  ])(
+    "uses the effective objective %j and legacy selections for required demonstrations",
+    (objective, parameters, expected) => {
+      const definition = makeDefinition("learning.control_rl");
+      definition.learning = objective === undefined ? {} : { objective };
+      definition.parameters = parameters;
+      expect(controlObjective(definition)).toBe(expected);
+      expect(
+        inputExpectations(definition).find(
+          (row) => row.role === "demonstrations",
+        )?.required,
+      ).toBe(true);
+    },
+  );
+  it.each([
+    [{ kind: ["dqn"] }, {}],
+    [{ kind: "dqn", extra: true }, {}],
+    [false, {}],
+    ["dqn", { objective: "offline_rl" }],
+    ["ppo", { algorithm: "dqn" }],
+  ])(
+    "does not silently coerce an invalid or conflicting objective %j",
+    (objective, parameters) => {
+      const definition = makeDefinition("learning.control_rl");
+      definition.learning = { objective };
+      definition.parameters = parameters;
+      expect(controlObjective(definition)).toBeUndefined();
+    },
+  );
+});
 
 describe("immutable language learning bindings", () => {
   it.each([

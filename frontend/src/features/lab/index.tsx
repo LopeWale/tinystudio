@@ -42,8 +42,10 @@ import "./runs-workspace.css";
 import "../data/records-workspace.css";
 import "./experiment-dialog.css";
 import { InputArtifacts, LabChoice as Choice } from "./inputs";
-import { DataPreparation } from "./data-preparation";
+import { DataPreparation, DraftField } from "./data-preparation";
 import { LanguageLearning } from "./language-learning";
+import { ControlLearning } from "./control-learning";
+import { NumericLearning } from "./numeric-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
 import { DefinitionGraph } from "./graph";
@@ -152,6 +154,21 @@ function LabWorkspace() {
   const [authoringGeneration, setAuthoringGeneration] = useState(0);
   const [dataPreparationValid, setDataPreparationValid] = useState(true);
   const [languageLearningValid, setLanguageLearningValid] = useState(true);
+  const [controlLearningValid, setControlLearningValid] = useState(true);
+  const [numericLearningValid, setNumericLearningValid] = useState(true);
+  const [parameterDrafts, setParameterDrafts] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [reportParameter] = useState(
+    () => (key: string, valid: boolean) =>
+      setParameterDrafts((current) => {
+        if (current.has(key) === !valid) return current;
+        const next = new Set(current);
+        if (valid) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+  );
   const [pendingInputWork, setPendingInputWork] = useState(false);
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [baselineText, setBaselineText] = useState(draft);
@@ -326,17 +343,38 @@ function LabWorkspace() {
     draft !== baselineText ||
     !dataPreparationValid ||
     !languageLearningValid ||
+    !controlLearningValid ||
+    !numericLearningValid ||
+    !!parameterDrafts.size ||
     pendingInputWork;
   const dirty = !saved || hasAuthoringEdits;
-  const structuredEngine = ["data.pipeline", "learning.language"].includes(
-    definition?.engine ?? "",
-  );
+  const structuredEngine = [
+    "data.pipeline",
+    "learning.language",
+    "learning.control_rl",
+    "learning.timeseries",
+    "learning.multimodal",
+  ].includes(definition?.engine ?? "");
   const authoringValid =
-    definition?.engine === "data.pipeline"
+    !parameterDrafts.size &&
+    (definition?.engine === "data.pipeline"
       ? dataPreparationValid
       : definition?.engine === "learning.language"
         ? languageLearningValid
-        : true;
+        : definition?.engine === "learning.control_rl"
+          ? controlLearningValid
+          : ["learning.timeseries", "learning.multimodal"].includes(
+                definition?.engine ?? "",
+              )
+            ? numericLearningValid
+            : true);
+  const draftParameterEngine = [
+    "learning.pretrained",
+    "learning.language_rl",
+    "learning.tool_rl",
+    "retrieval.index",
+    "evaluation.compare",
+  ].includes(definition?.engine ?? "");
   const engineCatalog = [
     ...(catalog.data?.adapters ?? []),
     ...(catalog.data?.methods ?? []),
@@ -797,6 +835,14 @@ function LabWorkspace() {
             aria-label="Laboratory work area"
             value={area}
             onChange={(next) => {
+              if (
+                next === "experiment" &&
+                creatingExperiment &&
+                hasAuthoringEdits
+              ) {
+                setExperimentOpen(true);
+                return;
+              }
               if (next === "experiment") setCreatingExperiment(false);
               setArea(next);
             }}
@@ -824,7 +870,10 @@ function LabWorkspace() {
             headingRef={laboratoryHeading}
             onClose={() => {
               setExperimentOpen(false);
-              if (saved && !busy) {
+              // Moving children from the creation modal into the saved page
+              // remounts their local numeric/JSON drafts and selected files.
+              // Promote only a clean saved revision; reopen edits in place.
+              if (saved && !busy && !hasAuthoringEdits) {
                 setCreatingExperiment(false);
                 setArea("experiment");
               }
@@ -1318,38 +1367,85 @@ function LabWorkspace() {
                                         "baseline_method",
                                       ].includes(key)),
                                 )
-                                .map(([key, value]) => (
-                                  <Input
-                                    key={key}
-                                    label={key.replaceAll("_", " ")}
-                                    value={
-                                      typeof value === "object"
-                                        ? JSON.stringify(value)
-                                        : String(value ?? "")
-                                    }
-                                    onChange={(next) => {
-                                      let parsed: unknown = next;
-                                      if (typeof value === "number")
-                                        parsed = Number(next);
-                                      else if (
-                                        typeof value === "object" ||
-                                        typeof value === "boolean"
-                                      ) {
-                                        try {
-                                          parsed = JSON.parse(next);
-                                        } catch {
-                                          return;
-                                        }
+                                .map(([key, value]) =>
+                                  draftParameterEngine &&
+                                  (typeof value === "number" ||
+                                    (value !== null &&
+                                      typeof value === "object")) ? (
+                                    <DraftField
+                                      key={`${authoringGeneration}:${definition.engine}:${key}`}
+                                      fieldKey={`${authoringGeneration}:${definition.engine}:${key}`}
+                                      label={key.replaceAll("_", " ")}
+                                      value={value}
+                                      kind={
+                                        typeof value === "number"
+                                          ? "number"
+                                          : Array.isArray(value)
+                                            ? "array"
+                                            : "object"
                                       }
-                                      change({
-                                        parameters: {
-                                          ...definition!.parameters,
-                                          [key]: parsed,
-                                        },
-                                      });
-                                    }}
-                                  />
-                                ))}
+                                      report={reportParameter}
+                                      onChange={(next) =>
+                                        change({
+                                          parameters: {
+                                            ...definition.parameters,
+                                            [key]: next,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  ) : draftParameterEngine &&
+                                    typeof value === "boolean" ? (
+                                    <Choice
+                                      key={key}
+                                      label={key.replaceAll("_", " ")}
+                                      value={String(value)}
+                                      options={[
+                                        { id: "true", name: "Enabled" },
+                                        { id: "false", name: "Disabled" },
+                                      ]}
+                                      onChange={(next) =>
+                                        change({
+                                          parameters: {
+                                            ...definition.parameters,
+                                            [key]: next === "true",
+                                          },
+                                        })
+                                      }
+                                    />
+                                  ) : (
+                                    <Input
+                                      key={key}
+                                      label={key.replaceAll("_", " ")}
+                                      value={
+                                        typeof value === "object"
+                                          ? JSON.stringify(value)
+                                          : String(value ?? "")
+                                      }
+                                      onChange={(next) => {
+                                        let parsed: unknown = next;
+                                        if (typeof value === "number")
+                                          parsed = Number(next);
+                                        else if (
+                                          typeof value === "object" ||
+                                          typeof value === "boolean"
+                                        ) {
+                                          try {
+                                            parsed = JSON.parse(next);
+                                          } catch {
+                                            return;
+                                          }
+                                        }
+                                        change({
+                                          parameters: {
+                                            ...definition!.parameters,
+                                            [key]: parsed,
+                                          },
+                                        });
+                                      }}
+                                    />
+                                  ),
+                                )}
                               <p className="lab-wide text-text-secondary">
                                 Use Definition JSON for advanced adapter
                                 settings.
@@ -1365,6 +1461,26 @@ function LabWorkspace() {
                             onValidityChange={setLanguageLearningValid}
                           />
                         )}
+                        {definition?.engine === "learning.control_rl" && (
+                          <ControlLearning
+                            key={`${authoringGeneration}:control`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setControlLearningValid}
+                          />
+                        )}
+                        {definition &&
+                          [
+                            "learning.timeseries",
+                            "learning.multimodal",
+                          ].includes(definition.engine) && (
+                            <NumericLearning
+                              key={`${authoringGeneration}:numeric:${definition.engine}`}
+                              definition={definition}
+                              onChange={change}
+                              onValidityChange={setNumericLearningValid}
+                            />
+                          )}
                         {definition?.engine === "data.pipeline" && (
                           <DataPreparation
                             key={`${authoringGeneration}:data`}
@@ -1717,6 +1833,10 @@ function LabWorkspace() {
                     </p>
                     <Button
                       onClick={() => {
+                        if (creatingExperiment && hasAuthoringEdits) {
+                          setExperimentOpen(true);
+                          return;
+                        }
                         setCreatingExperiment(false);
                         setArea("experiment");
                       }}
