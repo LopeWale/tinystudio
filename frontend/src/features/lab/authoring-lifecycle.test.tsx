@@ -116,6 +116,10 @@ it("abandons an old repository observation when New experiment resets an unsaved
   const observationSignal = observation![1] as AbortSignal;
   expect(observationSignal.aborted).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "New experiment" }));
+  expect(observationSignal.aborted).toBe(false);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Discard edits and create new" }),
+  );
   expect(observationSignal.aborted).toBe(true);
   await act(async () =>
     completion.resolve({
@@ -171,7 +175,7 @@ it("retains the imported-definition recovery action while operation inventory re
   });
   mount(studio);
   const user = userEvent.setup();
-  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
   fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
   fireEvent.click(screen.getByRole("tab", { name: "History" }));
   await user.click(

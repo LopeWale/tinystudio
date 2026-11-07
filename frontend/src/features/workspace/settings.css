@@ -73,11 +73,29 @@
 }
 .settings-connection-controls {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: start;
   gap: 0.75rem;
 }
-.settings-connection-controls > span,
+.settings-connection-result {
+  display: grid;
+  justify-items: start;
+  gap: 0.5rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+}
+.settings-connection-result:empty {
+  display: none;
+}
+.settings-connection-result .badge[data-state="success"] {
+  background: var(--color-notification-success-background);
+  color: var(--color-text-primary);
+}
+.settings-connection-result .badge[data-state="error"] {
+  background: var(--color-notification-error-background);
+  color: var(--color-notification-error-foreground);
+}
 .settings-endpoint {
   overflow-wrap: anywhere;
 }
@@ -87,6 +105,8 @@
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.5rem;
+  /* Reserve the global assistant launcher's bottom-end footprint. */
+  padding-inline-end: 5.5rem;
 }
 .settings-save-footer > :first-child {
   margin-inline-end: auto;

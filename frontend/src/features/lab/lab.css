@@ -12,6 +12,24 @@
   gap: 1rem;
   min-width: 0;
 }
+/* Reveal the selected work area without moving the persistent page heading
+   and tab rail. Hidden panels remain mounted to retain the current draft. */
+.lab-main > [role="tabpanel"]:not([hidden]) {
+  animation: lab-work-area-reveal 140ms ease-out;
+}
+@keyframes lab-work-area-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lab-main > [role="tabpanel"]:not([hidden]) {
+    animation: none;
+  }
+}
 .lab-sidebar .studio-panel {
   display: grid;
   gap: 0.5rem;
@@ -764,8 +782,7 @@
 .lab-page .lab-engine-status > strong {
   display: none;
 }
-.lab-page .lab-fields,
-.lab-page .lab-template #lab-view-parameters .lab-fields {
+.lab-page .lab-fields {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem 1rem;
 }
@@ -938,8 +955,7 @@
     inline-size: min(15rem, 100%);
   }
   .lab-runs-layout,
-  .lab-page .lab-fields,
-  .lab-page .lab-template #lab-view-parameters .lab-fields {
+  .lab-page .lab-fields {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -974,18 +990,6 @@
 }
 .lab-page .lab-engine-bar .lab-engine-status {
   gap: 0.125rem;
-}
-@media (min-width: 1100px) {
-  .lab-page .lab-template #lab-view-parameters .lab-identity-fields {
-    grid-template-columns: minmax(12rem, 2fr) repeat(3, minmax(5rem, 1fr));
-  }
-  .lab-page
-    .lab-template
-    #lab-view-parameters
-    .lab-engine-parameters
-    .lab-fields {
-    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
-  }
 }
 @media (max-width: 760px) {
   .lab-page .lab-engine-bar {

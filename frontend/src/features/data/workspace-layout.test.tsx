@@ -244,7 +244,7 @@ describe("compact data workspaces", () => {
       "comfortable",
     );
   });
-  it("keeps shared dataset view controls within the loaded server window and preserves the independent server pager", async () => {
+  it("keeps sorting within the server window and uses one shared server pager", async () => {
     const get = vi.fn(async (path: string) =>
       path === "/api/snapshots"
         ? []
@@ -269,11 +269,19 @@ describe("compact data workspaces", () => {
     );
     mount(<DatasetPage />, "/datasets/alpha", "/datasets/:name", get);
     await screen.findByRole("checkbox", { name: "Select datapoint 8" });
+    const pageSizes = screen.getAllByRole("combobox", {
+      name: "Dataset records rows per page",
+    });
+    expect(pageSizes).toHaveLength(1);
     expect(
-      screen.queryByRole("combobox", { name: "Dataset records rows per page" }),
-    ).toBeNull();
-    expect(screen.getByText(/Loaded rows: 2 of 2/).textContent).toContain(
-      "this loaded window",
+      screen.getAllByRole("button", { name: "Next", exact: true } as any),
+    ).toHaveLength(1);
+    expect(screen.getByText(/Filters\/sort: this page/)).toBeTruthy();
+    fireEvent.change(pageSizes[0], { target: { value: "10" } });
+    await waitFor(() =>
+      expect(
+        get.mock.calls.some(([path]) => path.includes("offset=0&limit=10")),
+      ).toBe(true),
     );
     const reads = get.mock.calls.length;
     fireEvent.click(
@@ -283,10 +291,12 @@ describe("compact data workspaces", () => {
       ),
     );
     expect(get.mock.calls).toHaveLength(reads);
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next", exact: true } as any),
+    );
     await waitFor(() =>
       expect(
-        get.mock.calls.some(([path]) => path.includes("offset=15&limit=15")),
+        get.mock.calls.some(([path]) => path.includes("offset=10&limit=10")),
       ).toBe(true),
     );
   });

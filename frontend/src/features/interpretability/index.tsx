@@ -1,3 +1,15 @@
+import {
+  Input,
+  TextField,
+  InputBase,
+} from "../../components/boardui/base/input/input";
+import { Label } from "../../components/boardui/base/input/label";
+import {
+  Select,
+  SelectItem,
+} from "../../components/boardui/base/select/select";
+import { SettingsSection } from "../../components/studio/settings-section";
+import "../../components/studio/form-controls.css";
 import { DataTable, SimpleTable } from "../../components/studio/data-table";
 import { SegmentedControl } from "../../components/affectui/controls";
 import { CollectionToolbar } from "../../components/studio/collection-toolbar";
@@ -43,6 +55,7 @@ import {
   AnalysisTemplate,
 } from "../../components/studio/templates";
 import { LabelBars, NeuronMap } from "./plots";
+import { AnalysisNavigator } from "./analysis-navigator";
 import "../data/affect-data.css";
 import "./interp.css";
 
@@ -179,7 +192,8 @@ function ActionDialog({
   const studio = useStudio(),
     jobs = useResource<any[]>("/api/jobs"),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [experimentId, setExperimentId] = useState<string | null>(null);
   const experiments = (jobs.data || []).flatMap(
     ({ job, experiments: values }) =>
       (values || [])
@@ -249,95 +263,151 @@ function ActionDialog({
           : "Compare base and experiment"
       }
       onClose={onClose}
-      wide
+      className="interp-action-dialog"
     >
       <form onSubmit={submit}>
-        <p className="muted">
+        <p className="interp-action-intro">
           {mode === "capture"
-            ? "Record the strongest positive, negative and gate-open tokens. Shared-prefix positions are excluded from the evidence."
-            : "Run the same source through both models and inspect which neurons and tokens changed."}
+            ? "Capture token activations from a model and a dataset or snapshot."
+            : "Run the same dataset through both models to inspect what changed."}
         </p>
-        <div className="interp-form-grid">
-          {mode === "capture" ? (
-            <>
-              <Field label="Model">
-                <input
-                  name="model"
-                  required
-                  list="capture-models"
-                  placeholder="job/1 or a Hub model ID"
+        <SettingsSection
+          title={mode === "capture" ? "Model and source" : "Models and source"}
+        >
+          <div className="interp-action-fields">
+            {mode === "capture" ? (
+              <>
+                <TextField name="model" isRequired size="small">
+                  <Label>Model</Label>
+                  <InputBase
+                    list="capture-models"
+                    placeholder="job/1 or a Hub model ID"
+                    fieldClassName="studio-form-control"
+                  />
+                </TextField>
+                <datalist id="capture-models">
+                  {choices.map((id) => (
+                    <option key={String(id)} value={String(id)} />
+                  ))}
+                </datalist>
+                <Field label="Source">
+                  <Select
+                    name="source"
+                    aria-label="Source"
+                    isRequired
+                    size="sm"
+                    defaultSelectedKey={
+                      datasets[0] ? `dataset:${datasets[0].name}` : undefined
+                    }
+                  >
+                    {datasets.map((d: any) => (
+                      <SelectItem
+                        key={`dataset:${d.name}`}
+                        id={`dataset:${d.name}`}
+                        textValue={`Dataset · ${d.name} (${d.datapoints})`}
+                      >
+                        Dataset · {d.name} ({d.datapoints})
+                      </SelectItem>
+                    ))}
+                    {snapshots.map((s: any) => (
+                      <SelectItem
+                        key={`snapshot:${s.name}`}
+                        id={`snapshot:${s.name}`}
+                        textValue={`Snapshot · ${s.name}`}
+                      >
+                        Snapshot · {s.name}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </Field>
+                <Input
+                  label="Capture name (optional)"
+                  name="name"
+                  size="small"
+                  fieldClassName="studio-form-control"
                 />
-              </Field>
-              <datalist id="capture-models">
-                {choices.map((id) => (
-                  <option key={String(id)} value={String(id)} />
-                ))}
-              </datalist>
-              <Field label="Source">
-                <select name="source" required>
-                  {datasets.map((d: any) => (
-                    <option key={`d${d.name}`} value={`dataset:${d.name}`}>
-                      Dataset · {d.name} ({d.datapoints})
-                    </option>
+              </>
+            ) : (
+              <>
+                <Field label="Experiment">
+                  <Select
+                    name="experiment"
+                    aria-label="Experiment"
+                    isRequired
+                    size="sm"
+                    selectedKey={experimentId ?? experiments[0]?.id ?? null}
+                    onSelectionChange={(key) =>
+                      setExperimentId(key == null ? null : String(key))
+                    }
+                  >
+                    {experiments.map((e) => (
+                      <SelectItem key={e.id} id={e.id}>
+                        {e.id}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Dataset">
+                  <Select
+                    name="dataset"
+                    aria-label="Dataset"
+                    isRequired
+                    size="sm"
+                    defaultSelectedKey={datasets[0]?.name}
+                  >
+                    {datasets.map((d: any) => (
+                      <SelectItem key={d.name} id={d.name}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </Field>
+                <TextField name="base" size="small">
+                  <Label>Compare against</Label>
+                  <InputBase
+                    list="comparison-models"
+                    placeholder="Experiment’s base weights"
+                    fieldClassName="studio-form-control"
+                  />
+                </TextField>
+                <datalist id="comparison-models">
+                  {choices.map((id) => (
+                    <option key={String(id)} value={String(id)} />
                   ))}
-                  {snapshots.map((s: any) => (
-                    <option key={`s${s.name}`} value={`snapshot:${s.name}`}>
-                      Snapshot · {s.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </>
-          ) : (
-            <>
-              <Field label="Experiment">
-                <select name="experiment" required>
-                  {experiments.map((e) => (
-                    <option key={e.id}>{e.id}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Dataset">
-                <select name="dataset" required>
-                  {datasets.map((d: any) => (
-                    <option key={d.name}>{d.name}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field
-                label="Compare against"
-                hint="Leave empty to use the experiment's base weights."
-              >
-                <input name="base" list="comparison-models" />
-              </Field>
-              <datalist id="comparison-models">
-                {choices.map((id) => (
-                  <option key={String(id)} value={String(id)} />
-                ))}
-              </datalist>
-            </>
-          )}
-          <Field label="Layers" hint="Comma-separated numbers or all.">
-            <input name="layers" placeholder="all" />
-          </Field>
-          {mode === "capture" && (
-            <>
-              <Field label="Top tokens per neuron">
-                <input
+                </datalist>
+              </>
+            )}
+          </div>
+        </SettingsSection>
+        <SettingsSection title="Evidence settings">
+          <div className="interp-action-fields">
+            <Input
+              label="Layers"
+              name="layers"
+              placeholder="all"
+              hint="Comma-separated numbers or all."
+              size="small"
+              fieldClassName="studio-form-control"
+            />
+            {mode === "capture" && (
+              <TextField name="topk" isRequired size="small" defaultValue="40">
+                <Label>Top tokens per neuron</Label>
+                <InputBase
                   type="number"
-                  name="topk"
-                  defaultValue={40}
                   min={5}
                   max={500}
-                  required
+                  fieldClassName="studio-form-control"
                 />
-              </Field>
-              <Field label="Capture name (optional)">
-                <input name="name" />
-              </Field>
-            </>
+              </TextField>
+            )}
+          </div>
+          {mode === "capture" && (
+            <p className="interp-action-note">
+              Includes positive, negative and gate-open tokens. Shared-prefix
+              positions are excluded.
+            </p>
           )}
-        </div>
+        </SettingsSection>
         {error && <p role="alert">{error}</p>}
         {!datasets.length && (
           <p role="status">Create a dataset before starting this operation.</p>
@@ -1433,7 +1503,7 @@ export function CapturePage() {
   return (
     <Page
       className={cx(
-        "interp-page",
+        "interp-page interp-analysis-page",
         selected.status === "ready" && selected.data && "has-selected-neuron",
       )}
       title={capture}
@@ -1447,6 +1517,7 @@ export function CapturePage() {
       {meta.error && <ErrorState error={meta.error} retry={meta.reload} />}
       {meta.data && (
         <AnalysisTemplate
+          scrollPanes
           label="Capture evidence"
           className={cx("interp-analysis", neuron != null && "has-selection")}
           toolbar={
@@ -1549,7 +1620,7 @@ export function CapturePage() {
             ) : null
           }
           inspector={
-            validLayer ? (
+            validLayer && neuron != null ? (
               <div
                 className="interp-detail"
                 ref={detail}
@@ -1599,156 +1670,169 @@ export function CapturePage() {
               }
             />
           ) : (
-            <div className="interp-master">
-              <Panel
-                title="Layer overview"
-                actions={<Badge>{filtered.length} neurons</Badge>}
-              >
-                {table.status === "loading" && (
-                  <p role="status" className="interp-loading">
-                    Loading the complete layer…
-                  </p>
-                )}
-                {table.error && <ErrorState error={table.error} />}
-                {table.data && (
-                  <NeuronMap
-                    rows={plotRows}
-                    selected={neuron}
-                    onSelect={select}
-                    xLabel="Token density"
-                    yLabel="Peak activation"
-                    xFormat={(value) => percent(value, 1)}
-                    label="Layer neuron activation map"
-                  />
-                )}
-                <p className="interp-reading">
-                  Select a point or row. Arrow keys move between points; Enter
-                  opens the selected neuron.{" "}
-                  {filtered.length !== rows.length &&
-                    `Filtered to ${filtered.length} of ${rows.length} loaded neurons.`}
-                </p>
-              </Panel>
-              <Panel title="Neuron evidence">
-                <div className="neuron-list">
-                  <SimpleTable<any>
-                    label="Layer neurons"
-                    rows={filtered.slice(listPage * 40, listPage * 40 + 40)}
-                    getRowId={(row) => String(row.neuron)}
-                    scopeKey={`${studio.scopeKey}:${capture}:${layer}`}
-                    empty=""
-                    rowProps={(row) => ({
-                      className: row.neuron === neuron ? "selected" : "",
-                    })}
-                    renderRow={(row, { key, ...props }, cells) => (
-                      <Evidence
-                        {...props}
-                        as="tr"
-                        label="Neuron summary"
-                        data={row}
-                        key={key}
-                      >
-                        {cells}
-                      </Evidence>
+            <AnalysisNavigator
+              id="capture-navigator"
+              label="Layer navigator view"
+              selected={neuron != null}
+              map={
+                <>
+                  {" "}
+                  <Panel
+                    title="Layer overview"
+                    actions={<Badge>{filtered.length} neurons</Badge>}
+                  >
+                    {table.status === "loading" && (
+                      <p role="status" className="interp-loading">
+                        Loading the complete layer…
+                      </p>
                     )}
-                    columns={[
-                      {
-                        id: "neuron",
-                        label: "Neuron",
-                        value: (row) => row.neuron,
-                        render: (row) => (
-                          <button
-                            aria-label={`Explore neuron ${row.neuron}`}
-                            aria-current={
-                              row.neuron === neuron ? "true" : undefined
-                            }
-                            onClick={() => select(row.neuron)}
+                    {table.error && <ErrorState error={table.error} />}
+                    {table.data && (
+                      <NeuronMap
+                        rows={plotRows}
+                        selected={neuron}
+                        onSelect={select}
+                        xLabel="Token density"
+                        yLabel="Peak activation"
+                        xFormat={(value) => percent(value, 1)}
+                        label="Layer neuron activation map"
+                      />
+                    )}
+                    <p className="interp-reading">
+                      Select a point or row. Arrow keys move between points;
+                      Enter opens the selected neuron.{" "}
+                      {filtered.length !== rows.length &&
+                        `Filtered to ${filtered.length} of ${rows.length} loaded neurons.`}
+                    </p>
+                  </Panel>
+                </>
+              }
+              table={
+                <>
+                  {" "}
+                  <Panel title="Neuron evidence">
+                    <div className="neuron-list">
+                      <SimpleTable<any>
+                        label="Layer neurons"
+                        rows={filtered.slice(listPage * 40, listPage * 40 + 40)}
+                        getRowId={(row) => String(row.neuron)}
+                        scopeKey={`${studio.scopeKey}:${capture}:${layer}`}
+                        empty=""
+                        rowProps={(row) => ({
+                          className: row.neuron === neuron ? "selected" : "",
+                        })}
+                        renderRow={(row, { key, ...props }, cells) => (
+                          <Evidence
+                            {...props}
+                            as="tr"
+                            label="Neuron summary"
+                            data={row}
+                            key={key}
                           >
-                            <b>{row.neuron}</b>
-                            {row.explanation && (
-                              <div
-                                className="explanation-cell"
-                                title={row.explanation}
+                            {cells}
+                          </Evidence>
+                        )}
+                        columns={[
+                          {
+                            id: "neuron",
+                            label: "Neuron",
+                            value: (row) => row.neuron,
+                            render: (row) => (
+                              <button
+                                aria-label={`Explore neuron ${row.neuron}`}
+                                aria-current={
+                                  row.neuron === neuron ? "true" : undefined
+                                }
+                                onClick={() => select(row.neuron)}
                               >
-                                {row.explanation}
-                              </div>
-                            )}
-                          </button>
-                        ),
-                      },
-                      {
-                        id: "peak",
-                        label: "Peak",
-                        value: (row) => row.max,
-                        render: (row) => number(row.max),
-                      },
-                      {
-                        id: "open",
-                        label: "Open",
-                        value: (row) => row.open_max,
-                        render: (row) => number(row.open_max),
-                      },
-                      {
-                        id: "density",
-                        label: "Density",
-                        value: (row) => row.density,
-                        render: (row) => percent(row.density, 1),
-                      },
-                      {
-                        id: "echo",
-                        label: "Echo",
-                        value: (row) => row.echo_share,
-                        render: (row) => (
-                          <>
-                            {percent(row.echo_share)}
-                            {row.echo_top ? "*" : ""}
-                          </>
-                        ),
-                      },
-                    ]}
-                  />
-                </div>
-                {!filtered.length && table.status === "ready" && (
-                  <EmptyState>
-                    No matching neurons. Clear the search to return to this
-                    layer.
-                  </EmptyState>
-                )}
-                <div className="evidence-pagination">
-                  <Button
-                    size="sm"
-                    disabled={listPage === 0}
-                    onClick={() => setListPage((p) => p - 1)}
-                  >
-                    Previous neurons
-                  </Button>
-                  <small>
-                    {filtered.length
-                      ? `${listPage * 40 + 1}–${Math.min(listPage * 40 + 40, filtered.length)} of ${filtered.length}`
-                      : "0 neurons"}
-                  </small>
-                  <Button
-                    size="sm"
-                    disabled={(listPage + 1) * 40 >= filtered.length}
-                    onClick={() => setListPage((p) => p + 1)}
-                  >
-                    Next neurons
-                  </Button>
-                </div>
-                <div className="interp-reading">
-                  <TaskAction
-                    path={`/api/interp/captures/${encodeURIComponent(capture)}/layers/${layer}/explain`}
-                    body={{ top: 20, sort }}
-                  >
-                    Explain top 20
-                  </TaskAction>
-                  <p>
-                    * Closed-gate echo dominates. Mean echo share:{" "}
-                    {percent(stats.echo_share_mean)} of the retained top-
-                    {meta.data.topk} positives.
-                  </p>
-                </div>
-              </Panel>
-            </div>
+                                <b>{row.neuron}</b>
+                                {row.explanation && (
+                                  <div
+                                    className="explanation-cell"
+                                    title={row.explanation}
+                                  >
+                                    {row.explanation}
+                                  </div>
+                                )}
+                              </button>
+                            ),
+                          },
+                          {
+                            id: "peak",
+                            label: "Peak",
+                            value: (row) => row.max,
+                            render: (row) => number(row.max),
+                          },
+                          {
+                            id: "open",
+                            label: "Open",
+                            value: (row) => row.open_max,
+                            render: (row) => number(row.open_max),
+                          },
+                          {
+                            id: "density",
+                            label: "Density",
+                            value: (row) => row.density,
+                            render: (row) => percent(row.density, 1),
+                          },
+                          {
+                            id: "echo",
+                            label: "Echo",
+                            value: (row) => row.echo_share,
+                            render: (row) => (
+                              <>
+                                {percent(row.echo_share)}
+                                {row.echo_top ? "*" : ""}
+                              </>
+                            ),
+                          },
+                        ]}
+                      />
+                    </div>
+                    {!filtered.length && table.status === "ready" && (
+                      <EmptyState>
+                        No matching neurons. Clear the search to return to this
+                        layer.
+                      </EmptyState>
+                    )}
+                    <div className="evidence-pagination">
+                      <Button
+                        size="sm"
+                        disabled={listPage === 0}
+                        onClick={() => setListPage((p) => p - 1)}
+                      >
+                        Previous neurons
+                      </Button>
+                      <small>
+                        {filtered.length
+                          ? `${listPage * 40 + 1}–${Math.min(listPage * 40 + 40, filtered.length)} of ${filtered.length}`
+                          : "0 neurons"}
+                      </small>
+                      <Button
+                        size="sm"
+                        disabled={(listPage + 1) * 40 >= filtered.length}
+                        onClick={() => setListPage((p) => p + 1)}
+                      >
+                        Next neurons
+                      </Button>
+                    </div>
+                    <div className="interp-reading">
+                      <TaskAction
+                        path={`/api/interp/captures/${encodeURIComponent(capture)}/layers/${layer}/explain`}
+                        body={{ top: 20, sort }}
+                      >
+                        Explain top 20
+                      </TaskAction>
+                      <p>
+                        * Closed-gate echo dominates. Mean echo share:{" "}
+                        {percent(stats.echo_share_mean)} of the retained top-
+                        {meta.data.topk} positives.
+                      </p>
+                    </div>
+                  </Panel>
+                </>
+              }
+            />
           )}
         </AnalysisTemplate>
       )}
@@ -1786,6 +1870,9 @@ export function ComparisonPage() {
   const captures = useResource<any>(selected.data ? "/api/interp" : null),
     [page, setPage] = useState(0),
     [maxR, setMaxR] = useState(""),
+    [evidenceView, setEvidenceView] = useState<"datapoints" | "tokens">(
+      "datapoints",
+    ),
     summary = data.data?.summary || {};
   const rows = (data.data?.rows || []).filter(
     (row: any) => !maxR || (row.r != null && row.r <= Number(maxR)),
@@ -1849,14 +1936,10 @@ export function ComparisonPage() {
   return (
     <Page
       className={cx(
-        "interp-page",
+        "interp-page interp-comparison-page interp-analysis-page",
         selected.status === "ready" && selected.data && "has-selected-neuron",
       )}
-      title={
-        meta.data
-          ? `${meta.data.experiment} vs ${meta.data.base}`
-          : "Model comparison"
-      }
+      title={meta.data ? comparison : "Model comparison"}
       description={
         meta.data
           ? `${meta.data.source} · ${meta.data.rows} datapoints · ${meta.data.prefix_len || 0} shared-prefix tokens excluded`
@@ -1867,6 +1950,7 @@ export function ComparisonPage() {
       {meta.error && <ErrorState error={meta.error} retry={meta.reload} />}
       {meta.data && (
         <AnalysisTemplate
+          scrollPanes
           label="Model comparison evidence"
           className={cx("interp-analysis", neuron != null && "has-selection")}
           toolbar={
@@ -1935,214 +2019,288 @@ export function ComparisonPage() {
                   value={summary.constant ?? "—"}
                 />
               </div>
-              <p className="interp-reading">
-                Correlation measures agreement over the same content tokens.
-                Relative change is ‖after − before‖ / ‖before‖. A constant side
-                has undefined correlation; those neurons remain in the list and
-                are omitted from the scatterplot.
-              </p>
+              <div className="comparison-context">
+                <details>
+                  <summary>Compared models</summary>
+                  <dl>
+                    <dt>Experiment</dt>
+                    <dd>{meta.data.experiment}</dd>
+                    <dt>Baseline</dt>
+                    <dd>{meta.data.base}</dd>
+                  </dl>
+                </details>
+                <details>
+                  <summary>How to read change metrics</summary>
+                  <p className="interp-reading">
+                    Correlation measures agreement over the same content tokens.
+                    Relative change is ‖after − before‖ / ‖before‖. A constant
+                    side has undefined correlation; those neurons remain in the
+                    list and are omitted from the scatterplot.
+                  </p>
+                </details>
+              </div>
             </>
           }
           inspector={
-            <div className="interp-detail">
-              {neuron != null && (
-                <div className="neuron-back">
-                  <Button size="sm" onClick={() => navigate({ neuron: null })}>
-                    ← Back to changed neurons
-                  </Button>
-                </div>
-              )}
-              {selected.status === "loading" ? (
-                <Panel>
-                  <p role="status" className="interp-loading">
-                    Loading neuron {neuron}…
-                  </p>
-                </Panel>
-              ) : selected.error ? (
-                <ErrorState error={selected.error} retry={selected.reload} />
-              ) : selected.data ? (
-                <Panel title={`Layer ${layer} · neuron ${neuron}`}>
-                  <Evidence label="Selected neuron change" data={selected.data}>
-                    <div className="neuron-summary">
-                      <div className="neuron-metrics">
-                        <Metric
-                          label="Combined change"
-                          value={number(selected.data.change)}
+            neuron != null ? (
+              <div className="interp-detail">
+                {neuron != null && (
+                  <div className="neuron-back">
+                    <Button
+                      size="sm"
+                      onClick={() => navigate({ neuron: null })}
+                    >
+                      ← Back to changed neurons
+                    </Button>
+                  </div>
+                )}
+                {selected.status === "loading" ? (
+                  <Panel>
+                    <p role="status" className="interp-loading">
+                      Loading neuron {neuron}…
+                    </p>
+                  </Panel>
+                ) : selected.error ? (
+                  <ErrorState error={selected.error} retry={selected.reload} />
+                ) : selected.data ? (
+                  <Panel title={`Layer ${layer} · neuron ${neuron}`}>
+                    <Evidence
+                      label="Selected neuron change"
+                      data={selected.data}
+                    >
+                      <div className="neuron-summary">
+                        <div className="neuron-metrics">
+                          <Metric
+                            label="Combined change"
+                            value={number(selected.data.change)}
+                          />
+                          <Metric
+                            label="Correlation r"
+                            value={number(selected.data.r, 3)}
+                          />
+                          <Metric
+                            label="Relative change"
+                            value={number(selected.data.rel_change)}
+                          />
+                        </div>
+                        <SegmentedControl
+                          aria-label="Comparison evidence view"
+                          value={evidenceView}
+                          onChange={setEvidenceView}
+                          kind="tabs"
+                          size="sm"
+                          options={[
+                            {
+                              value: "datapoints",
+                              label: "Datapoints",
+                              count: selected.data.datapoints.length,
+                              controls: "comparison-datapoints",
+                            },
+                            {
+                              value: "tokens",
+                              label: "Tokens",
+                              count: selected.data.tokens.length,
+                              controls: "comparison-tokens",
+                            },
+                          ]}
                         />
-                        <Metric
-                          label="Correlation r"
-                          value={number(selected.data.r, 3)}
-                        />
-                        <Metric
-                          label="Relative change"
-                          value={number(selected.data.rel_change)}
-                        />
+                        {evidenceView === "datapoints" ? (
+                          <section
+                            id="comparison-datapoints"
+                            role="tabpanel"
+                            aria-label="Datapoints driving the change"
+                          >
+                            {selected.data.datapoints.map((entry: any) => (
+                              <Evidence
+                                key={entry.datapoint}
+                                className="diff-datapoint"
+                                label="Changed datapoint"
+                                data={entry}
+                              >
+                                <div className="activation-meta">
+                                  <span>Datapoint {entry.datapoint}</span>
+                                  <b>Σ change {number(entry.delta_sum)}</b>
+                                </div>
+                                <p>{entry.user}</p>
+                                <small className="muted">
+                                  {entry.labels.join(", ")}
+                                </small>
+                              </Evidence>
+                            ))}
+                          </section>
+                        ) : (
+                          <section
+                            id="comparison-tokens"
+                            role="tabpanel"
+                            aria-label="Tokens with largest change"
+                          >
+                            {selected.data.tokens.map(
+                              (entry: any, index: number) => (
+                                <Evidence
+                                  label="Changed token"
+                                  data={entry}
+                                  className="activation-card"
+                                  key={`${entry.datapoint}:${entry.position}:${index}`}
+                                >
+                                  <div className="activation-meta">
+                                    <span>
+                                      Datapoint {entry.datapoint} · token{" "}
+                                      {entry.position}
+                                    </span>
+                                    <b>
+                                      {number(entry.before)} →{" "}
+                                      {number(entry.after)}
+                                    </b>
+                                  </div>
+                                  <div className="token-context">
+                                    {entry.context}
+                                  </div>
+                                </Evidence>
+                              ),
+                            )}
+                          </section>
+                        )}
+                        {linked ? (
+                          <Link
+                            to={`/interp/c/${encodeURIComponent(linked.name)}?layer=${layer}&neuron=${neuron}`}
+                          >
+                            Open this neuron's activation capture →
+                          </Link>
+                        ) : (
+                          <p className="muted">
+                            Capture this experiment on {meta.data.source} to
+                            explore both poles.
+                          </p>
+                        )}
                       </div>
-                      <h3>Datapoints driving the change</h3>
-                      {selected.data.datapoints.map((entry: any) => (
-                        <Evidence
-                          key={entry.datapoint}
-                          className="diff-datapoint"
-                          label="Changed datapoint"
-                          data={entry}
-                        >
-                          <div className="activation-meta">
-                            <span>Datapoint {entry.datapoint}</span>
-                            <b>Σ change {number(entry.delta_sum)}</b>
-                          </div>
-                          <p>{entry.user}</p>
-                          <small className="muted">
-                            {entry.labels.join(", ")}
-                          </small>
-                        </Evidence>
-                      ))}
-                      <h3>Tokens with largest change</h3>
-                      {selected.data.tokens.map((entry: any, index: number) => (
-                        <Evidence
-                          label="Changed token"
-                          data={entry}
-                          className="activation-card"
-                          key={`${entry.datapoint}:${entry.position}:${index}`}
-                        >
-                          <div className="activation-meta">
-                            <span>
-                              Datapoint {entry.datapoint} · token{" "}
-                              {entry.position}
-                            </span>
-                            <b>
-                              {number(entry.before)} → {number(entry.after)}
-                            </b>
-                          </div>
-                          <div className="token-context">{entry.context}</div>
-                        </Evidence>
-                      ))}
-                      {linked ? (
-                        <Link
-                          to={`/interp/c/${encodeURIComponent(linked.name)}?layer=${layer}&neuron=${neuron}`}
-                        >
-                          Open this neuron's activation capture →
-                        </Link>
-                      ) : (
-                        <p className="muted">
-                          Capture this experiment on {meta.data.source} to
-                          explore both poles.
-                        </p>
-                      )}
-                    </div>
-                  </Evidence>
-                </Panel>
-              ) : (
-                <Panel>
-                  <EmptyState>
-                    Select a changed neuron from the map or list to inspect its
-                    datapoints and tokens.
-                  </EmptyState>
-                </Panel>
-              )}
-            </div>
+                    </Evidence>
+                  </Panel>
+                ) : (
+                  <Panel>
+                    <EmptyState>
+                      Select a changed neuron from the map or list to inspect
+                      its datapoints and tokens.
+                    </EmptyState>
+                  </Panel>
+                )}
+              </div>
+            ) : null
           }
         >
-          <div className="interp-master">
-            <Panel title="How neurons changed">
-              {data.status === "loading" && (
-                <p role="status" className="interp-loading">
-                  Loading comparison evidence…
-                </p>
-              )}
-              {data.error && <ErrorState error={data.error} />}
-              <NeuronMap
-                rows={plotRows}
-                selected={neuron}
-                onSelect={(n) => navigate({ neuron: n })}
-                xLabel="Correlation r"
-                yLabel="Relative change"
-                label="Neuron change map"
-              />
-              <p className="interp-reading">
-                {data.data?.rows.length || 0} of {meta.data.neurons_per_layer}{" "}
-                neurons loaded
-                {(data.data?.rows.length || 0) < meta.data.neurons_per_layer
-                  ? " · leading subset, ordered by the selected metric"
-                  : ""}
-                .
-              </p>
-            </Panel>
-            <Panel title="Changed neurons">
-              <div className="neuron-list">
-                <SimpleTable<any>
-                  label="Changed neurons"
-                  rows={rows.slice(page * 40, page * 40 + 40)}
-                  getRowId={(row) => String(row.neuron)}
-                  scopeKey={`${comparison}:${layer}`}
-                  empty=""
-                  rowProps={(row) => ({
-                    className: neuron === row.neuron ? "selected" : "",
-                  })}
-                  renderRow={(row, { key, ...props }, cells) => (
-                    <Evidence
-                      {...props}
-                      as="tr"
-                      label="Neuron change"
-                      data={row}
-                      key={key}
-                    >
-                      {cells}
-                    </Evidence>
+          <AnalysisNavigator
+            id="comparison-navigator"
+            label="Comparison navigator view"
+            selected={neuron != null}
+            map={
+              <>
+                {" "}
+                <Panel title="How neurons changed">
+                  {data.status === "loading" && (
+                    <p role="status" className="interp-loading">
+                      Loading comparison evidence…
+                    </p>
                   )}
-                  columns={[
-                    {
-                      id: "neuron",
-                      label: "Neuron",
-                      value: (row) => row.neuron,
-                      render: (row) => (
-                        <button
-                          aria-label={`Explore changed neuron ${row.neuron}`}
-                          onClick={() => navigate({ neuron: row.neuron })}
+                  {data.error && <ErrorState error={data.error} />}
+                  <NeuronMap
+                    rows={plotRows}
+                    selected={neuron}
+                    onSelect={(n) => navigate({ neuron: n })}
+                    xLabel="Correlation r"
+                    yLabel="Relative change"
+                    label="Neuron change map"
+                  />
+                  <p className="interp-reading">
+                    {data.data?.rows.length || 0} of{" "}
+                    {meta.data.neurons_per_layer} neurons loaded
+                    {(data.data?.rows.length || 0) < meta.data.neurons_per_layer
+                      ? " · leading subset, ordered by the selected metric"
+                      : ""}
+                    .
+                  </p>
+                </Panel>
+              </>
+            }
+            table={
+              <>
+                {" "}
+                <Panel title="Changed neurons">
+                  <div className="neuron-list">
+                    <SimpleTable<any>
+                      label="Changed neurons"
+                      rows={rows.slice(page * 40, page * 40 + 40)}
+                      getRowId={(row) => String(row.neuron)}
+                      scopeKey={`${comparison}:${layer}`}
+                      empty=""
+                      rowProps={(row) => ({
+                        className: neuron === row.neuron ? "selected" : "",
+                      })}
+                      renderRow={(row, { key, ...props }, cells) => (
+                        <Evidence
+                          {...props}
+                          as="tr"
+                          label="Neuron change"
+                          data={row}
+                          key={key}
                         >
-                          {row.neuron}
-                        </button>
-                      ),
-                    },
-                    {
-                      id: "change",
-                      label: "Change",
-                      value: (row) => row.change,
-                      render: (row) => number(row.change),
-                    },
-                    {
-                      id: "r",
-                      label: "r",
-                      value: (row) => row.r,
-                      render: (row) => number(row.r, 3),
-                    },
-                    {
-                      id: "relative",
-                      label: "Relative Δ",
-                      value: (row) => row.rel_change,
-                      render: (row) => number(row.rel_change),
-                    },
-                  ]}
-                />
-              </div>
-              <div className="evidence-pagination">
-                <Button
-                  size="sm"
-                  disabled={!page}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  Previous neurons
-                </Button>
-                <small>{rows.length} matching neurons</small>
-                <Button
-                  size="sm"
-                  disabled={(page + 1) * 40 >= rows.length}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  Next neurons
-                </Button>
-              </div>
-            </Panel>
-          </div>
+                          {cells}
+                        </Evidence>
+                      )}
+                      columns={[
+                        {
+                          id: "neuron",
+                          label: "Neuron",
+                          value: (row) => row.neuron,
+                          render: (row) => (
+                            <button
+                              aria-label={`Explore changed neuron ${row.neuron}`}
+                              onClick={() => navigate({ neuron: row.neuron })}
+                            >
+                              {row.neuron}
+                            </button>
+                          ),
+                        },
+                        {
+                          id: "change",
+                          label: "Change",
+                          value: (row) => row.change,
+                          render: (row) => number(row.change),
+                        },
+                        {
+                          id: "r",
+                          label: "r",
+                          value: (row) => row.r,
+                          render: (row) => number(row.r, 3),
+                        },
+                        {
+                          id: "relative",
+                          label: "Relative Δ",
+                          value: (row) => row.rel_change,
+                          render: (row) => number(row.rel_change),
+                        },
+                      ]}
+                    />
+                  </div>
+                  <div className="evidence-pagination">
+                    <Button
+                      size="sm"
+                      disabled={!page}
+                      onClick={() => setPage((p) => p - 1)}
+                    >
+                      Previous neurons
+                    </Button>
+                    <small>{rows.length} matching neurons</small>
+                    <Button
+                      size="sm"
+                      disabled={(page + 1) * 40 >= rows.length}
+                      onClick={() => setPage((p) => p + 1)}
+                    >
+                      Next neurons
+                    </Button>
+                  </div>
+                </Panel>
+              </>
+            }
+          />
         </AnalysisTemplate>
       )}
     </Page>

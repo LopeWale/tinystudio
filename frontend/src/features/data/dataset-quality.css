@@ -1,12 +1,15 @@
 @reference "../../styles/globals.css";
 .dataset-quality-dialog {
-  block-size: min(760px, calc(100dvh - 32px));
+  max-block-size: min(760px, calc(100dvh - 32px));
+  /* Keep navigation stationary when a shorter pane needs less space. */
+  align-self: flex-start;
+  margin-block-start: max(0px, calc((100dvh - 792px) / 2));
 }
 .dataset-quality-dialog .modal-content {
   min-block-size: 0;
   overflow: hidden;
   display: flex;
-  flex: 1;
+  flex: 0 1 auto;
   padding-block-start: 0;
 }
 .quality-workspace,
@@ -16,7 +19,7 @@
   flex-direction: column;
   min-inline-size: 0;
   min-block-size: 0;
-  flex: 1;
+  flex: 0 1 auto;
 }
 .quality-pane[hidden] {
   display: none !important;
@@ -29,10 +32,21 @@
   flex-wrap: wrap;
   padding-block-end: 12px;
   border-block-end: 1px solid var(--color-separator-border);
+  flex-shrink: 0;
 }
 .quality-pane > .records-scroll-wrap {
-  flex: 1;
+  display: flex;
+  flex: 0 1 auto;
   min-block-size: 0;
+}
+.quality-pane > .records-scroll-wrap > .records-scroll {
+  block-size: auto;
+  min-block-size: 0;
+  inline-size: 100%;
+}
+.dataset-quality-dialog > header,
+.dataset-quality-dialog > footer {
+  flex-shrink: 0;
 }
 .quality-pane .records-scroll {
   padding-block: 16px;
@@ -61,18 +75,11 @@
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   gap: 16px;
+  align-items: start;
 }
-.quality-chart-grid,
 .quality-cleaning-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-.quality-distribution-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-block: 16px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .quality-workspace .studio-panel {
   min-inline-size: 0;
@@ -106,6 +113,9 @@
 .quality-help {
   color: var(--color-text-tertiary);
 }
+.quality-facts + .quality-help {
+  margin-block: 16px 0;
+}
 .quality-examples {
   margin-block-start: 20px;
   border-block-start: 1px solid var(--color-separator-border);
@@ -125,12 +135,19 @@
 }
 .quality-rules {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  margin-block-start: 20px;
 }
 .quality-thresholds {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+}
+.quality-fence-note {
+  margin: 0;
+}
+.quality-cleaning-grid .studio-settings-section {
+  padding-block: 16px;
 }
 .quality-cleaning-actions,
 .quality-footer {
@@ -141,8 +158,6 @@
 }
 .quality-cleaning-actions {
   margin-block-start: 16px;
-  padding-block-start: 12px;
-  border-block-start: 1px solid var(--color-separator-border);
 }
 .quality-footer {
   inline-size: 100%;
@@ -173,9 +188,7 @@
 }
 @media (max-width: 760px) {
   .quality-overview-grid,
-  .quality-chart-grid,
-  .quality-cleaning-grid,
-  .quality-distribution-grid {
+  .quality-cleaning-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .quality-summary {
@@ -189,4 +202,59 @@
   .quality-navigation {
     align-items: start;
   }
+}
+@media (max-width: 480px) {
+  .quality-rules,
+  .quality-thresholds {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Affect UI Breakdown Chart: one analytical surface beside compact evidence. */
+.quality-analysis-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+.quality-analysis-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+.quality-measure-title {
+  @apply text-body-medium;
+  margin-block: 20px 4px;
+}
+.quality-measure-summary,
+.quality-composition-scope {
+  margin-block: 8px 16px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.quality-analysis-note {
+  margin-block: 16px 0;
+}
+.quality-analysis-grid .histogram-data-scroll {
+  max-block-size: 280px;
+}
+.quality-analysis-grid .histogram-data-scroll table {
+  @apply text-body-2-regular;
+}
+@media (max-width: 760px) {
+  .quality-analysis-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.quality-bin-table .records-scroll {
+  max-block-size: 280px;
+  padding-block: 0;
+}
+.quality-bin-table .histogram-data-scroll {
+  max-block-size: none;
+  max-height: none;
+  margin-block-start: 0;
+  overflow: visible;
 }

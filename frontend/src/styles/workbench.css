@@ -1,3 +1,4 @@
+@reference "./globals.css";
 /* AffectUI-inspired workspace: a quiet navigation rail around one inset work surface. */
 :root {
   --color-text-primary: #202020;
@@ -90,16 +91,12 @@ body,
   align-items: start;
 }
 .workbench-shell .page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  line-height: 1.3;
+  @apply text-title-1-semibold;
   margin: 0;
 }
 .workbench-shell .page-heading p {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  margin: 5px 0 0;
+  @apply text-body-regular;
+  margin: 4px 0 0;
   max-width: 70ch;
 }
 .workbench-shell .studio-panel {
@@ -112,19 +109,15 @@ body,
   margin-block-end: 16px;
 }
 .workbench-shell .panel-heading h2 {
-  font-size: 0.9375rem;
-  line-height: 1.4;
-  font-weight: 600;
+  @apply text-headline-medium;
 }
 .workbench-shell th {
-  font-size: 0.75rem;
-  font-weight: 500;
+  @apply text-caption-1-medium;
   background: var(--color-background-secondary-default);
   white-space: nowrap;
 }
 .workbench-shell td {
-  font-size: 0.875rem;
-  line-height: 20px;
+  @apply text-body-regular;
 }
 .workbench-shell th,
 .workbench-shell td {

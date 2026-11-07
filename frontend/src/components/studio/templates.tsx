@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { cx } from "../boardui/utils/cx";
 import "./templates.css";
+import { ScrollPane } from "./scroll-pane";
 
 /** Layout slots only. Features retain their data, selection and operation state. */
 export type TemplateProps = {
@@ -11,6 +12,7 @@ export type TemplateProps = {
   className?: string;
   label?: string;
   hidden?: boolean;
+  scrollPanes?: boolean;
 };
 type TemplateKind =
   | "collection"
@@ -29,6 +31,7 @@ function Template({
   className,
   label,
   hidden,
+  scrollPanes = false,
 }: TemplateProps & { kind: TemplateKind }) {
   return (
     <section
@@ -49,13 +52,27 @@ function Template({
           inspector != null && "studio-template__layout--inspected",
         )}
       >
-        <div className="studio-template__content">{children}</div>
+        <div className="studio-template__content">
+          {scrollPanes ? (
+            <ScrollPane label={`${label || "Workspace"} content`}>
+              {children}
+            </ScrollPane>
+          ) : (
+            children
+          )}
+        </div>
         {inspector != null && (
           <aside
             aria-label={label ? `${label} details` : "Context and details"}
             className="studio-template__inspector"
           >
-            {inspector}
+            {scrollPanes ? (
+              <ScrollPane label={`${label || "Workspace"} inspector`}>
+                {inspector}
+              </ScrollPane>
+            ) : (
+              inspector
+            )}
           </aside>
         )}
       </div>

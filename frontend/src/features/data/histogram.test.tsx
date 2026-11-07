@@ -33,6 +33,52 @@ function mount(props: any) {
 }
 
 describe("histogram aggregate truth", () => {
+  it("focuses occupied edge bins without removing internal gaps or changing selection indices and exact evidence", () => {
+    const select = vi.fn();
+    const view = mount({
+      counts: [0, 9, 0, 74, 0, 0],
+      bins: [39, 40, 41, 42, 43, 44, 45],
+      integerValues: true,
+      focusOccupiedRange: true,
+      onSelect: select,
+    });
+    expect(view.container.querySelectorAll(".histogram-bin")).toHaveLength(3);
+    expect(
+      screen.getByRole("button", { name: /41: 0 observations/ }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /44: 0 observations/ }),
+    ).toBeNull();
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: /42: 74 observations/ }),
+      { key: "Enter" },
+    );
+    expect(select).toHaveBeenCalledWith(3);
+    fireEvent.focus(
+      screen.getByRole("button", { name: /42: 74 observations/ }),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("89.2%");
+    fireEvent.click(screen.getByText("View bin counts"));
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      7,
+    );
+    expect(
+      within(screen.getByRole("table")).getByRole("row", { name: "44 0" }),
+    ).toBeTruthy();
+  });
+
+  it("retains a valid empty domain when occupied-range focus has no observations", () => {
+    const view = mount({
+      counts: [0, 0],
+      bins: [4, 5, 6],
+      focusOccupiedRange: true,
+    });
+    expect(view.container.querySelectorAll(".histogram-bin")).toHaveLength(2);
+    expect(view.container.querySelector("svg")?.outerHTML).not.toMatch(
+      /NaN|Infinity/,
+    );
+  });
+
   it("names integer bin membership rather than implying padded edges are observations", () => {
     // core.quality._histogram([42, 49, 58]) uses width 2 and 12 bins.
     mount({

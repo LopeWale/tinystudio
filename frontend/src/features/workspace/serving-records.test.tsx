@@ -129,7 +129,7 @@ describe("model and trace collection workspaces", () => {
       await screen.findByRole("checkbox", { name: "Select model One" }),
     );
     expect(screen.queryByRole("complementary")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Two" }));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect model Two" }));
     expect(screen.getByRole("complementary", { name: "Two" })).toBeTruthy();
     expect(
       (
@@ -310,7 +310,7 @@ describe("model and trace collection workspaces", () => {
           : { models: [], token: { configured: false }, free_disk_gb: 7 },
       ),
     );
-    await screen.findByRole("button", { name: "Ten" });
+    await screen.findByRole("button", { name: "Inspect model Ten" });
     const table = screen.getByRole("table", { name: "Model inventory" });
     fireEvent.click(within(table).getByRole("button", { name: "Parameters" }));
     const rows = within(table).getAllByRole("row").slice(1);

@@ -299,7 +299,7 @@ describe("laboratory authoring and execution", () => {
       screen
         .getAllByRole("tabpanel")
         .map((panel) => panel.getAttribute("aria-label")),
-    ).toEqual(["Parameters"]);
+    ).toEqual(["Experiment", "Parameters"]);
     expect(rendered.container.querySelector(".react-flow")).toBeNull();
     expect(
       screen.getByRole("button", { name: "Save experiment" }),
@@ -490,9 +490,8 @@ describe("laboratory authoring and execution", () => {
         ),
       { timeout: 2500 },
     );
-    expect(
-      screen.getByRole("dialog", { name: /Edit experiment/ }),
-    ).toBeVisible();
+    expect(screen.getByRole("tabpanel", { name: "Experiment" })).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save revision" })).toBeEnabled();
     closeAuthoring();
     fireEvent.click(screen.getByRole("button", { name: "Import / export" }));
@@ -624,7 +623,8 @@ describe("laboratory authoring and execution", () => {
           name: "Load imported definition late-import",
         }),
       );
-      await screen.findByRole("dialog", { name: /Edit experiment/ });
+      await screen.findByRole("tabpanel", { name: "Experiment" });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(screen.getByLabelText("Experiment name")).toHaveValue(
         "Deferred import",
       );
@@ -772,9 +772,8 @@ describe("laboratory authoring and execution", () => {
         "Recovered import",
       ),
     );
-    expect(
-      screen.getByRole("dialog", { name: /Edit experiment/ }),
-    ).toBeVisible();
+    expect(screen.getByRole("tabpanel", { name: "Experiment" })).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(api.get).toHaveBeenCalledWith(
       "/api/lab/operations/done-import",
       expect.any(AbortSignal),
@@ -1969,7 +1968,7 @@ function readJSON() {
   );
 }
 describe("laboratory capability and evidence contracts", () => {
-  it("authors matched generation in the actual dialog and retains artifact bindings", async () => {
+  it("authors matched generation in the experiment workspace and retains artifact bindings", async () => {
     const { api, studio } = fixture();
     mount(studio);
     await choose(
@@ -2033,7 +2032,7 @@ describe("laboratory capability and evidence contracts", () => {
     expect(readJSON().inputs).toEqual(definition.inputs);
   });
 
-  it("authors retained-index queries in the actual experiment dialog without discarding bindings", async () => {
+  it("authors retained-index queries in the experiment workspace without discarding bindings", async () => {
     const { api, studio } = fixture();
     mount(studio);
     await choose("Experiment engine", "Lexical / semantic / hybrid retrieval");

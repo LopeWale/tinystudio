@@ -42,6 +42,18 @@ export type TableColumn<T> = {
   /** Optional presentation width; follows the column when other columns hide. */
   width?: CSSProperties["width"];
 };
+/** Server totals are optional; count excludes any look-ahead sentinel. */
+export type ExternalTablePage = {
+  offset: number;
+  pageSize: number;
+  count: number;
+  /** Total records in this server query, when provided by the endpoint. */
+  total?: number;
+  hasNext: boolean;
+  status: "pending" | "error" | "success";
+  onOffsetChange: (offset: number) => void;
+  onPageSizeChange: (size: number) => void;
+};
 export type DataTableProps<T> = {
   label: string;
   rows: readonly T[];
@@ -62,6 +74,7 @@ export type DataTableProps<T> = {
   /** The displayed, filtered/sorted page, for linked inspectors and row actions. */
   onVisibleRowsChange?: (rows: readonly T[]) => void;
   pagination?: TablePagination;
+  externalPage?: ExternalTablePage;
   /** Bound rows to the available workspace; client paging defaults to measured capacity. */
   layout?: "content" | "fill";
 };
@@ -78,10 +91,14 @@ function TableView<T>({
   assistantActionsEnabled = true,
   onVisibleRowsChange,
   pagination = "client",
+  externalPage,
   layout = "content",
   variant,
 }: DataTableProps<T> & { variant: "simple" | "standard" | "advanced" }) {
-  if (variant === "simple") pagination = "none";
+  if (variant === "simple") {
+    pagination = "none";
+    externalPage = undefined;
+  } else if (externalPage) pagination = "external";
   // Scope changes replace the state owner before the new scope is displayed.
   const controller = useMemo(
     () =>
@@ -91,6 +108,7 @@ function TableView<T>({
         getRowId,
         pagination,
         layout === "fill" ? "fit" : "manual",
+        externalPage?.pageSize,
       ),
     [scopeKey, layout],
   );
@@ -107,11 +125,29 @@ function TableView<T>({
   const viewport = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const measuredRows = useRef({ key: "", height: 0 });
-  // Observations belong to one source revision and controller scope. Internal
-  // paging preserves the sample; refreshed records/columns start a new sample.
+  // Recreated arrays/inline columns are not new data. Keep the conservative
+  // sample across parent renders so a shorter next page cannot jump backward.
+  // A changed record set (including a server refresh) may establish a new sample.
+  const sampledRows = useRef(rows);
+  useLayoutEffect(() => {
+    const previous = sampledRows.current;
+    if (
+      pagination !== "external" &&
+      (previous.length !== rows.length ||
+        rows.some((row, index) => row !== previous[index]))
+    ) {
+      measuredRows.current = { key: "", height: 0 };
+    }
+    sampledRows.current = rows;
+  }, [rows, pagination]);
   useLayoutEffect(() => {
     measuredRows.current = { key: "", height: 0 };
-  }, [controller, rows, columns]);
+  }, [controller]);
+  useLayoutEffect(() => {
+    if (externalPage && state.pageSize !== externalPage.pageSize) {
+      externalPage.onPageSizeChange(state.pageSize);
+    }
+  }, [externalPage, state.pageSize]);
   useLayoutEffect(() => {
     if (layout !== "fill") return;
     const region = scroll.current;
@@ -128,7 +164,12 @@ function TableView<T>({
         "--data-table-header-height",
         `${headerHeight}px`,
       );
-      if (pagination !== "client" || state.pageSizeMode !== "fit") return;
+      if (
+        (pagination !== "client" && !externalPage) ||
+        state.pageSizeMode !== "fit" ||
+        (externalPage && externalPage.status !== "success")
+      )
+        return;
       const key = `${width}:${state.density}:${state.visibleColumns.join(",")}`;
       if (measuredRows.current.key !== key)
         measuredRows.current = { key, height: 0 };
@@ -136,14 +177,17 @@ function TableView<T>({
         region.querySelectorAll("tbody tr"),
         (row) => row.getBoundingClientRect().height,
       );
+      if (externalPage && heights.length === 0) return;
       // Keep the largest observed natural row for this geometry. A short last page
       // must not inflate capacity and cause repeated page/measurement oscillation.
       const rowHeight = Math.max(measuredRows.current.height, ...heights);
       if (rowHeight <= 0) return;
       measuredRows.current.height = rowHeight;
-      controller.setFittedPageSize(
-        Math.max(1, Math.floor((height - headerHeight - 1) / rowHeight)),
+      const capacity = Math.max(
+        1,
+        Math.floor((height - headerHeight - 1) / rowHeight),
       );
+      controller.setFittedPageSize(capacity);
     }
     measure();
     const fontsLoaded = () => {
@@ -163,6 +207,7 @@ function TableView<T>({
     controller,
     layout,
     pagination,
+    externalPage?.status,
     rows,
     columns,
     state.density,
@@ -174,7 +219,7 @@ function TableView<T>({
     if (layout !== "fill" || !scroll.current) return;
     scroll.current.scrollTop = 0;
     viewport.current?.style.setProperty("--data-table-scroll-fade", "0");
-  }, [controller, layout, state.page]);
+  }, [controller, layout, state.page, externalPage?.offset]);
   const publishedRows = useRef<readonly T[] | undefined>(undefined);
   useLayoutEffect(() => {
     const next = controller.getSnapshot().rows;
@@ -306,7 +351,11 @@ function TableView<T>({
           <table aria-label={label}>
             <colgroup>
               {visible.map((column) => (
-                <col key={column.id} style={{ width: column.width }} />
+                <col
+                  key={column.id}
+                  data-column-id={column.id}
+                  style={{ width: column.width }}
+                />
               ))}
             </colgroup>
             <thead>
@@ -314,6 +363,7 @@ function TableView<T>({
                 {visible.map((column) => (
                   <th
                     key={column.id}
+                    data-column-id={column.id}
                     scope="col"
                     aria-sort={
                       state.sort?.column === column.id
@@ -325,6 +375,7 @@ function TableView<T>({
                       column.label
                     ) : (
                       <Button
+                        className="data-table__sort"
                         size="sm"
                         variant="ghost"
                         onClick={() => controller.toggleSort(column.id)}
@@ -335,7 +386,7 @@ function TableView<T>({
                             ? state.sort.direction === "ascending"
                               ? " ↑"
                               : " ↓"
-                            : " ↕"}
+                            : " ↕︎"}
                         </span>
                       </Button>
                     )}
@@ -347,7 +398,7 @@ function TableView<T>({
               {state.rows.map((row, index) => {
                 const props = { ...rowProps?.(row), key: state.rowIds[index] };
                 const cells = visible.map((column) => (
-                  <td key={column.id}>
+                  <td key={column.id} data-column-id={column.id}>
                     {column.render
                       ? column.render(row)
                       : tableValueLabel(column.value(row))}
@@ -381,12 +432,26 @@ function TableView<T>({
       </div>
       {variant !== "simple" && (
         <div className="data-table__footer">
-          <span role="status">
-            {pagination === "external"
-              ? `Loaded rows: ${state.filtered} of ${state.total}. Filters and sorting apply to this loaded window.`
-              : `${state.filtered} ${state.filtered === 1 ? "row" : "rows"}${state.filtered !== state.total ? ` of ${state.total}` : ""}`}
+          <span
+            role="status"
+            title={
+              externalPage
+                ? "Search, filters and sorting apply to this server page."
+                : undefined
+            }
+          >
+            {externalPage
+              ? externalPage.status === "pending"
+                ? "Loading page…"
+                : externalPage.status === "error"
+                  ? "Page unavailable. Refresh to retry."
+                  : `Rows ${externalPage.count ? externalPage.offset + 1 : 0}–${externalPage.count ? externalPage.offset + externalPage.count : 0} ${externalPage.total === undefined ? "· this page" : `of ${externalPage.total}`}${state.filtered !== externalPage.count ? ` · ${state.filtered} matches` : ""}`
+              : pagination === "external"
+                ? `Loaded rows: ${state.filtered} of ${state.total}. Filters and sorting apply to this loaded window.`
+                : `${state.filtered} ${state.filtered === 1 ? "row" : "rows"}${state.filtered !== state.total ? ` of ${state.total}` : ""}`}
+            {externalPage && " · Filters/sort: this page"}
           </span>
-          {pagination === "client" && (
+          {(pagination === "client" || externalPage) && (
             <div className="data-table__paging">
               <label>
                 Rows per page{" "}
@@ -413,18 +478,44 @@ function TableView<T>({
               </label>
               <Button
                 size="sm"
-                disabled={state.page === 0}
-                onClick={() => controller.setPage(state.page - 1)}
+                disabled={
+                  externalPage
+                    ? externalPage.status !== "success" ||
+                      externalPage.offset === 0
+                    : state.page === 0
+                }
+                onClick={() =>
+                  externalPage
+                    ? externalPage.onOffsetChange(
+                        Math.max(
+                          0,
+                          externalPage.offset - externalPage.pageSize,
+                        ),
+                      )
+                    : controller.setPage(state.page - 1)
+                }
               >
                 Previous
               </Button>
-              <span>
-                Page {state.page + 1} of {state.pageCount}
-              </span>
+              {!externalPage && (
+                <span>
+                  Page {state.page + 1} of {state.pageCount}
+                </span>
+              )}
               <Button
                 size="sm"
-                disabled={state.page + 1 >= state.pageCount}
-                onClick={() => controller.setPage(state.page + 1)}
+                disabled={
+                  externalPage
+                    ? externalPage.status !== "success" || !externalPage.hasNext
+                    : state.page + 1 >= state.pageCount
+                }
+                onClick={() =>
+                  externalPage
+                    ? externalPage.onOffsetChange(
+                        externalPage.offset + externalPage.pageSize,
+                      )
+                    : controller.setPage(state.page + 1)
+                }
               >
                 Next
               </Button>

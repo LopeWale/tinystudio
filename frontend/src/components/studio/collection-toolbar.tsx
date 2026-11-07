@@ -1,4 +1,9 @@
-import { useRef, type MouseEventHandler, type RefObject } from "react";
+import {
+  useRef,
+  type MouseEventHandler,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { RiSearchLine } from "@remixicon/react";
 import { Button } from "./primitives";
 import { Input } from "../boardui/base/input/input";
@@ -55,6 +60,7 @@ export function CollectionToolbar({
   onCompare,
   onClearSelection,
   searchRef,
+  children,
 }: {
   label: string;
   query: string;
@@ -63,6 +69,8 @@ export function CollectionToolbar({
   onCompare?: MouseEventHandler<HTMLButtonElement>;
   onClearSelection?: () => void;
   searchRef?: RefObject<HTMLInputElement | null>;
+  /** Collection-specific filters share the search row and wrap as a group. */
+  children?: ReactNode;
 }) {
   const localSearch = useRef<HTMLInputElement>(null);
   const search = searchRef ?? localSearch;
@@ -80,6 +88,7 @@ export function CollectionToolbar({
         value={query}
         onChange={onQueryChange}
       />
+      {children}
       <CollectionSelectionActions
         selectedCount={selectedCount}
         onCompare={onCompare}

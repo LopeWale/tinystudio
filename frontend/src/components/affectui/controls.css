@@ -1,3 +1,9 @@
+/* Share the application font stack without changing upstream component source. */
+.ui-segc.studio-segmented-control,
+.ui-buttonc.studio-button,
+.ui-fmc.studio-filter-menu {
+  font-family: var(--font-sans);
+}
 /* TinyStudio's application adaptation of AffectUI tabs. The extra root
    specificity keeps these tokens authoritative after the source injects CSS.
    Radio controls retain the source density and appearance. */

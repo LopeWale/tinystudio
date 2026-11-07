@@ -327,7 +327,7 @@ describe("actual React submission controls", () => {
                   buckets: { training: 2200, validation: 5, uncategorized: 0 },
                 },
                 total: 2205,
-                rows: Array.from({ length: 15 }, (_, i) => ({
+                rows: Array.from({ length: 25 }, (_, i) => ({
                   id: i + 1,
                   messages: [{ role: "user", content: `row ${i}` }],
                   bucket: "training",
@@ -349,14 +349,14 @@ describe("actual React submission controls", () => {
     fireEvent.click(screen.getByRole("radio", { name: /^training/ }));
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith(
-        "/api/datasets/support?offset=0&limit=15&bucket=training",
+        "/api/datasets/support?offset=0&limit=25&bucket=training",
         expect.any(AbortSignal),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith(
-        "/api/datasets/support?offset=15&limit=15&bucket=training",
+        "/api/datasets/support?offset=25&limit=25&bucket=training",
         expect.any(AbortSignal),
       ),
     );

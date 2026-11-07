@@ -63,6 +63,180 @@
 - Review counterexamples reproduced acceptance of conflicting outer/nested resume observations in both native and TorchRL and ambiguous classification target evidence. Resume now rejects that mismatch and consumes the validated environment observation. Classification retains legacy encoded arrays with an explicit class mapping and decoded per-record targets; the authenticated download fixture checks both representations.
 - This is source/API qualification, not full D acceptance. Current browser validation is blocked by Codex Work Settings disabling local browser access; no Chrome fallback used for this increment. No current-source backend restart or deployment is claimed. Independent source re-review passed after both corrections; broader matched-method acceptance remains open.
 
+## Model inspection continuity — 2026-10-30
+
+## 2026-10-30 — Interpretability creation composition (partial, parent checked)
+
+- Reviewed the actual authenticated `/interp` route: peer collection tabs already exist. Do not count that prior implementation as new work. The creation dialog was 1,024px wide for five fields, with ungrouped settings and inconsistent native fields.
+- Inspected Affect UI Integration Settings rendered Clean/dark preview, usage limits, accessibility and confirmation behavior (`https://www.affectui.com/components/integration-settings`). This is a Pro **visual reference**, not adopted Pro source. Reused existing SettingsSection, BoardUI Input/TextField/Select and Modal. The 704px desktop dialog groups model/source separately from evidence settings; shared confirmation actions and scientific options remain.
+- Existing exact-payload test caught the async experiment selector losing its default while jobs loaded. Corrected controlled selection; retained snapshot choice, custom base model, layers and top-token contracts. New failure test verifies entered values survive capture rejection and no task is tracked. 15 Interpretability tests pass; production build and diff whitespace checks pass (existing large-chunk advisory remains).
+- Actual local frontend: visually reviewed Capture and Comparison dialogs at 1440x900 dark, source dropdown overlay and no-completed-experiment disabled action. Screenshot `/private/tmp/tinystudio-capture-dialog.png`. Narrow override did not take effect (measured 1440), so **no narrow verification claimed**. No capture job was launched; API behavior is test evidence only.
+- Independent verifier remains unavailable under the prior automatic approval rejection; no bypass attempted. Not committed/deployed. Full Interpretability detail plots, light/narrow states, hosted proof and user visual acceptance remain open; Task 7 stays unchecked.
+
+Follow-up actual-browser validation resolved the previous viewport uncertainty:1280×800 is now measured and inspected. The collection and footer fit; opening Filters leaves the table top unchanged at273px, confirming overlay placement. At390×844, the collection is replaced by its inspector, revealing that serving controls were unavailable there. ModelServingActions now supplies the same Load/Unload/Test controls and operation handler in both contexts, retaining shared busy/error behavior. Back previously attempted focus while its row was hidden; restoration now runs after React commits the visible collection. Actual390px browser verification confirms focus returns to the exact Inspect model button.
+
+26 focused Models/serving tests pass; production build and diff whitespace check pass. New contract tests cover both load/unload endpoints, both controls disabled during a pending operation, failure recovery and no unintended row selection. Browser checks do not establish real model loading or fine-tuned publication. This continues the inspected Affect UI table/Apple context-preservation adaptation, not a new licensed source adoption. Full Models and full-app acceptance remain open, including light-mode and populated fine-tuned live workflows. Independent review/commit/publication remain held by the prior transfer-authorization rejection.
+
+## Model inventory composition — 2026-10-30
+
+Viewport evidence: inspected 1440×900; a requested 1280×800 override did not change the measured viewport (still1440), so laptop-width acceptance is not claimed. Override reset. Final build and the same24 tests passed after the960px internal-table minimum; git diff --check passed.
+
+Re-inspected Affect UI Data Table (https://www.affectui.com/components/data-table), including its Clean dark rendered preview, usage limits, keyboard and responsive documentation. Adapted its concise identity/metadata rows and readable internal scrolling through the existing shared AdvancedTable; no Pro source copied and no unsupported spreadsheet editing implied. Inventory retains immediate Load/Test actions; notes, dates and checkpoint Download/Upload/Training actions belong to the selected model inspector. Scalar/action columns receive explicit widths. Inspection has an explicit accessible action name, separate from row selection.
+
+Parent verification: 24 affected Models/serving tests passed, including inspection without selection/loading and the existing upload API contract. First run exposed a moved action still referring to the old row variable; corrected to selected model and reran successfully. Production build passed. Actual authenticated localhost dark desktop review verified the compact inventory, inspector notes, internal keyboard horizontal scrolling and Back focus restoration. Full Models acceptance, fine-tuned live upload, light/narrow review and hosted delivery remain open. Independent verification remains blocked by the previously rejected transfer authorization; no commit/push/deployment. Laboratory source handoff still awaits the backend owner, whose live status remains waitingOnApproval.
+
+## 2026-10-30 — Shared type hierarchy and font-token correction
+
+- Fixed unresolved sans/monospace tokens inherited from a next/font assumption in the Vite app. Affect UI adapters share the resolved application family stack without editing upstream source.
+- Moved default element typography/inheritance into the base layer; shared page/panel/dialog headings now use the existing composite type ramp. Retained dense DataTable type ownership.
+- Visual review caught the unsorted arrow switching to emoji after family normalization; requested Unicode text presentation for that indicator.
+- Validation: 25 existing Affect UI control/DataTable tests passed; production build and whitespace check passed. Actual authenticated Metrics, create dialog and Settings inspected; Settings light at 1280×800 passed measured heading/family/width checks. No writes to application data.
+- Laboratory draft-loss acceptance regression remains failing, shared-source handoff unanswered, independent verification unavailable under the prior approval-review rejection. No full-route acceptance or publication claimed.
+
+## 2026-10-30 — Laboratory context acceptance failure
+
+- Actual authenticated localhost `/lab` at 1440×900 still enters a Runs selector, with saved definitions inside the authoring dialog. This contradicts the experiment-collection/context contract in DESIGN.md; earlier default-to-Runs tests protect superseded behavior rather than that contract.
+- Reproduced unsaved draft loss without server mutations: open a saved fixture definition, edit its name, then choose another saved definition. The replacement occurs immediately, with no Save/Discard/Cancel decision.
+- Added `frontend/src/features/lab/experiment-context.test.tsx` as a failing acceptance regression. Focused Vitest result: 1 failed; expected retained edited name, received the second definition's name. This failure is intentional evidence of an unresolved product defect, not a passing implementation increment.
+- Re-read the rendered Apple HIG Layout page and Affect UI Experiment Card documentation/preview. The latter is a measured variant-comparison pattern, not a generic definition picker; no confidence, uplift or winner values may be invented for saved definitions.
+- Requested shared Laboratory source ownership handoff from the user-authorized backend chat. Its current status is waiting on approval; no handoff response received. Shared Laboratory implementation was not changed. No release, independent review PASS or route acceptance is claimed.
+
+## 2026-10-30 — Populated repository retrieval browser validation
+
+- Revalidated the disposable review server PID/command before restarting only that server. Its Qdrant configuration is process-local `:memory:`, so separate worker indexing cannot establish query visibility. Added an explicitly generated 18-passage repository to the isolated review database and populated the API process's vector store using the cached real MiniLM embedder (offline); no production records or hosted services changed. This is seeded visual evidence, not acceptance of the worker upload/indexing lifecycle.
+- Authenticated actual `/repositories` query returned all18 passages. At1440×900, Fit workspace renders2 passages/page. With10 rows/page, keyboard End reaches scrollTop1319.5 of a1635px body in a316px viewport while the header/footer stay visible. Next page resets scroll to0;1280×720 retains the complete dialog within the viewport.
+- The390×844 check exposed squeezed passage columns and excessive stacked retrieval controls. Corrected the two numeric fields to share a row while Text spans the width; the table now preserves640px readable width with internal horizontal scroll. Verified document width390, scroll width640 within330px, ArrowRight scrollLeft40, complete table paging and modal footer bottom835 within844. Production TypeScript/build and whitespace checks pass.
+- Full Repository acceptance remains open: populated light mode, broader interactions and actual upload/worker lifecycle still need review. Independent verifier/private-source transfer approval remains pending. No commit, push or deployment.
+
+## 2026-10-30 — Repository retrieval presentation
+
+- Reviewed/rendered Affect UI Cited Answer and exercised its source disclosure. Rejected direct adoption because repository queries have passages but no generated cited answer. Reference distinction and adaptation recorded in catalog review.
+- Existing shared DataTable now fills a bounded result region with visible paging, document-first columns, compact similarity values, and semantic body typography for exact passages. Results retain chunk IDs and repository-specific view scope. Empty results use shared structured EmptyState.
+- 17 interaction tests and production TypeScript/build pass. Actual local empty-repository Search returned the distinct heading/help at 1440×900. Populated live layout, narrow/keyboard overflow and full-route acceptance remain pending; no claim that this increment completes the redesign. Independent review remains held at the previously rejected private-source transfer boundary. No commit/push/deploy.
+
+## 2026-10-30 — Repository query criteria and evidence ownership
+
+- Query dialog now blocks blank text, non-integer/out-of-range passage counts, and missing/out-of-range similarity thresholds. Numeric limits follow `RepositoryQueryBody` (1–50 passages, −1…1 similarity); Enter observes the same guard as Search.
+- Editing any query criterion clears old passages and errors. A criteria revision prevents late success/failure from attaching to the edited query; existing close/reopen generation protection remains intact.
+- Parent regression failed on the enabled blank Search before repair, then all 17 records-workspace tests passed. Production TypeScript/build passed after correcting a test-only locator option. Actual authenticated localhost at 1440×900 verified blank disabled state, zero-passages feedback, recovery to five, and dialog close/focus return; no search request or data mutation was submitted in-browser. Late-response evidence is mocked interaction-test evidence, not a live retrieval journey.
+- Retains existing shared dialog/input controls and previously reviewed compact query grouping; this is a workflow correction, not full Repository design acceptance. Independent verifier remains unrun because the previously rejected private-source transfer has no new user authorization. No commit, push or hosted deployment.
+
+## 2026-10-30 — Repository empty-state hierarchy
+
+- Inspected actual desktop repository collection, creation and document detail. Collection already uses the shared fill-height table; creation already uses the compact Modal. Document empty text and its action were concatenated inline. Revisited Affect UI Folders at /screens/files/full and exercised its search-empty state: separate title/explanation establishes the hierarchy; its card/template capabilities are not inferred as repository features.
+- Added optional heading/actions to shared EmptyState, preserving legacy children rendering. Repository collection/document empty and no-match states now separate the state, explanation and recovery action. Actual local1440×900 review verified document hierarchy, Add documents opening the correct repository import dialog, and search-clear recovery without mutation. Screenshot: /private/tmp/tinystudio-repository-empty-state.png.
+- Initial build caught typography utilities used in a non-reference stylesheet; moved the shared typography classes to the component. Build/typecheck then passed. Broader data tests exposed a stale Dataset expectation for the removed independent pager; updated it to assert exactly one shared page-size selector/Next action, local sorting and explicit offset0→10/limit10 requests. All31 records/layout/paging tests pass; whitespace check passes.
+- Full populated-document/import/query journeys, light/narrow repository acceptance and independent review remain open. No commit, push or deployment; verifier transfer approval is still pending.
+
+## 2026-10-30 — Quality assistant action visibility
+
+- A real ComponentActionRegistry regression failed because Distribution measure, presentation and composition remained executable from hidden panes. These registered actions now disable outside Distributions while preserving selection across pane changes. Closing the dialog revokes its action references; a failed profile exposes only the disabled quality-view action until retry succeeds.
+- Regression exercises registry execution, visible selected control, pane changes, retained selection, stale-reference rejection and no dataset POST. Final Quality/Histogram suites:24 passed. Production typecheck/build and whitespace checks passed. This is component/registry evidence, not a live model-assisted journey or full Quality acceptance.
+- No commit, push or deployment. Required independent verifier transfer approval remains pending after the earlier automatic review rejection; no alternate transfer attempted.
+
+## 2026-10-30 — Quality dialog content sizing
+
+- Revisited the rendered Affect UI KPI Board and its use/non-use guidance. Retained compact summary/primary-supporting grouping without importing its unrelated time-series semantics. Quality now uses the shared Modal's content sizing with a760px/viewport cap instead of forcing every pane to760px. Navigation stays at a stable top position as content height changes; header/footer remain outside the scrolling region. Overview help has explicit spacing and the supporting panel no longer stretches when duplicate evidence expands.
+- Actual localhost1440×900: Overview557px, Cleaning646px, both start at70px and fit their content. At1280×650 Distributions stays within16–634px with internal scrolling reaching its end. At390×844 Cleaning reaches all final controls by keyboard:474px visible/906px content/432px scroll,332px content width matching its viewport. Expanded duplicate evidence and Escape focus return were checked. Final build/typecheck and whitespace check passed; this CSS-only increment used rendered verification rather than new behavioral tests.
+- Screenshot: /private/tmp/tinystudio-quality-overview-sized.png. No data mutation, commit, push or release. Full Quality state/assistant acceptance and full-app visual acceptance remain open; independent review transfer approval remains pending.
+
+## 2026-10-30 — Cleaning validation and cross-theme inspection
+
+- A failing regression reproduced contradictory character limits enabling Apply. Cleaning now rejects negative/fractional character limits, minimum greater than maximum, and ratings outside the existing 0–10 control range before confirmation or submission. Inline feedback explains the correction; the visible rating label now matches those existing bounds. Valid correction clears feedback and re-enables Apply.
+- Quality/Histogram suites passed23 tests; final label-specific regression, production typecheck/build and whitespace checks passed. Actual localhost inspection reproduced min10/max5 disabled with feedback, then max20 cleared it. Draft cleared without applying cleaning.
+- Inspected light desktop Overview/Distributions/Cleaning and Cleaning at1280×800 and390×844. Narrow Cleaning retains keyboard access to its last fields/action within the internal scroll region (474px viewport,906px content,432px end offset). Restored System appearance and original viewport. Validation screenshot: /private/tmp/tinystudio-quality-cleaning-validation.png.
+- These are bounded corrections, not full visual acceptance: Overview still wastes lower dialog space, complete state/assistant journeys and full-route acceptance remain open. Independent verifier transfer approval remains pending; no commit, push or deployment.
+
+## 2026-10-30 — Cleaning reuses the settings form template
+
+- Revisited rendered Affect UI Settings & Billing General: separated explanation/control columns, bounded controls and a form action footer. Reused existing SettingsSection in Quality Cleaning instead of two tall independent cards. Seven rules use two desktop columns; three numeric limits share one row and labels retain a separate text field. Outlier guidance moved out of input labels into associated section copy. Removed unused old distribution-grid styles and a duplicated action divider caught in browser review.
+- Apply is disabled when no operation is selected; comma/whitespace-only labels do not enable it, while explicit zero thresholds do. Existing submission guard, confirmation, queued-task and stale-profile behavior remain. Added a focused regression; Quality/Histogram suites pass22 tests. Final production typecheck/build and whitespace checks pass.
+- Actual authenticated 1440×900 check confirms desktop alignment, initially disabled Apply, selected-rule count, enabled action after checking Remove empty rows, and retained draft after Overview/Cleaning navigation. Cleared the draft without submitting. Final screenshot: /private/tmp/tinystudio-quality-cleaning-desktop.png. No dataset mutation. Light/narrow, invalid-threshold handling and full state acceptance remain open.
+- Independent review transfer remains blocked pending explicit approval after the previous automatic review rejection. No alternative reviewer route, commit, push or deployment. Full redesign stays incomplete.
+
+## 2026-10-30 — Quality chart occupied-range correction
+
+- Traced the padded range to core.quality._histogram: it emits a fixed number of bins even when the occupied range needs fewer. Added an opt-in Histogram plot range that omits only empty edge bins. Quality enables it; other consumers retain the original domain. Internal gaps, original callback indices, totals, exact tables and raw evidence remain unchanged. A caption discloses omitted intervals.
+- Added regressions for internal gaps, retained original selection index, exact percentage, all original table rows, and all-zero finite geometry. Quality/Histogram suites pass21 tests; production typecheck/build and whitespace check pass.
+- Actual authenticated 1440×900 browser: user lengths now show40/41 with9/74 counts; ratings show5–10 with14/14/14/14/14/13, total83. Bin counts still includes11–14 withzero observations. Escape restores Quality focus. Screenshot: /private/tmp/tinystudio-quality-occupied-ratings.png. No dataset mutation or backend change.
+- This resolves the observed trailing-empty-domain defect below, not full Quality acceptance. Overview/Cleaning, further state/theme coverage, assistant checks and independent review remain open. Pending verifier-transfer approval remains unresolved; no commit/push/release claimed.
+
+## 2026-10-30 — Dataset quality composition, local validation only
+
+- Distributions now places one selected distribution beside one selected composition table. Existing controls select User messages/Responses/Ratings, Chart/Bin counts, and Buckets/Labels/Sources. Reused Panel, SimpleTable, RecordsScroll and Histogram; original evidence and cleaning contracts remain. Registered assistant actions have not yet been exercised through the live assistant.
+- Adaptation uses the inspected Affect UI Breakdown Chart's local measure controls and plot/evidence relationship, plus KPI Board's dominant plot and adjacent supporting region. No licensed source copied. Overlapping labels retain exact counts and an explanation rather than a false partition chart.
+- Quality/Histogram tests:19 passed; production typecheck/build passed. Reviewed saved command results and reran whitespace checks successfully. Actual local 1440×900 inspection confirms both regions fit together; prior measured content reduced from1027px to562px. Earlier checks exercised exact-count scrolling and choice retention. Fresh browser check confirmed controls and Escape returning focus to Quality. At760px regions stack inside the dialog. Screenshot: /private/tmp/tinystudio-quality-composition-desktop.png.
+- Remaining: trailing empty bins, rating-domain presentation, Overview/Cleaning refinement, light/empty/error/high-cardinality acceptance, and live assistant validation. The user-length axis still extends to51 despite maximum41. No full Quality or route acceptance claimed.
+- Independent review remains incomplete after automatic approval review rejected the private patch/context transfer to the separate Codex verifier; explicit transfer approval is pending. No bypass, commit, push or hosted release occurred. Full-route acceptance remains open.
+
+## 2026-10-30 — Actual Dataset quality defect baseline
+
+- Measured the authenticated desktop Distributions pane:562px visible height versus1027px content, rising to1259px when one exact-bin table opens. Ratings starts below the visible pane.34 chart keyboard stops include24 zero-count bins. Recorded these as unresolved composition/accessibility costs, not acceptance.
+- Verified keyboard tab switching, exact focused-bin readout, and Escape returning focus to Quality. Reviewed Overview and Cleaning; no cleaning or persisted data change performed. Saved /private/tmp/tinystudio-quality-distributions-before.png as the before-state.
+- Final independent review transfer remains awaiting user approval; no rejected launch retried. This increment adds browser evidence and documentation only. Full redesign and hosted/user acceptance remain open.
+
+## 2026-10-30 — Reference interaction and inventory follow-up
+
+- Continued unaffected public-reference work while final Dataset paging review awaits explicit transfer approval. No retry of the rejected verifier launch and no application code change this increment.
+- Compared the refreshed Affect UI sidebar with the coverage register: Scheduled Runs increases the catalog to71components/129references. Read its complete public guidance and inspected dark Manual/detail/Escape interactions; distinguished session scheduling from actual TinyStudio run-history requirements.
+- Extended Breakdown Chart review to dark keyboard focus and series toggling. Verified that hiding Urgent changes displayed total212to200 while preserving a dimmed evidence column, then Show all restores212. Recorded why overlapping Dataset labels cannot inherit partition totals.
+- Reviewed current quality-pane composition source: lengths, categorical tables and ratings remain sequentially stacked. These findings constrain the pending redesign; no visual acceptance, independent final PASS or publication is claimed.
+
+## 2026-10-29 — Dataset detail reuses server-window paging (local increment)
+
+- Dataset records now use the shared ExternalTablePage contract: measured Fit/manual page sizes reach the real API, one footer stays at the collection bottom, and known totals use the active bucket count. Traces retains unknown-total paging. Filter/sort scope is visible in the shared footer.
+- Dataset/project/user identity remounts detail state before requests; atomic size changes realign the offset. Successful total shrink can recover a valid page; loading/errors do not clamp offsets. Retry is accessible. Checked/inspected records persist across pages with explicit outside-page context.
+- Worker delivered source and request-aware integration tests. Parent review required visible filter scope; actual browser review caught duplicate empty content pushing the footer upward. Empty content is now inside the table body, covered by a regression assertion and rechecked on the actual local server.
+- Focused four-suite run:54 tests passed; Traces regression:13 tests passed; final production build and typecheck passed. Follow-up added direct filter/sort preservation across server pages with fetched-window versus local-match counts; all 6 Dataset paging tests and typecheck passed. The initial independent review found no concrete paging defect but lacked the incremental patch; final review launch was rejected by automatic approval review over transfer of the private patch/context to a separate Codex session. Explicit transfer approval is pending. No independent final PASS, commit/push/deployment is claimed. Existing shared dirty work preserved.
+- Actual authenticated local server:1440×900 comfortable Fit7, inspected/selected Fit6; Next retained Datapoint1 with outside-page label. Validation bucket traversed1–7,8–14,15–17 of17 with Next disabled at end. Uncategorized0 showed one explanation and disabled paging with footer at the same bottom position. Manual10 allowed internal scroll to row10; Compact Fit8; switching Snapshots/Records retained density. At1280×800 comfortable Fit5 with reachable footer. These checks are bounded paging evidence, not full route visual acceptance or hosted proof.
+- Reference catalog advanced rendered/interaction evidence for KPI Board, Breakdown Chart and Compact Breakdown. Quality-dialog review found trailing empty histogram ranges and ratings axis5–14 despite1–10 semantics; overlapping label counts must not be displayed as parts of one total. These presentation defects remain open. All cumulative full-route acceptance boxes remain unchecked.
+
+## 2026-10-29 — Trace identity and selected-response hierarchy
+
+- Refined the existing shared collection/inspector composition using the inspected Affect UI Data Table and Review Center visual references. Trace rows now use model identity above compact localized date/time; exact timestamp and full model remain available in titles and the inspector. Inspector metadata uses aligned labeled pairs, source messages retain a message rail, and the model response has a distinct quiet surface. Paging, review actions, evidence and API contracts are unchanged.
+- Actual local 1440×900 review in light/dark showed five comfortable split-queue rows versus four before; dates no longer wrap AM onto a separate line. A 390px check caught crushed columns from fixed table layout. Added bounded minimum table widths and rechecked: document width 390, table scroll region 336 with 720px content; actual horizontal scrolling reached Response and Score. Desktop split queue remained 533px with no horizontal overflow. Narrow selected inspector remained readable. Appearance and viewport restored.
+- Typecheck and 13 trace review tests passed; parent production build and whitespace check passed. Independent presentation review returned PASS with no blocking finding. It inspected source/tests and relied on parent browser/build evidence. Nonblocking gap: timestamp formatting lacks focused valid/invalid fixtures; actual valid timestamps were inspected in the browser. Screenshot: `/private/tmp/tinystudio-traces-refined-light.png`. Full route states, hosted release and user visual acceptance remain open; shared changes remain uncommitted.
+- Extended Affect UI inventory inspection to rendered Dropzone: observed compact file rows and separate completion/error states, exercised simulated retry through completion, and recorded remaining keyboard/theme/narrow gaps. No actual file was uploaded to Affect UI and no licensed source was copied.
+
+## 2026-10-29 — Traces server pagination and acceptance limits
+
+- Added an optional controlled server-page contract to the shared table and connected Traces to actual limit/offset requests. The extra next-page probe is excluded from displayed records and trace inspector choices; the raw API evidence retains the actual response. A single footer reports the loaded range without inventing a total. Legacy external table consumers retain their existing behavior.
+- Browser review found a failure missed by the initial tests: opening an inspector with Fit workspace caused loading/success footer geometry to alternate the capacity between four and five rows. A regression using the observed geometry reproduced the loop. Fit measurement now excludes transient loading/error/empty states, and the narrow footer keeps stable geometry. Temporary diagnostics were removed.
+- Parent validation: production build passed; five focused suites passed all 56 tests; whitespace check passed. Actual authenticated local browser at 1440×900 verified manual paging through rows 61–63, empty page-local search without losing the server range, Fit resizing, and retained inspector context across pages. The original failing late-page sequence now settles at rows 57–60 with the inspector open. Screenshot: `/private/tmp/tinystudio-traces-paging-desktop.png`. Browser viewport restored. Independent pagination follow-up returned PASS after receiving the original failing regression and completed integration results. It inspected source/tests but relied on parent/worker execution evidence; its Git diff command was blocked by an invalid Xcode path. Parent Git inspection and whitespace check succeeded.
+- This is a functional paging increment, not visual acceptance. Desktop inspection still shows heavily wrapped date/model text, uneven column allocation and weak inspector metadata hierarchy. Full route-state coverage, hosted release and user visual acceptance remain open. All full-route acceptance boxes remain unchecked. Shared changes remain uncommitted; no deployment is claimed.
+
+## 2026-10-29 — Focused Traces review workspace
+
+- Applied the visually inspected Affect UI Review Center separation of queue and selected item through existing CollectionTemplate, AdvancedTable, InspectionWorkspace and RecordsScroll. Repeated per-row score/fix/delete controls now live in the selected trace footer, with full message/response content, labeled metadata and previous/next navigation. Navigation follows the actual table filter/sort order and disables when the selected ID is excluded. Promotion help accurately states project-wide scope.
+- Actual desktop review rejected the first revision's cramped queue: the inspector now hides its duplicate response column and uses stable column IDs for presentation widths. Column filters/configuration remain owned by the shared table. Shared toolbar groups wrap without squeezing density labels. Footer space keeps review actions clear of the assistant.
+- Final follow-up: 37 focused review/inspection/serving/shared-table tests passed; production build and whitespace check passed. Independent review initially required changes for premature focus restoration and retained detail scroll. Focus now restores after inspector unmount, deletion targets the stable collection, and changing trace IDs resets detail scroll. The deletion regression removes the row from its fixture. Actual 390×844 close restored focus to Inspect trace; long-content scroll reset and deletion were verified in tests. Actual authenticated local checks covered 1440×900 light/dark, 390×844 inspector, next-record identity, excluded selection, and correction-dialog focus return. No live score/delete/promotion mutation was performed. Screenshot: `/private/tmp/tinystudio-trace-review-light-20261029.png`. Theme and viewport restored.
+- Server-window pagination, full route-state coverage, hosted release and user visual acceptance remain open. This is a bounded review-flow correction, not completion of Traces or the full redesign. Independent follow-up returned PASS for the scoped composition correction, resolving both earlier findings. Tests/build/browser evidence were parent-executed; the reviewer inspected source and tests. Column-filter-to-inspector navigation still needs a focused assertion during subsequent validation. Shared checkout remains uncommitted.
+
+## 2026-10-29 — Models Hub action grouping and pane review
+
+- Fixed touching Test/Remove controls in Downloaded by reusing the existing wrapping action group with a 12px gap and trailing alignment. Search-result actions use the same scoped group. Links, role checks, busy states, confirmation and backend callbacks are unchanged.
+- Actual authenticated 1440×900 review inspected Discover, six populated Downloaded rows, Connection without a token, and empty Activity. Browser geometry confirmed 12px between Test and Remove. Following Test opened Playground with the exact selected model. No generation, download, removal or credential mutation was performed.
+- Live discovery returned the server offline-mode error. Populated remote results and download progress remain unverified; the UI error path was inspected. TypeScript, scoped formatting, production build and whitespace checks passed. Independent review passed this spacing-only correction, with parent-supplied browser/build evidence. It noted a narrower legacy action-gap selector outside the modal; current rendered modal spacing is verified, but future ancestry changes need a cascade check. Full Models/hosted/user acceptance remains open; shared changes are uncommitted.
+
+## 2026-10-29 — Settings control and diagnostic refinement
+
+- Retained the inspected Affect UI Settings & Billing form hierarchy and shared SettingsSection composition. Claude effort now uses the installed select with default/low/medium/high choices while preserving existing unknown values and pending drafts; arbitrary model identifiers remain editable.
+- Connection results distinguish Connected and Connection failed with exact server details. Actual light-theme review caught low-contrast success text; corrected it to the semantic primary text token. Reserved the save footer end for the global assistant launcher.
+- Validation: focused controls/request/lifecycle suite reported 21 passing tests; TypeScript, formatting and production build passed. Parent authenticated browser inspection verified desktop light/dark diagnostics and a 390px effort popover bounded at x55–303, no document overflow, reachable save/reset, and draft reset. Restored System appearance and viewport. No persisted provider settings or credentials were changed. Database diagnostic succeeded; local Redis diagnostic failed and was displayed accurately, not repaired by this UI increment.
+- Follow-on actual Models inspection at 1440×900 confirmed the inventory filter overlays the table and Downloaded shows all six local rows with bottom pagination. It also found Test/Remove actions visually touching in that pane; this remains an open composition defect, not accepted coverage. No downloads, removals or model loads were performed.
+- Independent follow-up review passed the bounded Settings source/local increment after the light/narrow checks. The reviewer inspected code/tests but did not independently execute parent validation; its Git commands were unavailable because its restricted environment could not resolve Xcode. Parent Git inspection and whitespace checks succeeded. Full-route, hosted and user visual acceptance remain open. Changes remain uncommitted in the shared checkout; no publication is claimed.
+
+## 2026-10-29 — Playground composer and configuration refinement
+
+- Applied the reviewed Affect UI Chat Composer and Agent Chat composition to the actual Playground: model selection and Send share the bottom composer; configuration is an optional grouped right inspector; repository selection uses bounded checkboxes instead of a modifier-key multiple select. Existing controller/API ownership, busy locking, cancellation and evidence rendering are retained.
+- Browser review found duplicate input borders inherited from legacy styles and lost focus after closing configuration. Removed the inner native-field chrome and restored focus to Settings; added an explicit focus assertion. Draft and repository selection survived close/reopen in the authenticated local application.
+- Nineteen targeted frontend tests passed. Production build passed after correcting an unsupported Testing Library query option; the existing Vite chunk-size advisory remains. Actual local browser checks at 1440×900 (light/dark) and 390×844 covered composition, focus return and keyboard access to the lower inspector controls. A real Shift+Enter check inserted a newline without sending. Narrow document width equals viewport width (390px). No new model inference, hosted release or user visual acceptance is claimed. Independent source/advisor review returned PASS for this bounded local increment after receiving final validation; it did not independently inspect screenshots or establish visual acceptance. This increment remains uncommitted alongside prior owned UI changes in the shared checkout.
+
+## 2026-10-29 — Full reference-catalog coverage register
+
+- Added `docs/affectui-catalog-review.md` for the entire redesign, with 128 individually tracked references across components, blocks, screens, illustrations and motion. Refreshed browser discovery found Plan vs Actual and Agent Monitor absent from the older index/tab. Discovery, detailed reading, visual inspection, interaction and actual-app acceptance are distinct gates.
+- Read Stepper Form guidance and exercised its Workspace-to-Team transition. Dark preview screenshots were blank despite accessible controls; a later light-preview/Back check rendered the Workspace card and restored the prefilled values. Other steps, edited-value retention, dark rendering and final submission remain unverified. No UI implementation or acceptance is claimed by this research increment.
+
 ## 2026-10-29 — Experiment dialog scroll and focus qualification
 
 - Finished actual-app verification of the contextual experiment editor on the existing local server at `127.0.0.1:58543`. Closing during a delayed compatibility request returns focus to Laboratory; its eventual response neither reopens the dialog nor steals focus. The qualification draft was preserved before reloading the compiled release.
@@ -491,6 +665,39 @@
 - Checked installed package versions. A minimal image round-trip probe stopped at missing Pillow (`No module named 'PIL'`); no image serialization, VLM training or feature delivery is claimed. Wolfram context lookup returned an internal error.
 - Preserved concurrent assistant synchronization work; existing database conversations and keepalive implementations are reflected in the plan. Independent advisor/verifier passed the research roadmap with two nonblocking notes; clarified rollout sequencing and strengthened the proposed reload/image-dependence gate. The Git checkpoint helper stalled and was interrupted; ordinary Git status/diff checks succeeded. No runtime configuration, package dependencies, commit or push changed by this research.
 
+### 2026-10-29 — Reference behavior review continuation
+
+Expanded the full catalog register with eleven component/block behavior notes, including the prior native Metrics Dashboard control exercise. Distinguished documentation reads from visual and interaction proof. Recorded why an entire AI Workspace is unsuitable for the corner assistant, and why demo export confirmation, missing-as-zero metrics, and draggable task states cannot be adopted into real TinyStudio workflows. No application code or deployment changed in this increment; full catalog and actual-route acceptance remain open.
+
+### 2026-10-29 — Controls and feedback reference review
+
+Read eight additional component references, including the complete Experiment Card documentation previously truncated. Inspected the live Clean Filter Menu and exercised a checkbox; recorded its visual grouping and the variant difference from extracted documentation. Kept actual popover integration and remaining states unverified. Parent changed documentation only; no frontend acceptance or deployment claimed.
+
+### 2026-10-29 — Broader reference composition review
+
+- Consolidated documentation findings for four screens, six blocks and five agent controls into the full Affect UI register; recorded the observed App Directory overlay filter separately from untested connection, focus and responsive behavior.
+- Preserved catalog-only agent entries as Discovered and Agent Monitor as unreviewed. Recorded Apple popover/segmented-control constraints and explicit demo-versus-runtime boundaries. This increment changes research documentation only; it is not frontend implementation or visual acceptance.
+
+### 2026-10-29 — Context and decision reference distinctions
+
+- Reviewed ten further Affect UI components covering context composition, execution topology, decisions and approval. Recorded intended/non-intended use, data ownership, keyboard/responsive contracts and demo-state pitfalls.
+- Visually inspected Review Center populated and empty compositions; its automatic demo progression is explicitly not approval interaction proof. No frontend implementation or acceptance claim belongs to this documentation increment.
+
+### 2026-10-29 — Screen inventory documentation and settings comparison
+
+- Read the eleven remaining screen references; all fifteen screen entries now have documentation review, with visual/interaction acceptance still separate.
+- Inspected Settings & Billing at1280×720 across Billing, General, Members and API keys. Recorded distinct form/collection compositions, selected-tab changes and untested mutation/keyboard/responsive states. This is reference research only, with no application edits or release.
+
+### 2026-10-29 — Agent activity reference contracts
+
+- Completed public documentation review of eight remaining agent activity/collaboration references, with separate intended uses, runtime ownership, keyboard and responsive constraints. Recorded incompatible retry-identity and undo assumptions rather than flattening them into a generic card.
+- Visually inspected the Clean/light Agent Monitor; automatic demo progress is explicitly not an exercised approval or real run. No frontend edits or acceptance claim in this research increment.
+
+### 2026-10-29 — Complete catalog documentation coverage
+
+- Read and recorded the remaining32components,24illustrations and8motion references, including unsupported uses, demo behavior, data/permission ownership and documented accessibility/responsiveness. All128catalog items now have documentation review; visual/interaction review, implementation and acceptance remain separate and incomplete.
+- Corrected prior read-count inflation (65 included the status-definition row; actual64). Delegated illustration retrieval failed; parent retrieval succeeded. Preserved concurrent Laboratory implementation changes; this increment edits only the catalog register and this changelog entry.
+
 ## 2026-10-29 — Laboratory Runs composition and replay lifecycle
 
 - Researched the supplied AffectUI Evals/Analytics/Metrics Dashboard and Apple layout references before correcting the actual Laboratory route. Reused installed selectors, the shared inspection workspace/modal, and existing contextual command styling; no Pro screen source or separate preview page. Scientific missing-value, source, unit, clock, and retained-window semantics remain independent of dashboard example defaults.
@@ -502,6 +709,21 @@
 - Independent read-only review passed the final source checkpoint after both corrections. Scope-specific commit readiness does not establish final browser activation, hosted publication, or user visual acceptance.
 - Scope: this is a Runs presentation correction, not acceptance of the whole redesign or learning increment D; no E work. Hosted deployment and user visual acceptance remain separate.
 
+### 2026-10-29 — Shared table heading visibility
+
+- Corrected clipped sort headings in the actual Models collection by isolating the shared table label from action-label flex spacing and removing its negative margin. The first CSS-only label correction still truncated headings; browser measurements exposed the remaining eight-pixel width deficit before the final correction.
+- Rechecked Affect UI's Data Table documentation and visible Clean preview; retained native sort buttons, direction semantics and internal table scrolling. No Pro source copied. This is a shared table defect correction, not page-composition acceptance.
+- Production build/typecheck and 20 focused table tests passed. Authenticated local browser checks at 1440×900 and 1024×768 found all Models headings fully contained; ascending pointer sorting and descending keyboard sorting retained visible indicators. Datasets headers also fit at 1024×768. Light and system-dark Models views were inspected; original appearance and viewport were restored.
+- The disposable local backend at port 58543 now uses the explicit development frontend directory, so current builds can be inspected against its existing database without the illustrative preview. Hosted deployment is unchanged. Concurrent Laboratory and design-plan changes are excluded from this increment.
+
+### 2026-10-29 — Models Hub task composition (acceptance pending)
+
+- Adapted the inspected Affect UI App Directory rail/inset workspace and Settings & Billing task separation into Discover, Downloaded, Connection and Activity panes in the actual Models route. Reused the installed form controls and shared fill table; no licensed source copied. This remains one increment within the full-app redesign.
+- Preserved pane/query/token drafts across pane changes and reopening, administrator-only token editing, real API contracts, and stale-response rejection after scope changes. Server status stays unknown on failed requests rather than becoming zero or absent. Offline search errors use concise copy with bounded technical details.
+- Live authenticated localhost58543 inspection caught and corrected double input borders, a missing visible Task label and overlong empty/error messages. Checked all four panes, draft continuity, desktop ArrowDown and narrow ArrowRight navigation, and next-page behavior at 1024×768. Build/typecheck and 13 focused tests passed after corrections. The fixture is offline, so successful remote search and active download/upload completion were not proven live. Independent review and complete visual acceptance are not implied by these checks; hosted deployment is unchanged.
+- Independent review identified stale polling errors and missing background-task lifecycle checks. Polling failures now have separate ownership and clear after recovery without erasing unrelated failures. Added queued/running/terminal refresh, stop success/failure and stale mutation checks; final build and 20 focused tests passed. Parent also checked both sides of the 850px breakpoint at 650px height with visible focus and no clipped controls. Corrective independent review is pending.
+- Final stop-after-poll-failure regression exposed the last stale-error path; the no-active-task guard now clears only polling errors. Final parent production build and 21 focused tests passed. Independent micro-delta review passed this exact recovery correction; it does not establish full-app or user visual acceptance. No commit, push or hosted release was performed for this increment.
+
 
 ## 2026-10-29 — D authored language selection compatibility
 
@@ -509,6 +731,14 @@
 - Checkpoint family/dimensions and teacher/checkpoint tokenizers retain omitted-value inheritance. Compatibility remains provisional for artifact contents; this change does not implement retrieval composition or accept D.
 - The authenticated admission regression failed before the repair because an invalid 9-wide, 2-head Transformer was reported compatible. After repair, eight invalid-selection cases return incompatibility and HTTP 409 admission, with no run/attempt/dispatch created in a disposable PostgreSQL database. Existing native Transformer/GRU scratch, weights-restart and exact-resume workflows also pass (10 integrated tests total, 20.88s).
 - Focused language/preflight/initialization/distillation regression: 196 passed (3.56s), including subprocess verification that preflight does not import torch, inherited settings, immutable input preservation and reload checks. No frontend design change, live server restart or user research experiment was performed for this increment. Independent source/admission review passed this bounded checkpoint; test execution results were parent-supplied. This is a local implementation checkpoint, not hosted deployment or full D acceptance.
+
+
+### 2026-10-29 — Stats desktop composition (acceptance pending)
+
+- Inspected rendered Affect UI KPI Chart Clean and Analytics Inset/full references before adapting the Stats route. Pro references are visual only. Four equal real summary cards, a compact discrete-count plot beside the top-ten model breakdown, and a compact inventory strip reuse AnalysisTemplate, Panel, Evidence, Button and SimpleTable. Removed redundant full-width day selector and duplicated heading spacing.
+- Corrected integer axis labels/grid geometry, added keyboard day inspection and focus return after Clear day, retained assistant selection and project ownership, and distinguished invalid/partial/missing evidence from valid empty results. No invented trends or request drilldown.
+- Validation: 32 Stats/admin tests pass; production build and typecheck pass. Actual authenticated localhost Stats at 1440×900 checked in light/dark, with selected state fitting 846px content height without overflow; pointer, arrows, End, Escape and Clear day focus return exercised. 1024×768 retains scrolling, narrow layout adapts, 390px document has no horizontal overflow. Original theme and viewport override restored.
+- Independent first review found no blocking source defect but required the exact parent diff; it also prompted additional geometry/focus/invalid-data tests and repairs. Follow-up review accepted the behavioral corrections and required shared chart typography; the final narrow typography review returned PASS. The final production build passed and chart labels were visually rechecked. Ten-model live overflow, full-app journeys, hosted publication and user visual acceptance remain unverified. No commit or push in this increment; concurrent lab changes preserved.
 
 
 ## 2026-10-29 — D retained retrieval index reuse
@@ -535,10 +765,74 @@
 - Browser inspection on the actual localhost:58543 app verified generation/comparison controls, required input roles, evaluation-only cases selection and matching Definition JSON. No fixture or preview UI was used.
 - Live backend refresh and real-browser submission acceptance remain pending; the shared localhost:58543 Python process has not been restarted. D and its complete method-comparison matrix remain open. Independent corrective review returned PASS for this source checkpoint, with no remaining blocking findings. Live workflow acceptance and full D remain open.
 
+### 2026-10-30 — Interpretability capture composition (partial, local only)
+
+- Continued the previously reviewed Affect UI Analytics screen composition (https://www.affectui.com/screens/analytics; Pro visual reference, no source copied) and reused the adopted Segmented Control for Map/Table navigation. Overview now places map and neuron table alongside each other; selection opens a dedicated evidence pane instead of retaining an empty inspector and stacking both navigator representations.
+- Desktop capture workspace now fits its available height, with independently scrollable navigator/evidence areas. Map/Table has explicit panel targets and retains neuron identity. Comparison layout is unchanged and still requires separate review.
+- Actual authenticated local server on port 58543, 1440x900: populated disposable random-model capture with 48 neurons; row selection, Map/Table visibility and preserved Neuron 23, return to overview, and scrolling to evidence footer inspected. Outer workspace measured 846px client/scroll height; selected inspector 553px client and 1663px content. Screenshot: /private/tmp/tinystudio-capture-workspace.png. This is real API evidence from a tiny random fixture, not model-quality validation or a browser capture-creation journey.
+- Validation: 15 interpretability tests pass; production build passes (existing chunk-size warning); scoped diff whitespace check passes. One test was scoped to the named Examples panel after adding navigator tabpanels; scientific-value assertion retained.
+- Remaining: complete visual/state review across all routes, narrower viewport and light-theme checks for this increment, independent verification and release coordination. No hosted deployment or page acceptance claimed. Full goal remains active.
+
+### 2026-10-30 — Shared capture/comparison analysis navigator (partial)
+
+- Extracted `AnalysisNavigator` and applied it to both Interpretability capture and comparison pages. Reuses the adopted Affect UI segmented control and previously inspected Analytics composition reference. Full-layer map/table sit alongside each other; selected evidence uses the inspector with a Map/Table navigator. No empty inspector before selection.
+- Comparison title is its saved artifact name. Full experiment/baseline identifiers and scientific metric definitions remain available in labeled disclosures. Restored desktop Back to changed neurons (previously hidden by a mobile-only rule).
+- Created an offline tiny random-model comparison in the asserted disposable review database only. Actual local API/browser at 1440x900: 48 plotted neurons, selected neuron 46, Map/Table switches without changing evidence, outer client/scroll height both 846px, Back removes inspector and restores two 567px columns. Screenshot /private/tmp/tinystudio-comparison-workspace.png. Random fixture is layout/data-flow evidence, not trained-model-quality proof.
+- 15 Interpretability tests pass, including negative/zero/undefined scientific values and navigator/selection invariants; production build and scoped whitespace checks pass. Corrected unsupported Testing Library `exact` options introduced in the preceding increment.
+- Owner status polled: shared Laboratory owner remains active/waiting on approval; no source handoff or deployment inferred. Full-app visual/state acceptance, responsive/light checks and independent verification remain outstanding. Goal remains active.
+
+### 2026-10-30 — Analysis breakpoint and comparison evidence panes
+
+- Live 960px check found selected evidence pushed below the map because collapse occurred at 1000px but focused selection began at 850px. Aligned the two-pane/bounded-workspace breakpoint at 851px with the narrow focused view at 850px. Actual light-theme 960x900: columns 366/448px; outer scroll/client height both 846px. Keyboard ArrowRight changed Map to Table while retaining selection.
+- At 390x844 the selected comparison stayed in a focused evidence view with Back available and document scroll/client width both 390px. This inspection preceded the subsequent evidence-tab addition; it is not a claim that every final narrow state was retested.
+- Comparison evidence now uses the shared Affect UI segmented control for Datapoints/Tokens, with returned record counts and explicit tabpanel targets. Only the active evidence section renders; metrics stay above it. Removed nested panel padding and separated the heading with a semantic border.
+- Actual 1440px light-theme Tokens view inspected and saved to /private/tmp/tinystudio-comparison-tokens-light.png; ArrowLeft restored Datapoints and removed Tokens from the DOM. Restored system appearance and default viewport afterwards.
+- All 15 Interpretability tests pass, including exact negative token values and visible-section switching; production build passes. Full application acceptance, remaining responsive states and independent/release gates remain open.
+
+### 2026-10-30 — Reusable analysis scroll panes and retained context
+
+- Added opt-in ScrollPane to shared templates; existing template consumers keep their previous rendering by default. Capture and comparison opt in. Named focusable regions support keyboard scrolling; a stationary three-layer semantic surface fade ramps over 24px with opacity on each layer, not the overlay parent.
+- Desktop capture summary and comparison return/heading remain sticky while records scroll. Actual comparison at 1440x900: PageDown moved inspector 500.5px while content pane stayed at zero; fade was [1,1,1] vs [0,0,0]. Back and heading stayed at viewport y354/y390. Screenshot /private/tmp/tinystudio-analysis-scroll-pane.png.
+- Final dark 390x844 Tokens view inspected after this change: document width 390, region client/scroll height both 1303 (normal outer page scrolling, no clipped inner region). Navigation and token tabs remain available. Default viewport restored.
+- 16 scroll-pane/Interpretability tests and 18 shared template tests pass; build and scoped whitespace checks pass. Test covers fade ramp, reset, negative overscroll, independent layer opacity and named keyboard region. Full-app visual/state acceptance and hosted release remain open; no completion claim.
+
+### 2026-10-30 — Full-suite redesign regression audit (acceptance incomplete)
+
+- Collected the full frontend run: 884 passed, six failed across five files. Investigated failures against current controls and independent workflow expectations.
+- Updated Models test locators to explicit `Inspect model …` accessible names, retained exact action/selection/scroll/evidence/numeric-sort assertions. Updated settings failure feedback assertion to require both its separate status badge and server detail in the same live-status region.
+- Updated the legacy server bucket paging check to the shared 25-row default and current Next control; preserved exact server offset and bucket assertions above the 1000-row backend cap. Training recovery now waits for the independent resource reload before asserting the saved pending experiment; duplicate-save prevention remains asserted.
+- Focused checks: 37 collection/settings/data tests and 12 training setup/recovery tests passed; diff whitespace check passed. Full recheck running. The Laboratory unsaved-context regression remains unchanged and unresolved under shared-source coordination.
+- Actual authenticated local Models route inspected at 1440×1000. This is observation, not full visual acceptance. No new production UI changes, commit, deployment, or independent-verifier PASS claimed in this increment.
+- Full recheck completed: **889 passed, one failed** (87 files passed, one failed). Remaining failure: Laboratory experiment switching discards the edited draft before the user resolves the switch. Kept this regression test intact; source handoff remains pending. Backend owner chat freshly polled and remains active/waiting on approval.
+
+### 2026-10-30 — Reusable model identity hierarchy
+
+- Added ModelIdentity and semantic-token typography styles; reused in inventory, Hub search results and downloaded models. Adapted Affect UI App Directory's name/publisher hierarchy after reopening its rendered preview. Preserved exact repository identity for actions, evidence and filtering.
+- Production build and 21 focused Hub/collection tests passed. Actual local desktop browser confirmed populated downloaded rows and opening the exact inventory inspector. Saved /private/tmp/tinystudio-model-identities.png.
+- Full-route visual acceptance and independent verification remain incomplete; no commit or deployment. The broader redesign remains active.
+
+### 2026-10-30 — Projects hierarchy and real creation acceptance increment
+
+- Projects show the goal beneath the name, an explicit Current project marker, shared readable dates, and structured empty/search recovery. Reused existing templates and primitives after rendered Affect UI Folders inspection.
+- Real local creation -> new project selected -> empty datasets -> directory search -> saved detail -> focus-return -> no-match recovery -> original workspace restored passed. Created only `UI review project October 30` in disposable review database; retained for inspection.
+- 15 targeted lifecycle/layout tests passed; production build passed with existing bundle warning; whitespace check passed. Desktop screenshot: /private/tmp/tinystudio-project-directory.png. No full-route/whole-app acceptance, independent-verifier PASS, commit or hosted release claimed.
+
+### 2026-10-30 — Account hierarchy and fitted-table context correction
+
+- Reviewed actual Affect UI Members/API keys reference states before changing Users identity grouping, compact role-filter composition and API-key metadata presentation. Reused CollectionToolbar and RecordDate.
+- Found a real shared pagination regression during browser review: equivalent parent renders discarded row-height samples and could move a later page backward. Added a failing reproduction and preserved samples across equivalent arrays/inline columns; real record refreshes still reset them. Adjusted the existing refresh fixture to represent changed server records instead of a shallow copy of unchanged records.
+- 72 focused tests passed; frontend production build passed. Live localhost paging remained on page two after Add user open/dismiss, with focus restored. Source/tests/local visual evidence only; account surfaces and full redesign remain unaccepted. No commit, push or hosted deployment; independent-review approval remains outstanding.
+
 ## 2026-10-30 — Reviewed local backend activation
 
 - With explicit user approval after independent source review, activated commit `5931b40` in the existing disposable backend on `127.0.0.1:58543`, preserving its database and credential configuration. The authenticated Laboratory compatibility action reached the new generation validator and rejected missing model/cases inputs without starting execution.
 - Began a bounded paired-generation UI qualification fixture. The cases upload is retained, but the browser-control tool became unavailable before submission and result inspection; this is not full workflow acceptance. No qualification run was submitted, no hosted deployment occurred, and D remains open. A later read-only check returned HTTP 200; the listener had changed outside this restart, so it was left untouched.
+
+### 2026-10-30 — Follow-up regression audit
+
+- The interrupted broad run had no final summary and cannot support a full-suite result. Reproduced three directory-test failures: split model identity text, duplicated project goal in list/inspector, and the revised no-results heading. Assertions now verify the exact model repository URL and name/publisher, scope project-detail expectations to the named inspector, and preserve clear-search recovery and no-mutation checks. Both suites pass: 19 tests.
+- Isolated Lab validation passes 36 tests and fails the existing draft-preservation regression (37 total). Sent the concrete failure to the user-authorized release owner; no shared Lab implementation edited or source handoff inferred.
+- Browser control became unavailable; the newly advertised Browser skill path is absent, and a cache search found no replacement control-in-app-browser/SKILL.md. No new browser proof is claimed in this follow-up. A full suite with bounded worker concurrency is running; final results pending.
 
 ## 2026-10-30 — Actual-app paired generation workflow
 
@@ -552,3 +846,31 @@
 - Numeric forecasting/fusion and control/tool-language policies now share pure admission/execution checks for architecture, initialization, representation, objective and update strategy. Contradictory scratch/resume bindings and unused teacher, retrieval or embedding selections fail before checkpoint access or training instead of being silently ignored.
 - Resume comparisons exclude initialization from either supported authoring location, verify the original recorded configuration digest, and normalize older checkpoint metadata without accepting changed learning rates or other training settings. A reproduced legacy-parameter resume failure prompted this correction during independent review.
 - Focused selection/preflight, language PPO/GRPO, control/offline/imitation and numeric/fusion checks passed 157 tests, including uninterrupted-versus-resumed tensor equality for both initialization field locations, configuration tamper rejection and existing save/reload checks. This source checkpoint is not activation or full D acceptance.
+
+## 2026-10-30 — Laboratory editor and navigation correction (not visually accepted)
+
+- Restored inline existing-experiment viewing and the Configure experiment destination; retained New experiment and Import/export dialogs. Added an inline dirty-definition-switch choice and removed the saved-definition picker from the creation dialog.
+- Reduced the section-heading rail to give engine controls usable horizontal space, consolidated inline/dialog responsive grids, and kept the Laboratory header stable across work-area changes. Added a reduced-motion-aware opacity transition.
+- Bounded regression worker updated obsolete dialog-only expectations while retaining lifecycle assertions. Parent focused validation passed 71 tests across five Laboratory suites; production build passed with the existing bundle-size warning. A further navigation assertion checks edited names survive Runs/Experiment switching.
+- Impeccable source scan reported an existing graph-node accent-border warning in lab.css; it is not a visual pass. In-app Browser remains disabled according to the tool, so screenshots, full-screen/mobile review and interaction acceptance remain pending. No other-chat messaging, hosted deployment, commit or completion claim.
+
+- The new edit-and-switch regression exposed a real form defect: temporarily clearing the experiment name removed the editor. Authoring now retains that temporary empty-name state while strict save/preflight validation keeps submission disabled. After this correction, all 71 focused Laboratory tests passed again; the final TypeScript/Vite build and scoped whitespace check passed. In-app visual acceptance is still outstanding.
+
+## 2026-10-30 — Explicit draft replacement and full route acceptance inventory
+
+- Reproduced New experiment silently replacing an edited saved definition before any confirmation. Extended the existing inline pending choice to New: Keep editing retains the draft; explicit discard opens a fresh creation dialog. No third confirmation dialog, no API mutation from the decision, and busy guards remain enforced.
+- Bounded implementation worker owned the Lab source/context regression and the two lifecycle tests affected by the explicit-discard contract. Invalid JSON now remains until discard; a pending repository observation stays alive until discard and then cancels, with late-result isolation assertions retained. Context/navigation/Lab suites passed 64 tests; dialog/lifecycle suites passed 8 tests (72 total across five suites). Parent inspected the changed transitions and assertions. Production build passed with the existing bundle-size warning; scoped whitespace checks passed.
+- Added an explicit route/section acceptance checklist in DESIGN.md against current App.tsx routes and actual shared-template consumers. All acceptance boxes remain open; historical research and partial screenshots are not represented as complete redesign evidence.
+- Previous goal turn was progress (source corrections and 71 passing regressions). This turn adds a reproduced and repaired draft-loss path and authoritative coverage inventory. In-app Browser still returns “Local browser use is disabled in Work settings”; no alternate browser or new visual pass is claimed. Independent restricted-reader review remains incomplete under the previously reported automatic approval rejection; no bypass, commit, push, hosted release or other-chat message occurred.
+
+## 2026-10-30 — Frontend integration regression recheck
+
+- Full frontend run found three obsolete Laboratory navigation expectations (999 passed, three failed). Updated retained-run routing to expect the restored inline Experiment tab; data-preparation validation now exercises Runs/Edit navigation while preserving the same invalid input and blocked-write assertions. Language-learning save/reopen checks now switch saved identities before reloading revision 2, retaining metadata, preflight and submitted-revision assertions.
+- Bounded implementation worker updated only the two authoring test files; parent reviewed those changes and corrected the route expectation. Focused checks passed 37 tests. Full rerun with two workers passed all **1,002 tests across 98 files**; scoped whitespace check passed. No production UI changes in this increment.
+- These are automated integration results, not visual acceptance. Browser access remains unresolved despite the user confirming the setting is enabled; no cause is attributed to user changes. Full desktop/mobile screenshots and actual interaction review remain outstanding. No other-chat messaging, commit or deployment.
+
+## 2026-11-04 — Local frontend availability recovery
+
+- Rebuilt the current frontend and restored its compiled assets to the existing localhost:58543 review server static directory. Root HTML and entry JavaScript returned HTTP 200; served entry JavaScript matched the build SHA-256. No database migration or server restart was performed for this repair.
+- Reconnected the Codex in-app Browser, reloaded the actual Laboratory route, and visually verified rendering at 1840×1196. The existing authenticated Support workspace loaded; Refresh laboratory and the retained-run selector returned existing run choices without the previous missing-module message. Screenshot: `/private/tmp/tinystudio-frontend-restored.png`.
+- This resolves the build-required fallback only; it does not establish complete redesign acceptance or verify every backend workflow.

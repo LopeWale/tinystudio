@@ -308,7 +308,15 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
         : path === "/api/lab/runs/run"
           ? { id: "run", state: "queued" }
           : path === "/api/lab/definitions"
-            ? [saved]
+            ? [
+                saved,
+                {
+                  id: "other-language-context",
+                  name: "Other saved experiment",
+                  revision: 1,
+                  definition: makeDefinition(),
+                },
+              ]
             : path === "/api/lab/catalog"
               ? { adapters: [], methods: [], domains: [] }
               : path === "/api/lab/targets"
@@ -349,7 +357,7 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
   await userEvent.click(
     screen.getByRole("button", { name: "Open experiment" }),
   );
-  const editor = within(screen.getByRole("dialog"));
+  const editor = within(screen.getByRole("tabpanel", { name: "Experiment" }));
   await select("Saved experiment", "Language revision · r1");
   expect(
     editor.getByRole("button", { name: "Run saved revision" }),
@@ -411,7 +419,12 @@ it("saves, reopens and submits the actual Lab revision with JSON and advanced me
     expected_revision: 1,
     definition: authored,
   });
-  await userEvent.click(editor.getByRole("button", { name: "New experiment" }));
+  // Load a different saved identity before reopening the saved revision so the
+  // metadata assertions exercise persisted data rather than the current draft.
+  await waitFor(() =>
+    expect(editor.getByRole("button", { name: /Saved experiment/ })).toBeEnabled(),
+  );
+  await select("Saved experiment", "Other saved experiment · r1");
   await select("Saved experiment", "Language revision · r2");
   expect(editor.getByLabelText("Hidden size")).toHaveValue("64");
   expect(

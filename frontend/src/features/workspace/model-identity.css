@@ -1,0 +1,21 @@
+@reference "../../styles/globals.css";
+
+.model-identity {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  text-align: start;
+  vertical-align: middle;
+}
+.model-identity__name {
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+  @apply text-body-2-medium;
+}
+.model-identity__source {
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+  @apply text-caption-1-regular;
+}

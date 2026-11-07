@@ -1,0 +1,5 @@
+/* Preserve comparison columns when the contextual inspector reduces available
+   width. The shared table owns internal scrolling and its fixed footer. */
+.models-workspace .records-table-host .data-table table {
+  min-inline-size: 960px;
+}

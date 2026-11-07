@@ -3,6 +3,8 @@
   border-radius: 6px;
 }
 .users-workspace .users-role-filter {
+  flex: 0 0 auto;
+  inline-size: 160px;
   min-inline-size: 140px;
 }
 .users-account-count {
@@ -11,7 +13,14 @@
   @apply text-caption-1-regular;
 }
 .users-identity {
-  display: inline-flex;
+  display: grid;
+  gap: 4px;
+}
+.users-identity-heading {
+  display: flex;
+  flex-wrap: wrap;
+  color: var(--color-text-primary);
+  @apply text-body-2-medium;
   align-items: center;
   gap: 8px;
 }
@@ -34,4 +43,9 @@
   .users-form-identity {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.users-email {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
 }

@@ -17,7 +17,7 @@ import {
   Select,
   SelectItem,
 } from "../../components/boardui/base/select/select";
-import { ErrorNotice, enc } from "../data/common";
+import { ErrorNotice, RecordDate, enc } from "../data/common";
 import "../data/records-workspace.css";
 import "../data/affect-data.css";
 import "../../components/studio/form-controls.css";
@@ -203,12 +203,11 @@ export function UsersPage() {
                     layout="fill"
                     pagination="client"
                     toolbarContent={
-                      <>
-                        <CollectionToolbar
-                          label="Find a user"
-                          query={query}
-                          onQueryChange={setQuery}
-                        />
+                      <CollectionToolbar
+                        label="Find a user"
+                        query={query}
+                        onQueryChange={setQuery}
+                      >
                         <Select
                           size="sm"
                           className="users-role-filter"
@@ -225,7 +224,7 @@ export function UsersPage() {
                         <span className="users-account-count">
                           {r.data?.length ?? 0} accounts
                         </span>
-                      </>
+                      </CollectionToolbar>
                     }
                     empty={
                       <EmptyState>
@@ -267,22 +266,20 @@ export function UsersPage() {
                     columns={[
                       {
                         id: "email",
-                        label: "Email",
-                        value: (user) => user.email,
+                        label: "Account",
+                        value: (user) => `${user.name || ""} ${user.email}`,
                         hideable: false,
                         render: (user) => (
-                          <span className="users-identity">
-                            {user.email}
-                            {user.id === s.user.id && <Badge>You</Badge>}
-                          </span>
+                          <div className="users-identity">
+                            <span className="users-identity-heading">
+                              <bdi>{user.name || user.email}</bdi>
+                              {user.id === s.user.id && <Badge>You</Badge>}
+                            </span>
+                            {user.name && (
+                              <bdi className="users-email">{user.email}</bdi>
+                            )}
+                          </div>
                         ),
-                      },
-                      {
-                        id: "name",
-                        label: "Name",
-                        value: (user) => user.name,
-                        hideable: false,
-                        render: (user) => <>{user.name || "—"}</>,
                       },
                       {
                         id: "role",
@@ -316,7 +313,12 @@ export function UsersPage() {
                         id: "login",
                         label: "Last login",
                         value: (user) => user.last_login,
-                        render: (user) => <>{user.last_login || "—"}</>,
+                        render: (user) =>
+                          user.last_login ? (
+                            <RecordDate value={user.last_login} />
+                          ) : (
+                            <>Never</>
+                          ),
                       },
                       {
                         id: "status",

@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import {
   act,
@@ -64,6 +65,93 @@ const cache = {
   free_disk_gb: 12,
 };
 describe("model controls use real API contracts", () => {
+  it.each([
+    ["down", "Load", "up"],
+    ["up", "Unload", "down"],
+  ])(
+    "keeps %s model serving reachable from details and recovers from failure",
+    async (status, label, operation) => {
+      let rejectRequest!: (error: Error) => void;
+      const api = {
+        get: vi.fn(async (path: string) =>
+          path === "/api/models" ? [{ ...inventory[0], status }] : cache,
+        ),
+        post: vi.fn(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectRequest = reject;
+            }),
+        ),
+      };
+      wrap(<ModelsPage />, runtime(api));
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Inspect model Tuned" }),
+      );
+      const detail = within(
+        screen.getByRole("complementary", { name: "Tuned" }),
+      );
+      const servingButtons = screen.getAllByRole("button", { name: label });
+      await userEvent.click(detail.getByRole("button", { name: label }));
+      expect(api.post).toHaveBeenCalledExactlyOnceWith(
+        `/api/models/job~1/${operation}`,
+        {},
+      );
+      for (const button of servingButtons) {
+        expect(button).toBeDisabled();
+      }
+      await act(async () =>
+        rejectRequest(new Error("Serving target unavailable")),
+      );
+      expect(
+        await screen.findByText("Serving target unavailable"),
+      ).toBeVisible();
+      expect(detail.getByRole("button", { name: label })).toBeEnabled();
+      expect(detail.getByRole("link", { name: "Test" })).toHaveAttribute(
+        "href",
+        "#/playground?model=job%2F1",
+      );
+      expect(
+        screen.getByRole("checkbox", { name: "Select model Tuned" }),
+      ).not.toBeChecked();
+    },
+  );
+  it("keeps inventory rows scannable and reveals model-specific details without selecting or loading it", async () => {
+    const api = {
+      get: vi.fn(async (path: string) =>
+        path === "/api/models"
+          ? [{ ...inventory[0], notes: "Detailed model qualification notes" }]
+          : cache,
+      ),
+      post: vi.fn(),
+    };
+    wrap(<ModelsPage />, runtime(api));
+    const open = await screen.findByRole("button", {
+      name: "Inspect model Tuned",
+    });
+    const table = screen.getByRole("table", { name: "Model inventory" });
+    expect(
+      within(table).queryByText("Detailed model qualification notes"),
+    ).toBeNull();
+    expect(within(table).queryByText("Upload to Hub")).toBeNull();
+    expect(
+      within(table).getByRole("button", { name: "Load" }),
+    ).toBeInTheDocument();
+    await userEvent.click(open);
+    expect(
+      screen.getByText("Detailed model qualification notes"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Upload to Hub" })).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Download Tuned" }),
+    ).toHaveAttribute("href", "/api/p/fixture/jobs/job/experiments/1/download");
+    expect(
+      screen.getByRole("link", { name: "Training & checkpoints" }),
+    ).toHaveAttribute("href", "#/finetuning/job");
+    expect(
+      screen.getByRole("checkbox", { name: "Select model Tuned" }),
+    ).not.toBeChecked();
+    expect(api.post).not.toHaveBeenCalled();
+  });
   it("loads models, saves and clears a Hub token, and submits explicit upload privacy/merge settings", async () => {
     const api = {
       get: vi.fn(async (path: string) =>
@@ -88,7 +176,8 @@ describe("model controls use real API contracts", () => {
     const hub = screen.getByRole("dialog", {
       name: "Discover & manage Hub models",
     });
-    fireEvent.change(within(hub).getByLabelText("Hub access token"), {
+    await userEvent.click(within(hub).getByRole("tab", { name: "Connection" }));
+    fireEvent.change(within(hub).getByLabelText(/Hub access token/), {
       target: { value: "hf_private-test-fixture" },
     });
     fireEvent.click(screen.getByText("Save token"));
@@ -98,9 +187,12 @@ describe("model controls use real API contracts", () => {
       }),
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("Hub access token")).toHaveValue(""),
+      expect(screen.getByLabelText(/Hub access token/)).toHaveValue(""),
     );
     fireEvent.click(within(hub).getByRole("button", { name: "Close dialog" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect model Tuned" }),
+    );
     fireEvent.click(screen.getByText("Upload to Hub"));
     fireEvent.change(screen.getByLabelText("Repository ID (user/name)"), {
       target: { value: "tester/weights" },
@@ -158,14 +250,23 @@ describe("model controls use real API contracts", () => {
     fireEvent.change(screen.getByLabelText("Search the Hugging Face Hub"), {
       target: { value: "tiny model" },
     });
-    fireEvent.change(screen.getByLabelText("Task"), {
-      target: { value: "embeddings" },
-    });
-    fireEvent.change(screen.getByLabelText("Maximum parameters (billions)"), {
+    await userEvent.click(
+      screen.getByRole("button", { name: /Text generation/ }),
+    );
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Embeddings (RAG)" }),
+    );
+    fireEvent.change(screen.getByLabelText("Max parameters (B)"), {
       target: { value: "1.5" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
-    await screen.findByText("org/valid");
+    const repository = await screen.findByTitle("org/valid");
+    expect(repository.closest("a")).toHaveAttribute(
+      "href",
+      "https://huggingface.co/org/valid",
+    );
+    expect(repository).toHaveTextContent("valid");
+    expect(repository).toHaveTextContent("org");
     expect(api.get).toHaveBeenCalledWith(
       "/api/hub/search?q=tiny+model&limit=15&task=embeddings&max_params_b=1.5",
       expect.any(AbortSignal),
@@ -200,7 +301,8 @@ describe("review traces", () => {
     const s = runtime(api);
     wrap(<TracesPage />, s);
     await screen.findByText("Question");
-    fireEvent.click(screen.getByText("Fix"));
+    fireEvent.click(screen.getByText("Inspect trace"));
+    fireEvent.click(screen.getByText("Correct response"));
     fireEvent.change(screen.getByLabelText("Corrected answer"), {
       target: { value: "Correct answer" },
     });
@@ -433,7 +535,7 @@ describe("Playground workspace session retention", () => {
       </StrictMode>,
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("Model")).toHaveValue("job/1"),
+      expect(screen.getByRole("button", { name: /Tuned/ })).toBeInTheDocument(),
     );
     fireEvent.change(screen.getByLabelText("Message your model"), {
       target: { value: "Remember this exchange" },

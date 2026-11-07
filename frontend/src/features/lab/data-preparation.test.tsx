@@ -354,8 +354,15 @@ it("wires invalid data edits into the actual Lab Save, preflight and run control
   await open("Ordered transformations");
   edit("Stage 1 factor", "-");
   const invalidFactor = screen.getByLabelText("Stage 1 factor");
-  await userEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  // Exercise keyboard navigation: jsdom has no layout for pointer hit testing.
+  screen.getByRole("tab", { name: "Runs" }).focus();
+  await userEvent.keyboard("{Enter}");
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(invalidFactor).not.toBeVisible();
   await userEvent.click(
     screen.getByRole("button", { name: "Edit experiment" }),
   );

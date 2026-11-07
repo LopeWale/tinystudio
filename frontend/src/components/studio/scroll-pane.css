@@ -1,0 +1,45 @@
+.studio-scroll-pane {
+  position: relative;
+  min-block-size: 0;
+  min-inline-size: 0;
+  block-size: 100%;
+  display: flex;
+}
+.studio-scroll-pane__body {
+  flex: 1;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.studio-scroll-pane__body:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring);
+  outline-offset: -2px;
+}
+.studio-scroll-pane__edge {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  block-size: 24px;
+  pointer-events: none;
+  z-index: 4;
+}
+.studio-scroll-pane__edge i {
+  position: absolute;
+  inset: 0;
+  mask-image: linear-gradient(black, transparent);
+}
+.studio-scroll-pane__edge i:nth-child(1) {
+  backdrop-filter: blur(1px);
+}
+.studio-scroll-pane__edge i:nth-child(2) {
+  block-size: 16px;
+  backdrop-filter: blur(4px);
+}
+.studio-scroll-pane__edge i:nth-child(3) {
+  background: linear-gradient(
+    var(--color-background-primary-default),
+    transparent
+  );
+}

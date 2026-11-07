@@ -40,6 +40,7 @@ export function RepositoriesPage() {
   const [selectedRepository, selectRepository] = useState("");
   const [documentQuery, setDocumentQuery] = useState("");
   const dialogGeneration = useRef(0);
+  const queryRevision = useRef(0);
   const submissionGeneration = useRef<number | null>(null);
   const [query, setQuery] = useState(""),
     [checked, setChecked] = useState<any[]>([]),
@@ -119,7 +120,26 @@ export function RepositoriesPage() {
     () => () => controller?.abort(),
     [controller, s.project, s.user?.id],
   );
-  const field = (k: string) => (x: any) => V((p: any) => ({ ...p, [k]: x }));
+  const field = (k: string) => (x: any) => {
+    if (dialog === "query") {
+      queryRevision.current++;
+      Rows(null);
+      a.clearError();
+    }
+    V((p: any) => ({ ...p, [k]: x }));
+  };
+  const queryError = !String(v.text ?? "").trim()
+    ? "Enter a question or search text."
+    : !Number.isInteger(Number(v.limit)) ||
+        Number(v.limit) < 1 ||
+        Number(v.limit) > 50
+      ? "Passages must be a whole number from 1 to 50."
+      : String(v.similarity_threshold ?? "").trim() === "" ||
+          !Number.isFinite(Number(v.similarity_threshold)) ||
+          Number(v.similarity_threshold) < -1 ||
+          Number(v.similarity_threshold) > 1
+        ? "Minimum similarity must be between −1 and 1."
+        : "";
   const close = () => {
     dialogGeneration.current++;
     controller?.abort();
@@ -161,6 +181,7 @@ export function RepositoriesPage() {
     },
   });
   function runSubmit() {
+    if (dialog === "query" && queryError) return;
     const generation = dialogGeneration.current;
     if (submissionGeneration.current === generation) return;
     submissionGeneration.current = generation;
@@ -171,7 +192,10 @@ export function RepositoriesPage() {
   }
   async function submit() {
     const generation = dialogGeneration.current;
-    const isCurrent = () => generation === dialogGeneration.current;
+    const revision = queryRevision.current;
+    const isCurrent = () =>
+      generation === dialogGeneration.current &&
+      (dialog !== "query" || revision === queryRevision.current);
     try {
       if (dialog === "create") {
         if (!v.name.trim()) throw Error("Give the repository a name");
@@ -362,17 +386,25 @@ export function RepositoriesPage() {
                 r.loading ? (
                   "Loading records…"
                 ) : (
-                  <EmptyState>
-                    {query ? (
-                      <>
-                        No repositories match “{query}”.{" "}
+                  <EmptyState
+                    heading={
+                      query ? "No matching repositories" : "No repositories yet"
+                    }
+                    actions={
+                      query ? (
                         <Button onClick={() => setQuery("")}>
                           Clear search
                         </Button>
-                      </>
-                    ) : (
-                      "No repositories yet. Create one and add documents or URLs."
-                    )}
+                      ) : (
+                        <Button onClick={() => open("create")}>
+                          New repository
+                        </Button>
+                      )
+                    }
+                  >
+                    {query
+                      ? `No repositories match “${query}”.`
+                      : "Create a repository, then add documents or URLs to search their contents."}
                   </EmptyState>
                 )
               }
@@ -511,18 +543,26 @@ export function RepositoriesPage() {
             }
             empty={
               documentQuery ? (
-                <EmptyState>
-                  No documents match “{documentQuery}”.{" "}
-                  <Button onClick={() => setDocumentQuery("")}>
-                    Clear document search
-                  </Button>
+                <EmptyState
+                  heading="No matching documents"
+                  actions={
+                    <Button onClick={() => setDocumentQuery("")}>
+                      Clear document search
+                    </Button>
+                  }
+                >
+                  No documents match “{documentQuery}”.
                 </EmptyState>
               ) : (
-                <EmptyState>
-                  No documents indexed yet.{" "}
-                  <Button onClick={() => open("add", inspected.name)}>
-                    Add documents to this repository
-                  </Button>
+                <EmptyState
+                  heading="No documents indexed yet"
+                  actions={
+                    <Button onClick={() => open("add", inspected.name)}>
+                      Add documents to this repository
+                    </Button>
+                  }
+                >
+                  Add files or URLs to make their contents searchable.
                 </EmptyState>
               )
             }
@@ -616,7 +656,10 @@ export function RepositoriesPage() {
             <Button
               variant="primary"
               loading={a.busy}
-              disabled={dialog === "add" && phase === "indexing"}
+              disabled={
+                (dialog === "add" && phase === "indexing") ||
+                (dialog === "query" && Boolean(queryError))
+              }
               onClick={runSubmit}
             >
               {dialog === "create"
@@ -730,54 +773,76 @@ export function RepositoriesPage() {
                 </TextField>
               </div>
               {results === null ? (
-                <p>Search to inspect relevant passages.</p>
+                <p className="repository-dialog-hint">
+                  {queryError && String(v.text ?? "").trim()
+                    ? queryError
+                    : "Search to inspect relevant passages."}
+                </p>
               ) : results.length ? (
-                <DataTable
-                  scopeKey={s.scopeKey + ":" + s.route}
-                  label="Repository search results"
-                  rows={results}
-                  getRowId={(x: any) => String(results.indexOf(x))}
-                  pagination="client"
-                  columns={[
-                    {
-                      id: "col-0",
-                      label: "Similarity",
-                      value: (x: any) => x.similarity_score,
-                      render: (x: any) => <>{x.similarity_score.toFixed(3)}</>,
-                    },
-                    {
-                      id: "col-1",
-                      label: "Document",
-                      value: (x: any) => x.document,
-                      render: (x: any) => <>{x.document}</>,
-                    },
-                    {
-                      id: "col-2",
-                      label: "Passage",
-                      value: (x: any) => x.text,
-                      render: (x: any) => (
-                        <>
-                          <pre className="data-prose">{x.text}</pre>
-                        </>
-                      ),
-                    },
-                  ]}
-                  renderRow={(x: any, { key, ...props }, cells) => (
-                    <Evidence
-                      as="tr"
-                      {...props}
-                      key={key}
-                      label="Repository result"
-                      data={x}
-                    >
-                      {cells}
-                    </Evidence>
-                  )}
-                />
+                <section
+                  className="repository-query-results"
+                  aria-label="Retrieved passages"
+                >
+                  <header className="repository-query-results-heading">
+                    <h3>Retrieved passages</h3>
+                    <span>
+                      {results.length} matches · similarity score, not
+                      confidence
+                    </span>
+                  </header>
+                  <DataTable
+                    layout="fill"
+                    scopeKey={s.scopeKey + ":" + s.route + ":query:" + repo}
+                    label="Repository search results"
+                    rows={results}
+                    getRowId={(x: any) =>
+                      String(x.chunk_id ?? results.indexOf(x))
+                    }
+                    pagination="client"
+                    columns={[
+                      {
+                        id: "col-1",
+                        label: "Document",
+                        width: "24%",
+                        value: (x: any) => x.document,
+                        render: (x: any) => <>{x.document}</>,
+                      },
+                      {
+                        id: "col-0",
+                        label: "Similarity",
+                        width: 104,
+                        value: (x: any) => x.similarity_score,
+                        render: (x: any) => (
+                          <>{x.similarity_score.toFixed(3)}</>
+                        ),
+                      },
+                      {
+                        id: "col-2",
+                        label: "Passage",
+                        value: (x: any) => x.text,
+                        render: (x: any) => (
+                          <>
+                            <p className="repository-query-passage">{x.text}</p>
+                          </>
+                        ),
+                      },
+                    ]}
+                    renderRow={(x: any, { key, ...props }, cells) => (
+                      <Evidence
+                        as="tr"
+                        {...props}
+                        key={key}
+                        label="Repository result"
+                        data={x}
+                      >
+                        {cells}
+                      </Evidence>
+                    )}
+                  />
+                </section>
               ) : (
-                <EmptyState>
-                  No matching passages. Try another search or lower the
-                  similarity threshold.
+                <EmptyState heading="No matching passages">
+                  Try another search or lower the minimum similarity.
                 </EmptyState>
               )}
             </>

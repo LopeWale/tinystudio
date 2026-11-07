@@ -208,7 +208,7 @@ describe("focused training experiment setup", () => {
     );
     await within(screen.getByRole("dialog")).findByRole("alert");
     expect(
-      screen.getByText("Saved experiment 1 · pending"),
+      await screen.findByText("Saved experiment 1 · pending"),
     ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {

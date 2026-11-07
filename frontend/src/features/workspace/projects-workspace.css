@@ -1,3 +1,5 @@
+@reference "../../styles/globals.css";
+
 .projects-count {
   color: var(--color-text-tertiary);
   white-space: nowrap;
@@ -42,4 +44,21 @@
 .projects-create-fields {
   display: grid;
   gap: 16px;
+}
+
+.projects-summary {
+  display: grid;
+  gap: 0.25rem;
+  min-inline-size: 0;
+}
+.projects-goal {
+  margin: 0;
+  max-inline-size: 36rem;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  @apply text-caption-1-regular;
 }

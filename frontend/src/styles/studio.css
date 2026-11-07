@@ -1,21 +1,22 @@
+@reference "./globals.css";
 /* Shared base styles; semantic theme lives in theme.css. */
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
   color: var(--color-text-primary);
   background: var(--color-background-full);
   font-synthesis: none;
 }
 body {
   margin: 0;
+  @apply text-body-regular;
 }
 * {
   box-sizing: border-box;
 }
-button,
-input,
-select,
-textarea {
-  font: inherit;
+@layer base {
+  button, input, select, textarea {
+    font: inherit;
+  }
 }
 a {
   color: var(--color-accent-600);
@@ -26,16 +27,11 @@ h3,
 p {
   margin-block-start: 0;
 }
-h1 {
-  font-size: 1.375rem;
-  line-height: 1.25;
-  letter-spacing: -0.035em;
-}
-h2 {
-  font-size: 1rem;
-}
-p {
-  line-height: 1.6;
+@layer base {
+  h1 { @apply text-title-1-semibold; }
+  h2 { @apply text-headline-medium; }
+  h3 { @apply text-body-medium; }
+  p { @apply text-body-regular; }
 }
 button,
 a,
@@ -237,6 +233,27 @@ svg {
   padding: 3rem 1rem;
   color: var(--color-text-tertiary);
 }
+.empty-state-structured {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.empty-state-structured h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+.empty-state-description {
+  max-inline-size: 360px;
+  overflow-wrap: anywhere;
+}
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-block-start: 8px;
+}
 .badge {
   display: inline-flex;
   padding: 0.2rem 0.55rem;
@@ -277,6 +294,7 @@ svg {
   gap: 1rem;
 }
 .studio-modal > header h2 {
+  @apply text-title-3-semibold;
   margin: 0;
 }
 .studio-modal > footer {

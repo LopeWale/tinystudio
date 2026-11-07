@@ -166,10 +166,35 @@ export function Field({
     </div>
   );
 }
-export function EmptyState({ children, className, ...props }: Box) {
+export function EmptyState({
+  heading,
+  actions,
+  children,
+  className,
+  ...props
+}: Box & {
+  heading?: ReactNode;
+  actions?: ReactNode;
+}) {
+  const structured = Boolean(heading || actions);
   return (
-    <div {...props} className={cx("empty-state", className)}>
-      {children}
+    <div
+      {...props}
+      className={cx(
+        "empty-state",
+        structured && "empty-state-structured",
+        className,
+      )}
+    >
+      {heading && <h3 className="text-body-medium">{heading}</h3>}
+      {structured ? (
+        <div className="empty-state-description text-body-2-regular">
+          {children}
+        </div>
+      ) : (
+        children
+      )}
+      {actions && <div className="empty-state-actions">{actions}</div>}
     </div>
   );
 }

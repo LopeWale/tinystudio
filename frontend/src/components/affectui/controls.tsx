@@ -25,7 +25,7 @@ export type ControlledFilterMenuProps = Omit<
   onChange: (value: FilterValue) => void;
 };
 export function FilterMenu(props: ControlledFilterMenuProps) {
-  return <SourceFilterMenu {...props} />;
+  return <SourceFilterMenu {...props} className={cx("studio-filter-menu", props.className)} />;
 }
 export type ControlledSegmentedControlProps<T extends string = string> = Omit<
   SegmentedControlProps<T>,

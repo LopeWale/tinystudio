@@ -223,6 +223,55 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("interpretability creation dialogs", () => {
+  it("submits the chosen model and source with evidence settings, retaining values on failure", async () => {
+    const api = captureApi((path) =>
+      path === "/api/interp"
+        ? Promise.resolve({ captures: [], comparisons: [] })
+        : path === "/api/jobs"
+          ? Promise.resolve([])
+          : undefined,
+    );
+    api.post.mockRejectedValueOnce(new Error("Capture worker unavailable"));
+    const studio = runtime(api);
+    studio.overview = {
+      tree: { datasets: [{ name: "support", datapoints: 83, snapshots: [] }] },
+      catalog: [],
+    } as any;
+    mount(studio, "/interp");
+    fireEvent.click(await screen.findByRole("button", { name: "New capture" }));
+    const dialog = screen.getByRole("dialog", {
+      name: "Capture model activations",
+    });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Model" }), {
+      target: { value: "trained/1" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Layers"), {
+      target: { value: "2,5" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Capture name (optional)"), {
+      target: { value: "support-check" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Capture" }));
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/api/interp/captures", {
+        model: "trained/1",
+        dataset: "support",
+        layers: [2, 5],
+        topk: 40,
+        name: "support-check",
+      }),
+    );
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Capture worker unavailable",
+    );
+    expect(within(dialog).getByRole("combobox", { name: "Model" })).toHaveValue(
+      "trained/1",
+    );
+    expect(studio.trackTask).not.toHaveBeenCalled();
+  });
+});
+
 describe("interpretability artifact collections", () => {
   it("switches peer collections with the keyboard while retaining independent search/sort and revoking hidden table actions", async () => {
     const captures = [
@@ -397,9 +446,12 @@ describe("interpretability artifact collections", () => {
     fireEvent.change(within(captureDialog).getByLabelText("Model"), {
       target: { value: "base/model" },
     });
-    fireEvent.change(within(captureDialog).getByLabelText("Source"), {
-      target: { value: "snapshot:commands-snap" },
-    });
+    fireEvent.click(
+      within(captureDialog).getByRole("button", { name: /Source/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Snapshot · commands-snap" }),
+    );
     fireEvent.change(within(captureDialog).getByLabelText("Layers"), {
       target: { value: "1,3" },
     });
@@ -635,7 +687,9 @@ describe("capture pages through their rendered user path", () => {
       screen.getByText("Do not unlock the front door"),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("tabpanel")).getByText("-5.00"),
+      within(screen.getByRole("tabpanel", { name: "Examples" })).getByText(
+        "-5.00",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Set a ten minute timer")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "All positives" }));
@@ -790,6 +844,21 @@ describe("capture pages through their rendered user path", () => {
     expect(
       screen.getByRole("button", { name: /Explore neuron 433: Token density/ }),
     ).toHaveClass("selected");
+    const tableTab = screen.getByRole("tab", { name: "Table" });
+    fireEvent.click(tableTab);
+    expect(tableTab).toHaveAttribute("aria-selected", "true");
+    expect(tableTab).toHaveAttribute(
+      "aria-controls",
+      "capture-navigator-table",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Neuron 433" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Map" }));
+    expect(screen.getByRole("tab", { name: "Map" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     const source = studio.evidence.pick(
       screen.getByRole("button", { name: "Explore neuron 433" }),
     );
@@ -951,6 +1020,9 @@ describe("comparison pages preserve scientific boundary values", () => {
         "—",
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Model comparison evidence details"),
+    ).toBeNull();
     fireEvent.change(screen.getByLabelText("Correlation at most"), {
       target: { value: "0" },
     });
@@ -972,8 +1044,21 @@ describe("comparison pages preserve scientific boundary values", () => {
     expect(
       screen.getByText("Keep the security door locked"),
     ).toBeInTheDocument();
-    expect(screen.getByText("2.00 → -2.00")).toBeInTheDocument();
     expect(screen.getByText("Σ change 4.00")).toBeInTheDocument();
+    expect(screen.queryByText("2.00 → -2.00")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /^Tokens/ }));
+    expect(screen.getByText("2.00 → -2.00")).toBeInTheDocument();
+    expect(screen.queryByText("Σ change 4.00")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Table" }));
+    expect(screen.getByRole("tab", { name: "Table" })).toHaveAttribute(
+      "aria-controls",
+      "comparison-navigator-table",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Layer 15 · neuron 2" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Map" }));
+    expect(screen.getByText("2.00 → -2.00")).toBeInTheDocument();
     expect(screen.getByLabelText("Current route")).toHaveTextContent(
       "neuron=2",
     );

@@ -92,21 +92,21 @@
   max-height: 14rem;
   margin-top: 0.5rem;
 }
-.histogram-data table {
+.histogram-data-scroll table {
   width: 100%;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
-.histogram-data th,
-.histogram-data td {
+.histogram-data-scroll th,
+.histogram-data-scroll td {
   padding: 0.35rem 0.5rem;
   border-bottom: 1px solid var(--color-border-button-default);
   text-align: left;
 }
-.histogram-data tbody th {
+.histogram-data-scroll tbody th {
   font-weight: 400;
 }
-.histogram-data td {
+.histogram-data-scroll td {
   text-align: right;
 }
 .histogram-empty {

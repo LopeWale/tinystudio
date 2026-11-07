@@ -187,13 +187,21 @@ describe("administration workspaces", () => {
         { name: "Next" },
       ),
     );
-    expect(screen.getByText("Next goal")).toBeTruthy();
+    expect(
+      within(
+        screen.getByRole("complementary", { name: "Project details" }),
+      ).getByText("Next goal"),
+    ).toBeTruthy();
     expect(s.selectProject).not.toHaveBeenCalled();
     fireEvent.change(
       screen.getByRole("searchbox", { name: "Find a project" }),
       { target: { value: "Current" } },
     );
-    expect(screen.getByText("Next goal")).toBeTruthy();
+    expect(
+      within(
+        screen.getByRole("complementary", { name: "Project details" }),
+      ).getByText("Next goal"),
+    ).toBeTruthy();
     expect(
       within(screen.getByRole("table", { name: "Projects" })).queryByRole(
         "button",
@@ -259,7 +267,7 @@ describe("directory filter recovery", () => {
       rows: [{ slug: "project", name: "Current", datasets: 2, jobs: 3 }],
       search: "Find a project",
       record: "Current",
-      empty: "No projects match this search.",
+      empty: "No projects match this search",
       clear: "Clear search",
     },
     {

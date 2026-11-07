@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { SettingsSection } from "../../components/studio/settings-section";
 import { Input } from "../../components/boardui/base/input/input";
 import { Checkbox } from "../../components/boardui/base/checkbox/checkbox";
+import { Select, SelectItem } from "@/components/boardui/base/select/select";
 import "./settings.css";
 import "../../components/studio/form-controls.css";
 import { useStudio, useResource } from "../../app/StudioContext";
@@ -133,10 +134,18 @@ function SettingsSession() {
       <Button size="sm" loading={testing[what]} onClick={() => test(what)}>
         Test {what} connection
       </Button>
-      <span role="status" className="text-body-2-regular text-text-secondary">
-        {results[what] &&
-          `${results[what].ok ? "ok" : "failed"} · ${results[what].detail}`}
-      </span>
+      <div role="status" className="settings-connection-result">
+        {results[what] && (
+          <>
+            <Badge data-state={results[what].ok ? "success" : "error"}>
+              {results[what].ok ? "Connected" : "Connection failed"}
+            </Badge>
+            <span className="text-body-2-regular text-text-secondary">
+              {results[what].detail}
+            </span>
+          </>
+        )}
+      </div>
     </div>
   );
   const save = () => {
@@ -315,30 +324,51 @@ function SettingsSession() {
                                     }
                                     className="settings-field-control"
                                   >
-                                    <Input
-                                      fieldClassName="studio-form-control"
-                                      size="small"
-                                      aria-label={spec.label}
-                                      type={spec.secret ? "password" : "text"}
-                                      autoComplete={
-                                        spec.secret ? "new-password" : "off"
-                                      }
-                                      value={
-                                        draft[spec.key] ??
-                                        (spec.secret ? "" : spec.value || "")
-                                      }
-                                      placeholder={
-                                        spec.secret
-                                          ? spec.set
-                                            ? "Saved; type to replace"
-                                            : "not set"
-                                          : "default"
-                                      }
-                                      onChange={(value: string) => {
-                                        edited(spec.key);
-                                        D((p) => ({ ...p, [spec.key]: value }));
-                                      }}
-                                    />
+                                    {spec.key ===
+                                      "TINYSTUDIO_ASSISTANT_EFFORT" &&
+                                    !spec.secret ? (
+                                      <EffortSelect
+                                        spec={spec}
+                                        value={
+                                          draft[spec.key] ?? spec.value ?? ""
+                                        }
+                                        onChange={(value) => {
+                                          edited(spec.key);
+                                          D((p) => ({
+                                            ...p,
+                                            [spec.key]: value,
+                                          }));
+                                        }}
+                                      />
+                                    ) : (
+                                      <Input
+                                        fieldClassName="studio-form-control"
+                                        size="small"
+                                        aria-label={spec.label}
+                                        type={spec.secret ? "password" : "text"}
+                                        autoComplete={
+                                          spec.secret ? "new-password" : "off"
+                                        }
+                                        value={
+                                          draft[spec.key] ??
+                                          (spec.secret ? "" : spec.value || "")
+                                        }
+                                        placeholder={
+                                          spec.secret
+                                            ? spec.set
+                                              ? "Saved; type to replace"
+                                              : "not set"
+                                            : "default"
+                                        }
+                                        onChange={(value: string) => {
+                                          edited(spec.key);
+                                          D((p) => ({
+                                            ...p,
+                                            [spec.key]: value,
+                                          }));
+                                        }}
+                                      />
+                                    )}
                                     {spec.secret && (
                                       <Checkbox
                                         isSelected={!!clear[spec.key]}
@@ -464,6 +494,46 @@ function SettingsSession() {
         </>
       )}
     </Page>
+  );
+}
+// Keep unrecognized stored values selectable: settings accepts arbitrary strings,
+// and a newer deployment may expose effort values this client does not know yet.
+function EffortSelect({
+  spec,
+  value,
+  onChange,
+}: {
+  spec: SettingSpec;
+  value: string;
+  onChange(value: string): void;
+}) {
+  const choices = ["low", "medium", "high"];
+  for (const existing of [spec.value, value]) {
+    if (existing && !choices.includes(existing)) choices.push(existing);
+  }
+  return (
+    <Select
+      aria-label={spec.label}
+      size="sm"
+      selectedKey={value ? `value:${value}` : "default"}
+      onSelectionChange={(key) => {
+        if (key !== null)
+          onChange(key === "default" ? "" : String(key).slice(6));
+      }}
+    >
+      <SelectItem id="default">Use deployment default</SelectItem>
+      {choices.map((choice) => (
+        <SelectItem key={choice} id={`value:${choice}`}>
+          {choice === "low"
+            ? "Low"
+            : choice === "medium"
+              ? "Medium"
+              : choice === "high"
+                ? "High"
+                : `Current value: ${choice}`}
+        </SelectItem>
+      ))}
+    </Select>
   );
 }
 function SaveFooter({

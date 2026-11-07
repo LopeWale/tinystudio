@@ -1,4 +1,41 @@
+## Primary review sizes — user correction, 2026-10-30
+
+Review the actual application and Affect UI references at matching **1840 × 1196 CSS pixels** for the full laptop workspace and **390 × 844 CSS pixels** for mobile. The laptop size is based on the user's supplied screenshots, not a measurement of their current display. Intermediate 1200–1280px windows are supplemental resize checks only; they do not establish desktop visual acceptance. Inspect every pane, dialog, expanded state and populated table at these primary sizes. Verify `innerWidth`/`innerHeight` before claiming viewport coverage.
+
+The authenticated local Laboratory was measured at1840×1196: its main workspace is1600×1144, while the experiment dialog is1152×686. This is a defect-review baseline, not acceptance. The remaining experiment-first workflow and draft-preservation requirements still apply; a wider dialog alone would not satisfy them.
+
+## Model inspection continuity — 2026-10-30
+
+Follow-up actual-browser validation resolved the previous viewport uncertainty:1280×800 is now measured and inspected. The collection and footer fit; opening Filters leaves the table top unchanged at273px, confirming overlay placement. At390×844, the collection is replaced by its inspector, revealing that serving controls were unavailable there. ModelServingActions now supplies the same Load/Unload/Test controls and operation handler in both contexts, retaining shared busy/error behavior. Back previously attempted focus while its row was hidden; restoration now runs after React commits the visible collection. Actual390px browser verification confirms focus returns to the exact Inspect model button.
+
+26 focused Models/serving tests pass; production build and diff whitespace check pass. New contract tests cover both load/unload endpoints, both controls disabled during a pending operation, failure recovery and no unintended row selection. Browser checks do not establish real model loading or fine-tuned publication. This continues the inspected Affect UI table/Apple context-preservation adaptation, not a new licensed source adoption. Full Models and full-app acceptance remain open, including light-mode and populated fine-tuned live workflows. Independent review/commit/publication remain held by the prior transfer-authorization rejection.
+
+## Model inventory composition — 2026-10-30
+
+Re-inspected Affect UI Data Table (https://www.affectui.com/components/data-table), including its Clean dark rendered preview, usage limits, keyboard and responsive documentation. Adapted its concise identity/metadata rows and readable internal scrolling through the existing shared AdvancedTable; no Pro source copied and no unsupported spreadsheet editing implied. Inventory retains immediate Load/Test actions; notes, dates and checkpoint Download/Upload/Training actions belong to the selected model inspector. Scalar/action columns receive explicit widths. Inspection has an explicit accessible action name, separate from row selection.
+
+Parent verification: 24 affected Models/serving tests passed, including inspection without selection/loading and the existing upload API contract. First run exposed a moved action still referring to the old row variable; corrected to selected model and reran successfully. Production build passed. Actual authenticated localhost dark desktop review verified the compact inventory, inspector notes, internal keyboard horizontal scrolling and Back focus restoration. Full Models acceptance, fine-tuned live upload, light/narrow review and hosted delivery remain open. Independent verification remains blocked by the previously rejected transfer authorization; no commit/push/deployment. Laboratory source handoff still awaits the backend owner, whose live status remains waitingOnApproval.
+
+## Shared typography foundation — 2026-10-30
+
+The existing BoardUI ramp is the semantic source of type sizes, weights, line heights and tracking. Page headings use title-1-semibold (24/34), dialog headings title-3-semibold (18/26), panel headings headline-medium (16/22), section labels/body text body-medium/regular (14/20), and dense table cells body-2-regular (13/18) with medium table headings. These are web design choices adapting the inspected Affect UI compact hierarchy; they are not Apple-mandated pixel sizes.
+
+The Vite application does not define next/font's --font-inter or --font-mono-source. Both family tokens now have explicit fallbacks. Inter/JetBrains Mono are preferred only when available; this increment does not load or bundle those fonts. Affect UI adapters consume the same family token instead of a separate stack. Default element typography belongs in the base cascade layer so component type utilities remain effective. Shared page, panel and dialog selectors apply the same composite ramp; remove competing local rules at their owner as each remaining route is audited.
+
+Actual localhost checks: Metrics and its create dialog at 1440×900, Settings at 1440×900 dark and 1280×800 light. Measured page 24/34, dialog 18/26, panel 16/22 and dense table 13/18; verified font token resolution and no document-width overflow on the inspected desktop Settings surface. Controls/table tests: 25 passed; build passed. This is partial foundation coverage. Full route/pane typography, zoom, narrow layouts and visual acceptance remain unchecked. No provider settings or metric records were saved during inspection.
+
 # TinyStudio interface system
+
+## Settings control refinement — 2026-10-29
+
+The actual Settings route continues the inspected Affect UI Settings & Billing visual reference: provider navigation, paired label/control rows, one inset form surface and attached save/reset footer. This increment replaces free text only where the documented contract supplies finite effort choices; it preserves deployment defaults, unknown stored values and in-flight draft ownership. Diagnostic outcomes have explicit readable status and exact server details. Desktop light/dark and 390px dropdown/footer inspections supplement source tests; no persisted provider mutation, hosted acceptance or user visual acceptance is established. The full redesign checklist remains open.
+
+
+## Stats composition increment — 2026-10-29
+
+Stats adapts the inspected Affect UI KPI Chart and Analytics visual hierarchy: four equal summary cards, a bounded daily-count plot beside the top-ten model breakdown, and a compact inventory strip. These are licensed visual references, not copied Pro source. The shared AnalysisTemplate, Panel, Evidence, Button and SimpleTable remain the implementation foundations. Daily counts retain discrete bars; no comparison trends or request drilldowns are invented. Whole-count axis ticks match their grid positions, and chart selection is shared by keyboard, pointer and the assistant's `stats.day` action.
+
+Local authenticated `/stats` inspection at 1440×900 verified all inventory values and the selected-day readout fit within the workspace (scroll height equals client height, 846px), in addition to light/dark visual checks. Smaller-desktop and narrow layouts were inspected; they retain scrolling rather than hiding content. At 390px the document width remains 390px and summary cards become two columns. Source tests cover missing/zero values, refresh failure retention, assistant selection and scope reset. Hosted delivery and user visual acceptance remain open; this does not advance unrelated page acceptance.
 
 ## Cumulative redesign contract — 2026-10-28
 
@@ -190,3 +227,110 @@ Provider switching preserves unsaved fields. Saving applies the submitted edits 
 ### Workspace directory composition — 2026-10-28
 
 Projects, API keys and Users reuse the same dominant collection surface as the data routes: a compact integrated search/view toolbar, natural row height in the available workspace, and footer outside the row scroller. The inspected saved Affect UI CRM and Settings references guide proportions and grouping; licensed source is not claimed. Projects occupy the full collection width until a user explicitly inspects a project. API usage is a contextual help dialog, while account/key/project creation uses a bounded form with installed shared fields. Account role filtering sits next to search. Existing assistant table actions, permission boundaries, privacy and API semantics remain. Tests cover transitions and request lifetimes; current source screen geometry, dark-mode, keyboard and authenticated acceptance remain separate open checks. Native hosted Projects was inspected after computer access resumed and still displayed the prior composition; it does not validate this source increment.
+
+### Playground conversation composition — 2026-10-29
+
+Use the inspected Affect UI Chat Composer component and Agent Chat full-screen composition as visual references: a dominant transcript, bottom prompt with its model/action toolbar, subordinate context, and an optional right configuration inspector. Pro source was not copied. Reuse the existing ConversationTemplate, controller, BoardUI fields/selector/checkboxes and AssistantScrollArea. Configuration groups are System instructions, Retrieval and Generation. Closing configuration must preserve the prompt and selections and return keyboard focus to Settings. The composer must remain separate from the global assistant launcher. Neutralize legacy native-input chrome inside BoardUI field shells rather than adding a second field boundary. This increment does not establish full-app, hosted or user visual acceptance.
+
+### Interpretability creation dialogs — 2026-10-30 correction
+
+Reference: Affect UI Integration Settings (Clean), inspected visually and behaviorally as a Pro visual reference. Short confirmed operations use a bounded dialog, grouped source/model fields, separate evidence settings, and aligned shared controls. Reuse SettingsSection and BoardUI fields; do not create a second form library. Capture retains dataset/snapshot, model, optional name, layers and token count; comparison retains experiment/dataset/base/layers. Async experiment choices must select a valid default after loading; failed submissions keep values. Parent checks: 15 route tests and build passed, desktop dark browser reviewed. This increment does not accept the route or full redesign. Light/narrow, populated detail visualizations, independent review and hosted acceptance remain unverified.
+
+### 2026-10-30 — Interpretability capture composition (partial, local only)
+
+- Continued the previously reviewed Affect UI Analytics screen composition (https://www.affectui.com/screens/analytics; Pro visual reference, no source copied) and reused the adopted Segmented Control for Map/Table navigation. Overview now places map and neuron table alongside each other; selection opens a dedicated evidence pane instead of retaining an empty inspector and stacking both navigator representations.
+- Desktop capture workspace now fits its available height, with independently scrollable navigator/evidence areas. Map/Table has explicit panel targets and retains neuron identity. Comparison layout is unchanged and still requires separate review.
+- Actual authenticated local server on port 58543, 1440x900: populated disposable random-model capture with 48 neurons; row selection, Map/Table visibility and preserved Neuron 23, return to overview, and scrolling to evidence footer inspected. Outer workspace measured 846px client/scroll height; selected inspector 553px client and 1663px content. Screenshot: /private/tmp/tinystudio-capture-workspace.png. This is real API evidence from a tiny random fixture, not model-quality validation or a browser capture-creation journey.
+- Validation: 15 interpretability tests pass; production build passes (existing chunk-size warning); scoped diff whitespace check passes. One test was scoped to the named Examples panel after adding navigator tabpanels; scientific-value assertion retained.
+- Remaining: complete visual/state review across all routes, narrower viewport and light-theme checks for this increment, independent verification and release coordination. No hosted deployment or page acceptance claimed. Full goal remains active.
+
+### 2026-10-30 — Shared capture/comparison analysis navigator (partial)
+
+- Extracted `AnalysisNavigator` and applied it to both Interpretability capture and comparison pages. Reuses the adopted Affect UI segmented control and previously inspected Analytics composition reference. Full-layer map/table sit alongside each other; selected evidence uses the inspector with a Map/Table navigator. No empty inspector before selection.
+- Comparison title is its saved artifact name. Full experiment/baseline identifiers and scientific metric definitions remain available in labeled disclosures. Restored desktop Back to changed neurons (previously hidden by a mobile-only rule).
+- Created an offline tiny random-model comparison in the asserted disposable review database only. Actual local API/browser at 1440x900: 48 plotted neurons, selected neuron 46, Map/Table switches without changing evidence, outer client/scroll height both 846px, Back removes inspector and restores two 567px columns. Screenshot /private/tmp/tinystudio-comparison-workspace.png. Random fixture is layout/data-flow evidence, not trained-model-quality proof.
+- 15 Interpretability tests pass, including negative/zero/undefined scientific values and navigator/selection invariants; production build and scoped whitespace checks pass. Corrected unsupported Testing Library `exact` options introduced in the preceding increment.
+- Owner status polled: shared Laboratory owner remains active/waiting on approval; no source handoff or deployment inferred. Full-app visual/state acceptance, responsive/light checks and independent verification remain outstanding. Goal remains active.
+
+### 2026-10-30 — Analysis breakpoint and comparison evidence panes
+
+- Live 960px check found selected evidence pushed below the map because collapse occurred at 1000px but focused selection began at 850px. Aligned the two-pane/bounded-workspace breakpoint at 851px with the narrow focused view at 850px. Actual light-theme 960x900: columns 366/448px; outer scroll/client height both 846px. Keyboard ArrowRight changed Map to Table while retaining selection.
+- At 390x844 the selected comparison stayed in a focused evidence view with Back available and document scroll/client width both 390px. This inspection preceded the subsequent evidence-tab addition; it is not a claim that every final narrow state was retested.
+- Comparison evidence now uses the shared Affect UI segmented control for Datapoints/Tokens, with returned record counts and explicit tabpanel targets. Only the active evidence section renders; metrics stay above it. Removed nested panel padding and separated the heading with a semantic border.
+- Actual 1440px light-theme Tokens view inspected and saved to /private/tmp/tinystudio-comparison-tokens-light.png; ArrowLeft restored Datapoints and removed Tokens from the DOM. Restored system appearance and default viewport afterwards.
+- All 15 Interpretability tests pass, including exact negative token values and visible-section switching; production build passes. Full application acceptance, remaining responsive states and independent/release gates remain open.
+
+### 2026-10-30 — Reusable analysis scroll panes and retained context
+
+- Added opt-in ScrollPane to shared templates; existing template consumers keep their previous rendering by default. Capture and comparison opt in. Named focusable regions support keyboard scrolling; a stationary three-layer semantic surface fade ramps over 24px with opacity on each layer, not the overlay parent.
+- Desktop capture summary and comparison return/heading remain sticky while records scroll. Actual comparison at 1440x900: PageDown moved inspector 500.5px while content pane stayed at zero; fade was [1,1,1] vs [0,0,0]. Back and heading stayed at viewport y354/y390. Screenshot /private/tmp/tinystudio-analysis-scroll-pane.png.
+- Final dark 390x844 Tokens view inspected after this change: document width 390, region client/scroll height both 1303 (normal outer page scrolling, no clipped inner region). Navigation and token tabs remain available. Default viewport restored.
+- 16 scroll-pane/Interpretability tests and 18 shared template tests pass; build and scoped whitespace checks pass. Test covers fade ramp, reset, negative overscroll, independent layer opacity and named keyboard region. Full-app visual/state acceptance and hosted release remain open; no completion claim.
+
+### 2026-10-30 — Models identity hierarchy (partial route review)
+
+Reopened Affect UI App Directory's rendered preview and documentation at https://www.affectui.com/blocks/app-directory. Its distinct item name, publisher and supporting attributes inform Models identity presentation; this is a Pro visual reference, not copied licensed source. Implemented one ModelIdentity presentation component across inventory, Hub discovery results and downloaded models. Repository name is primary, publisher secondary; custom aliases retain the full repository ID underneath. Original IDs remain used for sorting/filter values, requests, evidence and action URLs. Full IDs remain available as accessible labels and titles.
+
+Actual authenticated local 1440×1000 review covered discovery empty state, downloaded populated table, connection empty-token state, and returning to inspect the exact inventory model. Screenshot: /private/tmp/tinystudio-model-identities.png. 21 focused Hub/collection tests passed and production build passed (existing bundle-size warning). This increment does not establish discovery network/download completion, mobile/light-theme acceptance, full Models acceptance, hosted release or independent review.
+
+### 2026-10-30 — Projects directory and actual creation journey
+
+Inspected Affect UI Folders rendered desktop reference at https://www.affectui.com/screens/files/full (Pro visual reference; no licensed source copied). Applied its identity/supporting-information separation to project rows: project name/current marker, secondary goal, and shared RecordDate instead of raw timestamps. Reused shared EmptyState for structured no-match, unavailable and first-project recovery. Retained shared CollectionTemplate/DataTable/RecordsInspector, permissions, project switching and lifecycle protection.
+
+Actual authenticated local server at 1440×1000: created `UI review project October 30` with a goal through the dialog; server response switched current project and navigated to its empty Datasets page. Returned through sidebar, searched the saved project, inspected matching goal and creation date, closed inspector with focus restored to the project trigger, checked no-match/clear-search recovery, then opened Support workspace and verified restoration. The review project remains in the disposable local database (43 projects total); no hosted mutation. Screenshot /private/tmp/tinystudio-project-directory.png. Fifteen lifecycle/layout tests and production build passed. Remaining: full light/narrow/error/permission visual acceptance, destructive journey, independent review and hosted release; Projects route checkbox remains incomplete.
+
+### 2026-10-30 — Account identity hierarchy and stable fitted paging (partial)
+
+Rendered Affect UI Settings & Billing `/screens/settings-billing/full` in both Members and API keys states. Members uses grouped name/email identity with compact permission controls; keys separates identity, secondary metadata and credential representation. This is a Pro visual reference, not copied source. Laws of UX proximity (`https://lawsofux.com/law-of-proximity/`) supports keeping name/email together. Apple's Tables URL could not be retrieved with the web tool on this pass; no fresh Apple review is claimed.
+
+- Users: composed search, role filter and count inside the shared CollectionToolbar; role filter no longer fills the row. Account name and email now form one identity column. Shared RecordDate renders last login with the original timestamp available in the title; missing login reads Never.
+- API keys: stronger name hierarchy, separate monospace prefix treatment, shared readable created/last-used dates. No full key disclosure or permission changes.
+- Live review found Fit workspace pagination returning to page one after parent rerenders with equivalent arrays/inline columns. Added a regression that fails before correction. Measurement now resets for changed record sets rather than equivalent array wrappers or column function references. New-data refresh, density, resizing and scope behavior remain covered.
+- Parent validation: 72 tests across shared table/controller and Users/Keys/admin lifecycle suites passed; production build passed with existing chunk-size warning. Actual authenticated localhost Users: name search, Next, Add user open/dismiss, page-two retention and focus restoration checked at 1280×720. API keys table and help dialog visually inspected. No security mutations were performed.
+- Still incomplete: Users row-action disclosure/grouping; API-key help dialog hierarchy; light/narrow/error-state visual acceptance and complete mutation journeys. Full route acceptance remains unchecked. Independent verifier remains unavailable under the previously rejected approval, and no hosted release is claimed.
+
+Account-review follow-up: Users action disclosure and API-key help composition remain open after rendered review. The model/project identity hierarchy now has regression checks that preserve exact repository links and independently selected inspector context, rather than depending on old flat text. Browser tooling is currently unavailable, so the next visual acceptance pass is outstanding. Shared Lab draft-loss finding was forwarded to the release owner; this remains a separate functional acceptance defect.
+
+### 2026-10-30 — Laboratory continuity and editor proportions (visual acceptance pending)
+
+- Retained cumulative redesign scope. Existing experiments belong in the inline Experiment work area; only New experiment and Import/export use dialogs. Restored the missing Experiment panel destination used by Configure experiment. The shared editor retains save/run/preflight behavior, and switching saved definitions with dirty edits requires an explicit inline choice.
+- Refined the existing Affect UI Settings & Billing visual adaptation: the Laboratory section-heading rail is bounded at 12rem instead of consuming one-third of every form row. Identity and engine fields share the same responsive rules in the inline editor and creation dialog; removed duplicated ID-specific grid rules. This is a visual adaptation, not copied Pro source.
+- Laboratory description remains present across Experiment/Runs/Capabilities so navigation does not shift vertically. Visible work areas use a 140ms opacity reveal, disabled for reduced motion; mounted editor state remains retained. Geometry and actual rendering still require browser review.
+- User requires Codex in-app Browser only and no further coordination messages to the other chat. Runtime bootstrap continues to return “Local browser use is disabled in Work settings” after the user enabled it and after a fresh retry. No Chrome/alternate-browser fallback or screenshot acceptance is claimed for this increment. Full-desktop and mobile visual acceptance remain open.
+
+Editor continuity follow-up: a real user-event test now clears and replaces the experiment name, switches to Runs and back, and verifies the unsaved name remains. Empty-name editing no longer removes the form; save/preflight retain strict validation. Final focused result: 71 tests passed and production build passed. These checks do not establish visual fit or perceived transition quality.
+
+### Current route acceptance inventory — 2026-10-30
+
+This checklist supersedes the historical source-adoption document as the route acceptance index. Inventory was checked against `frontend/src/app/App.tsx` and current feature template consumers. A template import proves reuse, not that a screen looks good. Every checkbox below remains open pending complete state/journey and visual acceptance at **1840×1196** and **390×844**, including light/dark, keyboard, loading/error/empty/populated states. Earlier narrower screenshots remain partial evidence only. No route is accepted merely because its source changed.
+
+| Acceptance | Actual route / shared surface | Current reuse and reference family | Sections and interactions still requiring complete review |
+| --- | --- | --- | --- |
+| [ ] | Shell / navigation | Affect CRM shell; shared app shell | Expanded/collapsed desktop rail, mobile navigation, project switch, page finder, Tasks, overflow and focus |
+| [ ] | `/datasets` | CollectionTemplate; CRM / Data Table / Filter Menu | Search, density, overlay filtering, columns, fitted paging, selection, compare, create flow |
+| [ ] | `/datasets/:name` | DetailTemplate / AnalysisTemplate; Evals / segmented control | Rows and buckets, editing, snapshots, quality metrics and charts, actions, paging, selected evidence |
+| [ ] | `/repositories` | CollectionTemplate / DetailTemplate; CRM / files | Collection, create/import, retained operation, repository inspector, document evidence and empty recovery |
+| [ ] | `/finetuning` | CollectionTemplate; Evals / Data Table | Job collection, filters, selection/compare, creation, autopilot, admission errors |
+| [ ] | `/finetuning/:job` | RunTemplate; Agent Run | Summary, checkpoints, chart/log controls, comparison, lifecycle actions, retained context |
+| [ ] | `/evaluations` | CollectionTemplate / SetupTemplate; Evals | Collection, creation, metric selection, validation, pending/error recovery |
+| [ ] | `/evaluations/:name` | AnalysisTemplate; Evals | Results, cases, comparisons, filters, charts with correct source identity and units |
+| [ ] | `/metrics` | CollectionTemplate; Data Table / Settings & Billing | Metric search/kind, inspector, rules, code/webhook editor, create and save recovery |
+| [ ] | `/lab` — existing experiments | SetupTemplate / SettingsSection; Settings & Billing / Segmented Control | Inline saved experiment, all engine-specific forms, inputs, execution, topology, JSON, draft identity, save/preflight/run |
+| [ ] | `/lab` — New experiment | Shared ExperimentSurface and Modal; Stepper Form / grouped settings / Dropzone | All authoring tabs, entire dialog inside viewport, persistent actions, dirty-draft replacement and close/resume |
+| [ ] | `/lab` — Runs | RunTemplate / AnalysisTemplate; Agent Run / Evals | Run selection, replay, topology, coverage, representation, baseline, deployment, records/events/dataset, chart/record linking |
+| [ ] | `/lab` — Capabilities and transfers | DataTable / Modal; Data Table / Dropzone | Capability identity and compatibility; import/export dialog, operations, download, failure/retry |
+| [ ] | `/interp` | CollectionTemplate; Data Table / Evals | Captures versus comparisons, creation, filters, deletion, correct selected source |
+| [ ] | `/interp/c/:capture` | AnalysisTemplate / ScrollPane; Analytics | Layer/neurons, tokens, explanations, graph/table selection, retained context and scrolling |
+| [ ] | `/interp/d/:comparison` | AnalysisTemplate / ScrollPane; Evals / Analytics | Datapoints/tokens, exact values, back navigation, keyboard scroll, empty/error/partial evidence |
+| [ ] | `/models` | CollectionTemplate / ModelIdentity; App Directory / Data Table | Inventory, inspector, Hub discover/downloaded/connection, load/test/upload/download, operation errors |
+| [ ] | `/playground` | ConversationTemplate; AI Workspace | Conversation/composer, settings, model readiness, streaming/cancel/retry, retained messages |
+| [ ] | `/traces` | CollectionTemplate; Data Table / trace evidence | Review actions, correction, promote, selection/compare, paging, complete response inspection |
+| [ ] | `/projects` | CollectionTemplate; Files / Folders | Project identity/current marker, create/edit/switch/delete, selection/focus, no-match recovery |
+| [ ] | `/api-keys` | CollectionTemplate; Settings & Billing | Key identity, creation and one-time secret, copy, revoke, help hierarchy and permissions |
+| [ ] | `/stats` | AnalysisTemplate; Analytics / Metrics Dashboard | Filters, metrics, chart scale/units, selected period, empty/partial evidence |
+| [ ] | `/settings` | SettingsTemplate; Settings & Billing | All settings sections, input sizing, secret handling, permissions, dirty/save/failure recovery |
+| [ ] | `/users` | CollectionTemplate; Members in Settings & Billing | Identity/role, action grouping, create/edit/disable, paging, focus and permissions |
+| [ ] | `/assistant` and omnipresent launcher | ConversationTemplate; AI Workspace / agent references | Bottom-right launcher across routes, context evidence picking, registered component actions, composer and conversation lifecycle |
+| [ ] | Authentication / not-found / route failure | Shared primitives; existing shell conventions | Sign-in/recovery, meaningful failure paths, return navigation, keyboard/focus and responsive states |
+
+Reference families above identify prior research or selected visual precedents, not proof that every item already matches them. Source provenance remains in `docs/affectui-catalog-review.md`; direct public-source adoption and Pro visual adaptations must stay distinct. All final visual and hosted checks remain open. The later user instruction prohibiting messages to the other chat supersedes the goal's older coordination wording.

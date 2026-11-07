@@ -158,8 +158,8 @@ it("opens a retained run through normal Laboratory navigation and inspects its e
   ).toBeInTheDocument();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("tab", { name: "Experiment" }),
-  ).not.toBeInTheDocument();
+    screen.getByRole("tab", { name: "Experiment" }),
+  ).toHaveAttribute("aria-selected", "false");
   expect(
     within(
       screen.getByRole("navigation", { name: "Main navigation" }),

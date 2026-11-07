@@ -1,6 +1,12 @@
 import { SegmentedControl } from "../../components/affectui/controls";
 import { DataTable, SimpleTable } from "../../components/studio/data-table";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
 import { useRetainedResource } from "../data/records-workspace";
 import {
@@ -75,6 +81,60 @@ function Fault({ error }: { error: unknown }) {
     </p>
   ) : null;
 }
+// A temporarily empty name is an editing state, not a reason to remove the
+// controls. Save and preflight continue to use the strict definition parser.
+function readEditorDefinition(text: string): ExperimentDefinition {
+  const value = JSON.parse(text);
+  if (value && typeof value.name === "string" && !value.name.trim()) {
+    return {
+      ...parseDefinition(json({ ...value, name: "Untitled experiment" })),
+      name: value.name,
+    };
+  }
+  return parseDefinition(text);
+}
+// Keep one editor implementation for inline existing work and modal creation.
+function ExperimentSurface({
+  creating,
+  open,
+  active,
+  onClose,
+  headingRef,
+  children,
+}: {
+  creating: boolean;
+  open: boolean;
+  active: boolean;
+  onClose: () => void;
+  headingRef: RefObject<HTMLHeadingElement | null>;
+  children: ReactNode;
+}) {
+  if (creating)
+    return (
+      <Modal
+        open={open}
+        keepMounted
+        fallbackFocusRef={headingRef}
+        wide
+        title="New experiment"
+        onClose={onClose}
+        className="lab-experiment-dialog"
+      >
+        {children}
+      </Modal>
+    );
+  return (
+    <section
+      id="lab-area-experiment"
+      role="tabpanel"
+      aria-label="Experiment"
+      hidden={!active}
+      className="lab-experiment-dialog lab-existing-experiment"
+    >
+      {children}
+    </section>
+  );
+}
 export function LabPage() {
   const studio = useStudio();
   return <LabWorkspace key={studio.scopeKey} />;
@@ -96,6 +156,10 @@ function LabWorkspace() {
   const [savedText, setSavedText] = useState("");
   const [area, setArea] = useState("runs");
   const [experimentOpen, setExperimentOpen] = useState(false);
+  const [creatingExperiment, setCreatingExperiment] = useState(false);
+  const [pendingDefinition, setPendingDefinition] = useState<
+    SavedDefinition | "new" | null
+  >(null);
   const laboratoryHeading = useRef<HTMLHeadingElement>(null);
   const [authoringStarted, setAuthoringStarted] = useState(false);
   const authoringScroll = useRef<HTMLDivElement>(null);
@@ -139,7 +203,8 @@ function LabWorkspace() {
   let definition: ExperimentDefinition | null = null;
   let parseError = "";
   try {
-    definition = parseDefinition(draft);
+    definition = readEditorDefinition(draft);
+    parseDefinition(draft);
   } catch (e) {
     parseError = (e as Error).message;
   }
@@ -147,7 +212,7 @@ function LabWorkspace() {
   const change = (patch: Partial<ExperimentDefinition>) => {
     setDraft((current) => {
       try {
-        return json({ ...parseDefinition(current), ...patch });
+        return json({ ...readEditorDefinition(current), ...patch });
       } catch {
         return current;
       }
@@ -162,7 +227,10 @@ function LabWorkspace() {
     setError(null);
     setView("parameters");
     setAuthoringStarted(true);
-    setExperimentOpen(true);
+    setCreatingExperiment(false);
+    setExperimentOpen(false);
+    setArea("experiment");
+    setPendingDefinition(null);
   };
   const observeHistory = (operation: LabOperation, signal: AbortSignal) => {
     historyPoll.current?.abort();
@@ -279,6 +347,9 @@ function LabWorkspace() {
   const template = templates.find((item) => item.id === definition?.engine);
   const selectedTarget = targets.data?.find((item) => item.id === target);
   const startNewExperiment = () => {
+    if (busy) return;
+    setPendingDefinition(null);
+    setCreatingExperiment(true);
     setAuthoringStarted(true);
     setExperimentOpen(true);
     setView("parameters");
@@ -304,7 +375,11 @@ function LabWorkspace() {
       }))}
       onChange={(id) => {
         const row = definitions.data?.find((item) => item.id === id);
-        if (row) load(row);
+        if (row) {
+          if (row.id === saved?.id) return;
+          if (saved && dirty && row.id !== saved.id) setPendingDefinition(row);
+          else load(row);
+        }
       }}
     />
   );
@@ -344,17 +419,20 @@ function LabWorkspace() {
       title="Laboratory"
       headingRef={laboratoryHeading}
       className="lab-page"
-      description={
-        area === "runs"
-          ? undefined
-          : "Author portable experiments, execute a saved revision, and inspect retained evidence."
-      }
+      description="Author portable experiments, execute a saved revision, and inspect retained evidence."
       actions={
         <>
           <Button
             variant="primary"
             disabled={busy}
-            onClick={startNewExperiment}
+            onClick={() => {
+              if (busy) return;
+              if (authoringStarted && dirty) {
+                setPendingDefinition("new");
+                if (creatingExperiment) setExperimentOpen(true);
+                else setArea("experiment");
+              } else startNewExperiment();
+            }}
           >
             New experiment
           </Button>
@@ -362,7 +440,8 @@ function LabWorkspace() {
             disabled={busy}
             onClick={() => {
               setAuthoringStarted(true);
-              setExperimentOpen(true);
+              if (creatingExperiment) setExperimentOpen(true);
+              else setArea("experiment");
             }}
           >
             {saved
@@ -388,7 +467,10 @@ function LabWorkspace() {
     >
       <Fault
         error={
-          (!transferOpen && !experimentOpen && error) ||
+          (!transferOpen &&
+            !experimentOpen &&
+            area !== "experiment" &&
+            error) ||
           catalog.error ||
           definitions.error ||
           runs.error ||
@@ -705,8 +787,16 @@ function LabWorkspace() {
             size="sm"
             aria-label="Laboratory work area"
             value={area}
-            onChange={setArea}
+            onChange={(next) => {
+              if (next === "experiment") setCreatingExperiment(false);
+              setArea(next);
+            }}
             options={[
+              {
+                value: "experiment",
+                label: "Experiment",
+                controls: "lab-area-experiment",
+              },
               { value: "runs", label: "Runs", controls: "lab-area-runs" },
               {
                 value: "capabilities",
@@ -718,26 +808,54 @@ function LabWorkspace() {
         }
       >
         <div className="lab-main">
-          <Modal
+          <ExperimentSurface
+            creating={creatingExperiment}
             open={experimentOpen}
-            keepMounted
-            fallbackFocusRef={laboratoryHeading}
-            wide
-            title={saved ? `Edit experiment · ${saved.name}` : "New experiment"}
-            onClose={() => setExperimentOpen(false)}
-            className="lab-experiment-dialog"
+            active={area === "experiment"}
+            headingRef={laboratoryHeading}
+            onClose={() => {
+              setExperimentOpen(false);
+              if (saved && !busy) {
+                setCreatingExperiment(false);
+                setArea("experiment");
+              }
+            }}
           >
             <div className="lab-experiment-meta">
-              {savedExperimentChoice}{" "}
-              <Button disabled={busy} onClick={startNewExperiment}>
-                New experiment
-              </Button>
+              {!creatingExperiment && savedExperimentChoice}
               <Badge>
                 {saved
                   ? `r${saved.revision} · ${dirty ? "Edited draft" : "Saved"}`
                   : "Unsaved draft"}
               </Badge>
             </div>
+            {pendingDefinition && (
+              <div role="alert" className="lab-switch-confirmation">
+                <p>
+                  {pendingDefinition === "new"
+                    ? "Save or discard your edits before creating a new experiment."
+                    : `Save or discard your edits before opening ${pendingDefinition.name}.`}
+                </p>
+                <Button
+                  disabled={busy}
+                  onClick={() => setPendingDefinition(null)}
+                >
+                  Keep editing
+                </Button>
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    if (busy) return;
+                    if (pendingDefinition === "new") startNewExperiment();
+                    else load(pendingDefinition);
+                  }}
+                >
+                  {pendingDefinition === "new"
+                    ? "Discard edits and create new"
+                    : "Discard edits and open"}
+                </Button>
+              </div>
+            )}
             <SegmentedControl
               kind="tabs"
               variant="tray"
@@ -1559,7 +1677,7 @@ function LabWorkspace() {
                 (preflight.draft !== draft || preflight.target !== target) &&
                 " Compatibility check is stale. Recheck the current draft and target."}
             </p>
-          </Modal>
+          </ExperimentSurface>
           <section
             id="lab-area-runs"
             role="tabpanel"
@@ -1581,7 +1699,12 @@ function LabWorkspace() {
                         ? "Choose a retained run to inspect its evidence or export a portable bundle."
                         : "Configure an experiment, save a revision, and run it to collect evidence."}
                     </p>
-                    <Button onClick={() => setArea("experiment")}>
+                    <Button
+                      onClick={() => {
+                        setCreatingExperiment(false);
+                        setArea("experiment");
+                      }}
+                    >
                       Configure experiment
                     </Button>
                   </div>

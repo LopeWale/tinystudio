@@ -61,7 +61,10 @@ export class RecordTableController<T> {
     private getRowId: (row: T) => string,
     private pagination: TablePagination = "client",
     private initialPageSizeMode: "manual" | "fit" = "manual",
+    initialPageSize = 25,
   ) {
+    if (Number.isFinite(initialPageSize) && initialPageSize >= 1)
+      this.pageSize = Math.floor(initialPageSize);
     this.pageSizeMode = initialPageSizeMode;
     this.rebuild();
   }
@@ -196,7 +199,7 @@ export class RecordTableController<T> {
   /** Capacity changes keep the previous first row on the resized page when possible. */
   setFittedPageSize(size: number) {
     if (
-      this.pagination !== "client" ||
+      this.pagination === "none" ||
       this.pageSizeMode !== "fit" ||
       !Number.isFinite(size) ||
       size < 1

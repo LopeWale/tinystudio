@@ -38,7 +38,6 @@ import {
   Select,
   Chips,
   Check,
-  Pager,
   RecordDate,
   Messages,
   Histogram,
@@ -624,6 +623,18 @@ export function DatasetsPage() {
 }
 export function DatasetPage() {
   const params = useParams(),
+    studio = useStudio();
+  // Replace all record state before a different dataset or identity can request data.
+  const scope = JSON.stringify([
+    params.name || params.dataset || "",
+    studio.project,
+    studio.user?.id,
+    studio.scopeKey,
+  ]);
+  return <DatasetDetail key={scope} />;
+}
+function DatasetDetail() {
+  const params = useParams(),
     name = params.name || params.dataset || "";
   const s = useStudio(),
     a = useAction();
@@ -637,9 +648,22 @@ export function DatasetPage() {
     dialogGeneration.current++;
     D("");
   };
-  const [bucket, B] = useState(""),
-    [offset, O] = useState(0),
-    [dialog, D] = useState(""),
+  const [page, setPage] = useState({ bucket: "", offset: 0, size: 25 });
+  const { bucket, offset, size: pageSize } = page;
+  const B = (bucket: string) =>
+    setPage((current) => ({ ...current, bucket, offset: 0 }));
+  const O = (offset: number) => setPage((current) => ({ ...current, offset }));
+  const changePageSize = (size: number) =>
+    setPage((current) =>
+      current.size === size
+        ? current
+        : {
+            ...current,
+            size,
+            offset: Math.floor(current.offset / size) * size,
+          },
+    );
+  const [dialog, D] = useState(""),
     [selected, S] = useState<any>(null),
     [v, V] = useState<any>({}),
     [labels, L] = useState<any[]>([]),
@@ -663,22 +687,16 @@ export function DatasetPage() {
         : [...previous, record],
     );
   const r = useRetainedResource<any>(
-    `/api/datasets/${enc(name)}?offset=${offset}&limit=15${bucket ? `&bucket=${enc(bucket)}` : ""}`,
+    `/api/datasets/${enc(name)}?offset=${offset}&limit=${pageSize}${bucket ? `&bucket=${enc(bucket)}` : ""}`,
   );
   const snaps = useRetainedResource<any[]>("/api/snapshots");
-  useEffect(() => {
-    setView("records");
-    dialogGeneration.current++;
-    B("");
-    O(0);
-    D("");
-    S(null);
-    setChecked([]);
-    compare(false);
-    return () => {
+  // DatasetDetail remounts for every identity change; only invalidate pending saves.
+  useEffect(
+    () => () => {
       dialogGeneration.current++;
-    };
-  }, [name, s.project, s.user?.id]);
+    },
+    [],
+  );
   const meta = r.data?.meta || {},
     rows = r.data?.rows || [],
     ownSnaps = (snaps.data || []).filter((x) => x.dataset === name);
@@ -696,6 +714,19 @@ export function DatasetPage() {
         : null,
     );
   }, [r.data]);
+  const pageStatus = r.loading ? "pending" : r.error ? "error" : "success";
+  // The endpoint's total covers all buckets; selected buckets have their own count.
+  const total = bucket ? meta.buckets?.[bucket] : r.data?.total;
+  useEffect(() => {
+    if (
+      pageStatus !== "success" ||
+      typeof total !== "number" ||
+      offset < total ||
+      offset === 0
+    )
+      return;
+    O(Math.max(0, Math.ceil(total / pageSize) - 1) * pageSize);
+  }, [pageStatus, total, offset, pageSize]);
   const field = (k: string) => (x: any) => V((p: any) => ({ ...p, [k]: x }));
   function open(type: string) {
     if (type === "snapshots") {
@@ -983,6 +1014,11 @@ export function DatasetPage() {
           label="Dataset record workspace"
         >
           <ErrorNotice error={r.error || a.error} />
+          {r.error && (
+            <Button onClick={r.reload} aria-label="Retry dataset records">
+              Retry records
+            </Button>
+          )}
           {r.isStale && !r.loading && (
             <p role="status">
               Refresh failed. Previous results remain visible.
@@ -1102,8 +1138,35 @@ export function DatasetPage() {
                     </div>
                   }
                   rows={rows}
+                  empty={
+                    pageStatus === "success" ? (
+                      <EmptyState>
+                        No datapoints in this view.{" "}
+                        {bucket && (
+                          <Button onClick={() => B("")}>
+                            Show all buckets
+                          </Button>
+                        )}
+                      </EmptyState>
+                    ) : (
+                      ""
+                    )
+                  }
                   getRowId={(row: any) => String(row.id)}
                   pagination="external"
+                  externalPage={{
+                    offset,
+                    pageSize,
+                    count: rows.length,
+                    total,
+                    hasNext:
+                      typeof total === "number"
+                        ? offset + rows.length < total
+                        : rows.length === pageSize,
+                    status: pageStatus,
+                    onOffsetChange: O,
+                    onPageSizeChange: changePageSize,
+                  }}
                   columns={[
                     {
                       id: "col-0",
@@ -1230,30 +1293,7 @@ export function DatasetPage() {
                     ),
                   })}
                 />
-                {!r.loading && !rows.length && (
-                  <EmptyState>
-                    No datapoints in this view.{" "}
-                    {bucket && (
-                      <Button
-                        onClick={() => {
-                          B("");
-                          O(0);
-                        }}
-                      >
-                        Show all buckets
-                      </Button>
-                    )}
-                  </EmptyState>
-                )}
               </div>
-              <Pager
-                offset={offset}
-                limit={15}
-                total={
-                  bucket ? meta.buckets?.[bucket] || 0 : r.data?.total || 0
-                }
-                onChange={O}
-              />
             </div>
             {selected && (
               <DetailInspector

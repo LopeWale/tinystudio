@@ -1,9 +1,13 @@
 @reference "../../styles/globals.css";
 
 .studio-modal.lab-experiment-dialog {
-  inline-size: min(72rem, calc(100vw - 3rem));
+  inline-size: min(68rem, calc(100vw - 3rem));
   max-block-size: calc(100dvh - 3rem);
   overflow: hidden;
+}
+.lab-experiment-dialog > header {
+  flex: 0 0 auto;
+  padding-block: 0.75rem;
 }
 .lab-experiment-dialog > .modal-content {
   display: flex;
@@ -11,6 +15,7 @@
   gap: 0.75rem;
   min-block-size: 0;
   overflow: hidden;
+  padding-block: 0 1rem;
 }
 .lab-experiment-dialog [hidden] {
   display: none !important;
@@ -26,23 +31,44 @@
   min-block-size: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  border: 1px solid var(--color-separator-border);
-  border-radius: 1rem;
-  background: var(--color-background-secondary-default);
+  border-block: 1px solid var(--color-separator-border);
+  background: var(--color-background-primary-default);
 }
 .lab-experiment-scroll {
   flex: 1 1 auto;
   min-block-size: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  max-block-size: 58dvh;
-  padding: 1rem;
+  max-block-size: min(29rem, calc(100dvh - 17rem));
+  padding-block: 0.75rem;
 }
 .lab-experiment-fields {
   min-inline-size: 0;
   border: 0;
   margin: 0;
   padding: 0;
+}
+.lab-existing-experiment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+.lab-existing-experiment .lab-experiment-scroll {
+  max-block-size: max(16rem, calc(100dvh - 24rem));
+}
+.lab-switch-confirmation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-button-default);
+  border-radius: 0.5rem;
+}
+.lab-switch-confirmation p {
+  margin: 0;
+  flex: 1 1 16rem;
 }
 .lab-experiment-fade {
   position: absolute;
@@ -70,7 +96,7 @@
   block-size: 24px;
   background: linear-gradient(
     to bottom,
-    var(--color-background-secondary-default),
+    var(--color-background-primary-default),
     transparent
   );
 }
@@ -84,6 +110,8 @@
 }
 .lab-experiment-dialog .studio-settings-section {
   padding-block: 0.75rem;
+  grid-template-columns: minmax(9rem, 12rem) minmax(0, 1fr);
+  gap: 1rem;
 }
 .lab-experiment-dialog .studio-settings-section:first-child {
   padding-block-start: 0;
@@ -114,6 +142,14 @@
 .lab-experiment-dialog .lab-canvas-pane {
   min-inline-size: 0;
 }
+.lab-experiment-dialog #lab-view-json textarea {
+  block-size: clamp(10rem, calc(100dvh - 23rem), 22rem);
+  resize: none;
+}
+.lab-experiment-dialog #lab-view-json [role="group"] {
+  background: var(--color-background-primary-default);
+  padding: 0;
+}
 @media (min-width: 1100px) {
   .lab-experiment-dialog .lab-identity-fields {
     grid-template-columns: minmax(10rem, 2fr) repeat(3, minmax(4rem, 1fr));
@@ -123,6 +159,10 @@
   }
 }
 @media (max-width: 760px) {
+  .lab-experiment-dialog .studio-settings-section {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
   .studio-modal.lab-experiment-dialog {
     inline-size: calc(100vw - 1rem);
     max-block-size: calc(100dvh - 1rem);
@@ -132,8 +172,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .lab-experiment-scroll {
-    max-block-size: 48dvh;
-    padding: 0.75rem;
+    max-block-size: calc(100dvh - 23rem);
+    padding-block: 0.75rem;
   }
   .lab-experiment-dialog .lab-primary-actions {
     gap: 0.5rem;

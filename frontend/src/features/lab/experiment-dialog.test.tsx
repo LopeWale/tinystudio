@@ -55,13 +55,16 @@ const open = () =>
       name: /^(Open experiment|Resume draft|Edit experiment)$/,
     }),
   );
-it("defaults to Runs with an explicit experiment dialog and retains invalid JSON through Escape", async () => {
+it("defaults to Runs and retains a new experiment's invalid JSON through Escape", async () => {
   mount();
   expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  expect(screen.queryByRole("tab", { name: "Experiment" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "Experiment" })).toHaveAttribute(
+    "aria-selected",
+    "false",
+  );
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Experiment name" })).toBeNull();
   const user = userEvent.setup();
@@ -85,7 +88,12 @@ it("defaults to Runs with an explicit experiment dialog and retains invalid JSON
     screen.getByRole("textbox", { name: "Experiment definition JSON" }),
   ).toBe(raw);
   expect(raw).toHaveValue("{ invalid draft");
+  await user.keyboard("{Escape}");
   fireEvent.click(screen.getByRole("button", { name: "New experiment" }));
+  expect(raw).toHaveValue("{ invalid draft");
+  fireEvent.click(
+    screen.getByRole("button", { name: "Discard edits and create new" }),
+  );
   expect(screen.getByRole("textbox", { name: "Experiment name" })).toHaveValue(
     "Synthetic signal",
   );
@@ -93,7 +101,7 @@ it("defaults to Runs with an explicit experiment dialog and retains invalid JSON
 });
 it("preserves selected File identity after close and resume", () => {
   mount();
-  open();
+  fireEvent.click(screen.getByRole("button", { name: "New experiment" }));
   fireEvent.click(screen.getByRole("tab", { name: "Inputs" }));
   const input = screen.getByLabelText("Import laboratory input", {
     selector: "input",
@@ -163,7 +171,7 @@ it.each(["save", "preflight", "submit"])(
 );
 it("shows a failed save inside the dialog and preserves the draft", async () => {
   const { api } = mount();
-  open();
+  fireEvent.click(screen.getByRole("button", { name: "New experiment" }));
   fireEvent.change(screen.getByLabelText("Experiment name"), {
     target: { value: "Keep me" },
   });

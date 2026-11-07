@@ -53,8 +53,14 @@
   @apply text-body-2-medium;
   white-space: nowrap;
 }
-.data-table th .ui-buttonc {
-  margin-inline-start: -8px;
+.data-table th .data-table__sort {
+  margin-inline-start: 0;
+}
+/* Sort headings are one text label, not an icon/text flex row. The shared
+   action-label gap and negative button margin must not reduce the table's
+   intrinsic heading width or clip its text and sort indicator. */
+.data-table .data-table__sort .ui-buttonc__label {
+  display: inline-block;
 }
 .data-table[data-density="compact"] td {
   padding-block: 6px;
@@ -64,8 +70,14 @@
 }
 .data-table__view-actions {
   display: flex;
+  flex: none;
   gap: 6px;
   align-items: center;
+}
+.data-table__toolbar > .data-table__density {
+  /* Keep the segmented choices intact when an adjacent inspector narrows the
+     table. The toolbar wraps groups instead of compressing their labels. */
+  flex: none;
 }
 .data-table__column-popover {
   min-inline-size: 240px;

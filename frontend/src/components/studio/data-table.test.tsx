@@ -570,6 +570,28 @@ describe("bounded workspace table layout", () => {
     );
     expect(screen.getByText("Page 1 of 16")).toBeInTheDocument();
   });
+  it("preserves the current page when equivalent parent rows and columns are recreated", () => {
+    const geometry = measuredWorkspace();
+    const view = render(
+      <DataTable label="Records" rows={rows} {...fixture()} layout="fill" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("link", { name: "Record 6" })).toBeInTheDocument();
+    geometry.shortenRows();
+    view.rerender(
+      <DataTable
+        label="Records"
+        rows={[...rows]}
+        {...fixture()}
+        layout="fill"
+      />,
+    );
+    expect(screen.getByText("Page 2 of 6")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Record 6" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Record 0" }),
+    ).not.toBeInTheDocument();
+  });
   it("keeps short final pages stable and clamps after the data shrinks", () => {
     const geometry = measuredWorkspace();
     const f = fixture();
@@ -599,7 +621,8 @@ describe("bounded workspace table layout", () => {
   it("forgets tall-row samples on source refresh and scope changes independently", () => {
     const geometry = measuredWorkspace();
     const f = fixture();
-    const refreshed = [...rows];
+    // A new server response contains new records, not just a parent array copy.
+    const refreshed = rows.map((row) => ({ ...row, amount: row.amount + 100 }));
     const view = render(
       <DataTable
         label="Records"
@@ -730,5 +753,82 @@ describe("bounded workspace table layout", () => {
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
       26,
     );
+  });
+  it("publishes external Fit capacity across density/resize without slicing or losing server paging", () => {
+    const geometry = measuredWorkspace();
+    const size = vi.fn(),
+      offset = vi.fn();
+    const f = fixture();
+    const page = {
+      offset: 5,
+      pageSize: 5,
+      count: 5,
+      hasNext: true,
+      status: "success" as const,
+      onOffsetChange: offset,
+      onPageSizeChange: size,
+    };
+    const view = render(
+      <AdvancedTable
+        label="Records"
+        rows={rows.slice(0, 5)}
+        {...f}
+        layout="fill"
+        pagination="external"
+        externalPage={page}
+      />,
+    );
+    expect(size).toHaveBeenLastCalledWith(6);
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(
+      6,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Rows 6–10");
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(offset).toHaveBeenLastCalledWith(10);
+    fireEvent.click(screen.getByRole("radio", { name: "Compact" }));
+    expect(size).toHaveBeenLastCalledWith(9);
+    // A controlled owner acknowledges the measured size before the next resize.
+    view.rerender(
+      <AdvancedTable
+        label="Records"
+        rows={rows.slice(0, 5)}
+        {...f}
+        layout="fill"
+        pagination="external"
+        externalPage={{ ...page, pageSize: 9 }}
+      />,
+    );
+    geometry.resize(201);
+    expect(size).toHaveBeenLastCalledWith(5);
+    view.rerender(
+      <AdvancedTable
+        label="Records"
+        rows={[]}
+        {...f}
+        layout="fill"
+        pagination="external"
+        externalPage={{ ...page, status: "pending" }}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Compact" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Loading page");
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    view.rerender(
+      <AdvancedTable
+        label="Records"
+        rows={rows.slice(0, 1)}
+        {...f}
+        layout="fill"
+        pagination="external"
+        externalPage={{ ...page, offset: 10, count: 1, hasNext: false }}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Rows 11–11");
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.queryByText(/Page \d+ of/)).not.toBeInTheDocument();
   });
 });

@@ -173,7 +173,8 @@ describe("saved settings semantics", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Test openai connection" }),
     );
-    await screen.findByText("failed · No saved credentials");
+    const failure = await screen.findByText("No saved credentials");
+    expect(failure.closest('[role="status"]')).toHaveTextContent("Connection failed");
     expect(api.post).toHaveBeenCalledWith("/api/settings/test", {
       what: "openai",
     });

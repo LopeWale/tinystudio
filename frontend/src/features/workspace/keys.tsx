@@ -14,7 +14,7 @@ import {
   Modal,
   EmptyState,
 } from "../../components/studio/primitives";
-import { ErrorNotice, useAction, enc } from "../data/common";
+import { ErrorNotice, RecordDate, useAction, enc } from "../data/common";
 export function KeysPage() {
   const s = useStudio();
   // Account and scope changes end this operation session, even on a later return.
@@ -149,25 +149,34 @@ function KeysSession() {
                   label: "Name",
                   value: (k) => k.name,
                   hideable: false,
-                  render: (k) => <>{k.name}</>,
+                  render: (k) => <span className="keys-name">{k.name}</span>,
                 },
                 {
                   id: "prefix",
                   label: "Prefix",
                   value: (k) => k.prefix,
-                  render: (k) => <>{k.prefix}…</>,
+                  render: (k) => (
+                    <code className="keys-prefix" dir="ltr">
+                      {k.prefix}…
+                    </code>
+                  ),
                 },
                 {
                   id: "created",
                   label: "Created",
                   value: (k) => k.created,
-                  render: (k) => <>{k.created || "—"}</>,
+                  render: (k) => <RecordDate value={k.created} />,
                 },
                 {
                   id: "lastused",
                   label: "Last used",
                   value: (k) => k.last_used,
-                  render: (k) => <>{k.last_used || "—"}</>,
+                  render: (k) =>
+                    k.last_used ? (
+                      <RecordDate value={k.last_used} />
+                    ) : (
+                      <>Never</>
+                    ),
                 },
                 {
                   id: "actions",

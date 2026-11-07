@@ -482,3 +482,46 @@
     flex: none;
   }
 }
+
+/* Raw retrieval evidence: source identity and exact passage, without implying
+   a generated answer or interpreting similarity as a confidence percentage. */
+.repository-query-results {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 180px;
+  block-size: min(480px, calc(100dvh - 360px));
+  margin-block-start: 20px;
+  gap: 12px;
+}
+.repository-query-results-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.repository-query-results-heading h3 {
+  margin: 0;
+  @apply text-body-medium;
+}
+.repository-query-results-heading span {
+  color: var(--color-text-secondary);
+  @apply text-caption-1-regular;
+}
+.repository-query-passage {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  @apply text-body-2-regular;
+}
+@media (max-width: 700px) {
+  .repository-query-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .repository-query-grid > :first-child {
+    grid-column: 1 / -1;
+  }
+  .repository-query-results table {
+    min-inline-size: 640px;
+  }
+}

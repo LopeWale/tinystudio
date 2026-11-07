@@ -45,18 +45,16 @@
   --color-accent-950: var(--color-blue-950);
 
   /* ----- Typography ----------------------------------------------------------
-   * Font sizes, weights, line-heights, and tracking all match Tailwind v4
-   * defaults. The only override is the family: Inter, loaded via next/font
-   * in app/layout.tsx, which exposes --font-inter to the document.
+   * The composite type scale lives in typography.css. This Vite app does not
+   * provide next/font variables. Keep a valid Inter/system fallback when no
+   * embedding host supplies --font-inter; never leave --font-sans unresolved.
    * --------------------------------------------------------------------------*/
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif,
+  --font-sans: var(--font-inter, "Inter"), ui-sans-serif, system-ui, sans-serif,
                "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
                "Noto Color Emoji";
 
-  /* Monospace ramp for code blocks. Loaded via next/font in app/layout.tsx
-   * (--font-mono-source → JetBrains Mono). Figma's spec uses IBM Plex Mono;
-   * JetBrains Mono is the closest already-bundled face. */
-  --font-mono: var(--font-mono-source), ui-monospace, "SFMono-Regular", Menlo,
+  /* Code has its own valid fallback even without a host-provided font. */
+  --font-mono: var(--font-mono-source, "JetBrains Mono"), ui-monospace, "SFMono-Regular", Menlo,
                Consolas, "Liberation Mono", monospace;
 
   /* ----- Radii ---------------------------------------------------------------

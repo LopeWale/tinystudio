@@ -209,3 +209,29 @@ describe("workspace-fitted table paging", () => {
     },
   );
 });
+
+it("measures an external page without locally slicing its server window", () => {
+  const server = new RecordTableController(
+    rows,
+    columns,
+    (row) => row.id,
+    "external",
+    "fit",
+    5,
+  );
+  expect(server.getSnapshot().pageSize).toBe(5);
+  server.setFittedPageSize(3);
+  expect(server.getSnapshot()).toMatchObject({
+    pageSize: 3,
+    page: 0,
+    pageCount: 1,
+  });
+  expect(server.getSnapshot().rowIds).toEqual(["a", "b", "c", "d"]);
+  server.setDensity("compact");
+  server.setPageSize(10);
+  server.setFittedPageSize(2);
+  expect(server.getSnapshot()).toMatchObject({
+    pageSize: 10,
+    density: "compact",
+  });
+});

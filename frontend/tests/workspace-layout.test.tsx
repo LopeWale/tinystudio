@@ -266,7 +266,7 @@ describe("compact workspace interaction boundaries", () => {
         </MemoryRouter>
       </StudioContext.Provider>,
     );
-    await screen.findByRole("option", { name: /Fixture model/ });
+    await screen.findByRole("button", { name: /Fixture model/ });
     const action = (id: string) =>
       registry.inspect().actions.find((action) => action.id === id)!;
     await act(async () => {
@@ -280,7 +280,7 @@ describe("compact workspace interaction boundaries", () => {
         false,
       );
     });
-    expect(screen.getByLabelText("Temperature · 0.6")).toHaveValue("0.6");
+    expect(screen.getByLabelText("Temperature")).toHaveValue(0.6);
     await act(async () => {
       await registry.execute(
         action("playground.inspector").ref,
@@ -301,7 +301,7 @@ describe("compact workspace interaction boundaries", () => {
         </MemoryRouter>
       </StudioContext.Provider>,
     );
-    await screen.findByRole("option", { name: /Fixture model/ });
+    await screen.findByRole("button", { name: /Fixture model/ });
     const transcript = screen.getByRole("log", {
       name: "Playground conversation",
     });
@@ -310,7 +310,7 @@ describe("compact workspace interaction boundaries", () => {
       target: { value: "Keep this prompt while inspecting settings" },
     });
     expect(screen.queryByLabelText("System prompt")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByLabelText("System prompt")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("System prompt"), {
       target: { value: "Use concise answers" },
@@ -321,7 +321,7 @@ describe("compact workspace interaction boundaries", () => {
     );
     expect(screen.getByLabelText("Message your model")).toBe(composer);
     expect(composer).toHaveValue("Keep this prompt while inspecting settings");
-    fireEvent.click(screen.getByRole("button", { name: "Show settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByLabelText("System prompt")).toHaveValue(
       "Use concise answers",
     );

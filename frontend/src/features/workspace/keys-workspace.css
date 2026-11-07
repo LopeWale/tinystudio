@@ -23,3 +23,15 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.keys-name {
+  @apply text-body-2-medium;
+  color: var(--color-text-primary);
+}
+.keys-prefix {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-background-secondary-default);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}

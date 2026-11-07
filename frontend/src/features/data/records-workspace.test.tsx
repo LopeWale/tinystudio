@@ -80,6 +80,84 @@ const rows = [
 ];
 
 describe("record workspace interaction contracts from boards 03 and 04", () => {
+  it("validates repository queries and clears evidence when criteria change", async () => {
+    const studio = mount(
+      <RepositoriesPage />,
+      "/repositories",
+      "/repositories",
+      vi.fn(async (path: string) =>
+        path === "/api/hub/models" ? {} : [{ name: "alpha", documents: [] }],
+      ),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Query$/ }));
+    const text = screen.getByRole("textbox", { name: "Text" });
+    const search = screen.getByRole("button", { name: /^Search$/ });
+    expect(search).toBeDisabled();
+    fireEvent.keyDown(text, { key: "Enter" });
+    expect(studio.api.post).not.toHaveBeenCalled();
+    fireEvent.change(text, { target: { value: "first question" } });
+    fireEvent.change(screen.getByLabelText("Passages"), {
+      target: { value: "0" },
+    });
+    expect(search).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Passages"), {
+      target: { value: "5" },
+    });
+    for (const invalid of ["", "1.5", "51"]) {
+      fireEvent.change(screen.getByLabelText("Passages"), {
+        target: { value: invalid },
+      });
+      expect(search).toBeDisabled();
+      fireEvent.keyDown(text, { key: "Enter" });
+    }
+    fireEvent.change(screen.getByLabelText("Passages"), {
+      target: { value: "5" },
+    });
+    for (const invalid of ["", "-1.1", "1.1"]) {
+      fireEvent.change(screen.getByLabelText("Min similarity"), {
+        target: { value: invalid },
+      });
+      expect(search).toBeDisabled();
+      fireEvent.keyDown(text, { key: "Enter" });
+    }
+    expect(studio.api.post).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Min similarity"), {
+      target: { value: "0" },
+    });
+    studio.api.post.mockResolvedValueOnce([
+      { document: "manual.txt", text: "First answer", similarity_score: 0.8 },
+    ]);
+    fireEvent.click(search);
+    expect(await screen.findByText("First answer")).toBeVisible();
+    fireEvent.change(text, { target: { value: "second question" } });
+    expect(screen.queryByText("First answer")).toBeNull();
+    let resolve!: (value: any[]) => void;
+    studio.api.post.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    fireEvent.click(search);
+    await waitFor(() => expect(studio.api.post).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByLabelText("Min similarity"), {
+      target: { value: "0.5" },
+    });
+    await act(async () =>
+      resolve([
+        {
+          document: "manual.txt",
+          text: "Outdated answer",
+          similarity_score: 0.2,
+        },
+      ]),
+    );
+    expect(screen.queryByText("Outdated answer")).toBeNull();
+    expect(
+      screen.getByText("Search to inspect relevant passages."),
+    ).toBeVisible();
+  });
   it.each(["success", "failure"])(
     "discards a late query %s after its dialog is closed and reopened",
     async (outcome) => {

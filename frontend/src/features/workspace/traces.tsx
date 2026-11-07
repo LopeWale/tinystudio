@@ -2,16 +2,19 @@ import { CollectionToolbar } from "../../components/studio/collection-toolbar";
 import { AdvancedTable } from "../../components/studio/data-table";
 import { CollectionTemplate } from "../../components/studio/templates";
 import { useComponentAction } from "../assistant/actions";
+import { InspectionWorkspace } from "../../components/studio/workspace";
 import {
-  InspectionWorkspace,
-  WorkspaceDisclosure,
-} from "../../components/studio/workspace";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
 import {
   Badge,
   Button,
-  EmptyState,
   Evidence,
   Field,
   Modal,
@@ -19,7 +22,6 @@ import {
   Panel,
 } from "../../components/studio/primitives";
 import { Checkbox } from "../../components/boardui/base/checkbox/checkbox";
-import { Input } from "../data/common";
 import {
   RecordsScroll,
   RecordComparison,
@@ -27,6 +29,7 @@ import {
 } from "../data/records-workspace";
 import "../data/records-workspace.css";
 import "./serving-records.css";
+import "./traces-workspace.css";
 interface Trace {
   id: string;
   time?: string;
@@ -40,11 +43,45 @@ interface Trace {
   seconds?: number;
   document_chunks?: any[];
 }
+function compactTraceTime(time?: string) {
+  if (!time) return "Time unavailable";
+  const recorded = new Date(time);
+  if (Number.isNaN(recorded.getTime())) return time;
+  return recorded.toLocaleString(undefined, {
+    year: "2-digit",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 export function TracesPage() {
   const studio = useStudio(),
-    [offset, setOffset] = useState(0),
-    traces = useRetainedResource<Trace[]>(
-      `/api/traces?limit=200&offset=${offset}`,
+    [page, setPage] = useState({ scope: studio.scopeKey, offset: 0, size: 25 });
+  // Scope changes cannot issue an intermediate request at the previous offset.
+  const { offset, size: pageSize } =
+    page.scope === studio.scopeKey ? page : { offset: 0, size: 25 };
+  const setOffset = (next: number) =>
+    setPage({ scope: studio.scopeKey, offset: next, size: pageSize });
+  const resizePage = useCallback(
+    (size: number) => {
+      setPage((previous) => {
+        const current =
+          previous.scope === studio.scopeKey
+            ? previous
+            : { scope: studio.scopeKey, offset: 0, size: 25 };
+        if (current.size === size) return current;
+        return {
+          ...current,
+          size,
+          offset: Math.floor(current.offset / size) * size,
+        };
+      });
+    },
+    [studio.scopeKey],
+  );
+  const traces = useRetainedResource<Trace[]>(
+      `/api/traces?limit=${pageSize + 1}&offset=${offset}`,
     ),
     datasets = useResource<any[]>("/api/datasets"),
     [dataset, setDataset] = useState(""),
@@ -55,14 +92,29 @@ export function TracesPage() {
   const [query, setQuery] = useState(""),
     [checked, setChecked] = useState<Trace[]>([]),
     [comparing, compare] = useState(false),
-    [promoting, setPromoting] = useState(false);
+    [promoting, setPromoting] = useState(false),
+    [reviewRows, setReviewRows] = useState<readonly Trace[]>([]);
   const returnFocus = useRef<HTMLElement | null>(null),
-    compareFocus = useRef<HTMLElement | null>(null);
+    compareFocus = useRef<HTMLElement | null>(null),
+    collectionFocus = useRef<HTMLDivElement | null>(null),
+    pendingFocus = useRef<"trigger" | "collection" | null>(null);
   const closeInspector = () => {
+    if (!inspectedId) return;
+    pendingFocus.current = "trigger";
     inspect(null);
-    returnFocus.current?.focus();
   };
-  const visibleTraces = (traces.data || []).filter((trace) =>
+  useLayoutEffect(() => {
+    if (inspectedId || !pendingFocus.current) return;
+    const target =
+      pendingFocus.current === "trigger" && returnFocus.current?.isConnected
+        ? returnFocus.current
+        : collectionFocus.current;
+    pendingFocus.current = null;
+    target?.focus();
+  }, [inspectedId]);
+  // The extra record proves another page exists; exclude it from page rows and inspection.
+  const pageTraces = traces.data?.slice(0, pageSize);
+  const visibleTraces = (pageTraces || []).filter((trace) =>
     `${trace.id} ${trace.model} ${trace.messages.map((message) => message.content).join(" ")} ${trace.response} ${trace.corrected || ""}`
       .toLowerCase()
       .includes(query.trim().toLowerCase()),
@@ -78,18 +130,40 @@ export function TracesPage() {
     setChecked([]);
     compare(false);
     setPromoting(false);
+    setFix(null);
     setQuery("");
-    setOffset(0);
+    setPage({ scope: studio.scopeKey, offset: 0, size: 25 });
   }, [studio.scopeKey]);
   useEffect(() => {
     if (!traces.data) return;
     setChecked((previous) =>
       previous.map(
-        (record) =>
-          traces.data!.find((item) => item.id === record.id) || record,
+        (record) => pageTraces?.find((item) => item.id === record.id) || record,
       ),
     );
   }, [traces.data]);
+  useEffect(() => {
+    if (
+      !traces.loading &&
+      !traces.error &&
+      !traces.isStale &&
+      traces.data?.length === 0 &&
+      offset > 0
+    )
+      setPage((current) =>
+        current.scope === studio.scopeKey && current.offset === offset
+          ? { ...current, offset: Math.max(0, offset - pageSize) }
+          : current,
+      );
+  }, [
+    traces.data,
+    traces.loading,
+    traces.error,
+    traces.isStale,
+    offset,
+    pageSize,
+    studio.scopeKey,
+  ]);
   const choices = (datasets.data ?? []).filter((d) => !d.missing),
     currentDataset = choices.some((d) => d.name === dataset)
       ? dataset
@@ -114,19 +188,57 @@ export function TracesPage() {
     }
   }
   async function score(trace: Trace, value: number) {
-    await studio.api.post(`/api/traces/${encodeURIComponent(trace.id)}/score`, {
-      score: value,
-    });
+    const updated = await studio.api.post<Trace>(
+      `/api/traces/${encodeURIComponent(trace.id)}/score`,
+      {
+        score: value,
+      },
+    );
+    updateSelectedSnapshot({ ...trace, score: value, ...updated });
     traces.reload();
   }
-  const selected = traces.data?.find((trace) => trace.id === inspectedId);
+  const selectedSnapshot = useRef<{ scope: string; trace: Trace } | null>(null);
+  const loadedSelection = pageTraces?.find((trace) => trace.id === inspectedId);
+  useLayoutEffect(() => {
+    if (loadedSelection)
+      selectedSnapshot.current = {
+        scope: studio.scopeKey,
+        trace: loadedSelection,
+      };
+    else if (!inspectedId) selectedSnapshot.current = null;
+  }, [loadedSelection, inspectedId, studio.scopeKey]);
+  const updateSelectedSnapshot = (trace: Trace) => {
+    if (
+      mounted.current &&
+      selectedSnapshot.current?.scope === studio.scopeKey &&
+      selectedSnapshot.current.trace.id === trace.id
+    ) {
+      selectedSnapshot.current = { scope: studio.scopeKey, trace };
+      setChecked((previous) =>
+        previous.map((item) => (item.id === trace.id ? trace : item)),
+      );
+    }
+  };
+  const selected =
+    loadedSelection ||
+    (selectedSnapshot.current?.scope === studio.scopeKey &&
+    selectedSnapshot.current.trace.id === inspectedId
+      ? selectedSnapshot.current.trace
+      : undefined);
+  const selectedIndex = reviewRows.findIndex(
+    (trace) => trace.id === inspectedId,
+  );
+  const navigateTrace = (direction: number) => {
+    const next = reviewRows[selectedIndex + direction];
+    if (selectedIndex >= 0 && next && !busy) inspect(next.id);
+  };
   useComponentAction({
     id: "traces.inspect",
     label: "Inspect an inference trace",
     kind: "select",
-    disabled: !traces.data?.length,
+    disabled: !pageTraces?.length,
     state: { selected: inspectedId },
-    options: (traces.data || []).map((trace) => ({
+    options: (pageTraces || []).map((trace) => ({
       value: trace.id,
       label: `${trace.model} · ${trace.id}`,
     })),
@@ -209,8 +321,8 @@ export function TracesPage() {
             </Button>
           </div>
           <p className="muted">
-            Only traces scored 90% or above are included. Saved corrections
-            become the training response.
+            Across this project, only traces scored 90% or above are included.
+            Saved corrections become the training response.
             {!choices.length && " Create a dataset before adding traces."}
           </p>
         </Modal>
@@ -262,273 +374,349 @@ export function TracesPage() {
             label="Trace inspector"
             inspector={
               selected && (
-                <RecordsScroll label="Trace detail">
-                  <Evidence label="Selected trace" data={selected}>
-                    <div className="trace-review-heading">
+                <div className="trace-review">
+                  <header className="trace-review-heading">
+                    <div>
                       <strong>{selected.model}</strong>
-                      <Button size="sm" onClick={closeInspector}>
-                        Close inspector
-                      </Button>
+                      <span className="trace-review-id">{selected.id}</span>
                     </div>
-                    <p className="muted">
-                      {selected.time || "Time unavailable"} ·{" "}
-                      {selected.score == null
-                        ? "Unscored"
-                        : `${(selected.score * 100).toFixed(1)}%`}
-                    </p>
-                    <h3>Messages</h3>
-                    {selected.messages.map((message, index) => (
-                      <section key={index}>
-                        <small className="muted">{message.role}</small>
-                        <pre>{message.content}</pre>
+                    <Button size="sm" onClick={closeInspector}>
+                      Close inspector
+                    </Button>
+                  </header>
+                  <nav
+                    className="trace-review-navigation"
+                    aria-label="Trace review navigation"
+                  >
+                    <Button
+                      size="sm"
+                      disabled={busy || selectedIndex <= 0}
+                      onClick={() => navigateTrace(-1)}
+                    >
+                      Previous trace
+                    </Button>
+                    <span>
+                      {selectedIndex < 0
+                        ? loadedSelection
+                          ? "Outside current search"
+                          : "Outside current page"
+                        : `${selectedIndex + 1} of ${reviewRows.length}`}
+                    </span>
+                    <Button
+                      size="sm"
+                      disabled={
+                        busy ||
+                        selectedIndex < 0 ||
+                        selectedIndex >= reviewRows.length - 1
+                      }
+                      onClick={() => navigateTrace(1)}
+                    >
+                      Next trace
+                    </Button>
+                  </nav>
+                  <dl className="trace-review-metadata">
+                    <div>
+                      <dt>Recorded</dt>
+                      <dd className="trace-review-recorded">
+                        {selected.time || "Time unavailable"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Score</dt>
+                      <dd>
+                        {selected.score == null
+                          ? "Unscored"
+                          : `${(selected.score * 100).toFixed(1)}%`}
+                      </dd>
+                    </div>
+                    {selected.origin && (
+                      <div>
+                        <dt>Origin</dt>
+                        <dd>{selected.origin}</dd>
+                      </div>
+                    )}
+                    {selected.seconds != null && (
+                      <div>
+                        <dt>Latency</dt>
+                        <dd>{selected.seconds} s</dd>
+                      </div>
+                    )}
+                  </dl>
+                  <RecordsScroll key={selected.id} label="Trace detail">
+                    <Evidence
+                      label="Selected trace"
+                      data={selected}
+                      className="trace-review-content"
+                    >
+                      <section
+                        className="trace-review-messages"
+                        aria-label="Source messages"
+                      >
+                        <h3>Source messages</h3>
+                        {selected.messages.map((message, index) => (
+                          <section key={index} className="trace-review-message">
+                            <h4>{message.role}</h4>
+                            <p className="trace-review-prose">
+                              {message.content}
+                            </p>
+                          </section>
+                        ))}
                       </section>
-                    ))}
-                    <h3>Response</h3>
-                    <pre>{selected.response}</pre>
-                    {selected.corrected && (
-                      <>
-                        <h3>Corrected response</h3>
-                        <pre>{selected.corrected}</pre>
-                      </>
-                    )}
-                    {selected.note && <p>{selected.note}</p>}
-                    {!!selected.document_chunks?.length && (
-                      <details>
-                        <summary>Retrieved evidence</summary>
-                        <pre>
-                          {JSON.stringify(selected.document_chunks, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                    <Button onClick={() => setFix(selected)}>
+                      <section
+                        className="trace-review-response"
+                        aria-label="Model response"
+                      >
+                        <h3>Model response</h3>
+                        <p className="trace-review-prose">
+                          {selected.response}
+                        </p>
+                      </section>
+                      {selected.corrected && (
+                        <section
+                          className="trace-review-response"
+                          aria-label="Saved correction"
+                        >
+                          <h3>Corrected response</h3>
+                          <p className="trace-review-prose">
+                            {selected.corrected}
+                          </p>
+                        </section>
+                      )}
+                      {selected.note && (
+                        <section>
+                          <h3>Review feedback</h3>
+                          <p className="trace-review-prose">{selected.note}</p>
+                        </section>
+                      )}
+                      {!!selected.document_chunks?.length && (
+                        <details>
+                          <summary>Retrieved evidence</summary>
+                          <pre>
+                            {JSON.stringify(selected.document_chunks, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </Evidence>
+                  </RecordsScroll>
+                  <footer
+                    className="trace-review-actions"
+                    aria-label="Selected trace review actions"
+                  >
+                    <Button
+                      size="sm"
+                      aria-label={`Mark response correct: ${selected.id}`}
+                      disabled={busy}
+                      onClick={() => void action(() => score(selected, 1))}
+                    >
+                      Correct
+                    </Button>
+                    <Button
+                      size="sm"
+                      aria-label={`Mark response incorrect: ${selected.id}`}
+                      disabled={busy}
+                      onClick={() => void action(() => score(selected, 0))}
+                    >
+                      Incorrect
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => setFix(selected)}
+                    >
                       Correct response
                     </Button>
-                  </Evidence>
-                </RecordsScroll>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      disabled={busy}
+                      onClick={() =>
+                        void action(async () => {
+                          if (
+                            await studio.confirm(
+                              "Delete this inference trace?",
+                              "Delete trace",
+                            )
+                          ) {
+                            await studio.api.del(
+                              `/api/traces/${encodeURIComponent(selected.id)}`,
+                            );
+                            setChecked((previous) =>
+                              previous.filter(
+                                (item) => item.id !== selected.id,
+                              ),
+                            );
+                            pendingFocus.current = "collection";
+                            inspect(null);
+                            traces.reload();
+                          }
+                        })
+                      }
+                    >
+                      Delete
+                    </Button>
+                  </footer>
+                </div>
               )
             }
           >
-            <div className="trace-table-host">
+            <div
+              className="trace-table-host"
+              ref={collectionFocus}
+              tabIndex={-1}
+            >
               <Panel title="Recent inference traces">
-                {traces.loading && !traces.data ? (
-                  <p role="status">Loading traces…</p>
-                ) : (
-                  <AdvancedTable
-                    layout="fill"
-                    toolbarContent={
-                      <CollectionToolbar
-                        label="Find a trace on this page"
-                        query={query}
-                        onQueryChange={setQuery}
-                        selectedCount={checked.length}
-                        onCompare={(event) => {
-                          compareFocus.current = event.currentTarget;
-                          compare(true);
-                        }}
-                        onClearSelection={() => setChecked([])}
-                      />
-                    }
-                    label="Recent inference traces"
-                    rows={visibleTraces}
-                    getRowId={(trace) => trace.id}
-                    scopeKey={`${studio.scopeKey}:${offset}`}
-                    pagination="external"
-                    rowProps={(trace) => ({
-                      className:
-                        trace.id === inspectedId ? "trace-selected" : undefined,
-                    })}
-                    renderRow={(trace, { key, ...props }, cells) => (
-                      <Evidence
-                        key={key}
-                        as="tr"
-                        {...props}
-                        label="Inference trace"
-                        data={trace}
-                      >
-                        {cells}
-                      </Evidence>
-                    )}
-                    columns={[
-                      {
-                        id: "select",
-                        label: "Select",
-                        value: (trace) => trace.id,
-                        sortable: false,
-                        filterable: false,
-                        hideable: false,
-                        render: (trace) => (
-                          <>
-                            <Checkbox
-                              aria-label={`Select trace ${trace.id}`}
-                              isSelected={checked.some(
-                                (item) => item.id === trace.id,
-                              )}
-                              onChange={() => toggleTrace(trace)}
-                            />
-                          </>
-                        ),
-                      },
-                      {
-                        id: "when",
-                        label: "When · model",
-                        value: (trace) => `${trace.time || ""} ${trace.model}`,
-                        hideable: false,
-                        render: (trace) => (
-                          <>
-                            {trace.time
-                              ? new Date(trace.time).toLocaleString()
-                              : "—"}
-                            <br />
-                            <code>{trace.model}</code>
-                            {trace.origin && <Badge>{trace.origin}</Badge>}
-                          </>
-                        ),
-                      },
-                      {
-                        id: "message",
-                        label: "User message",
-                        hideable: false,
-                        value: (trace) =>
-                          [...trace.messages]
-                            .reverse()
-                            .find((message) => message.role === "user")
-                            ?.content,
-                        render: (trace) => (
-                          <>
-                            <span className="trace-preview">
-                              {
-                                [...trace.messages]
-                                  .reverse()
-                                  .find((m) => m.role === "user")?.content
-                              }
-                            </span>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={(event) => {
-                                returnFocus.current = event.currentTarget;
-                                inspect(trace.id);
-                              }}
-                            >
-                              Inspect trace
-                            </Button>
-                          </>
-                        ),
-                      },
-                      {
-                        id: "response",
-                        label: "Response",
-                        value: (trace) => trace.corrected || trace.response,
-                        render: (trace) => (
-                          <>
-                            <span className="trace-preview">
-                              {trace.corrected || trace.response}
-                            </span>
-                            {trace.corrected && <Badge>Corrected</Badge>}
-                          </>
-                        ),
-                      },
-                      {
-                        id: "score",
-                        label: "Score",
-                        value: (trace) => trace.score,
-                        render: (trace) => (
-                          <>
-                            {trace.score == null
-                              ? "Unscored"
-                              : `${(trace.score * 100).toFixed(1)}%`}
-                          </>
-                        ),
-                      },
-                      {
-                        id: "actions",
-                        label: "Review actions",
-                        value: (trace) => trace.id,
-                        sortable: false,
-                        filterable: false,
-                        hideable: false,
-                        render: (trace) => (
-                          <>
-                            <div className="actions">
-                              <Button
-                                size="sm"
-                                aria-label={`Mark response correct: ${trace.id}`}
-                                disabled={busy}
-                                onClick={() =>
-                                  void action(() => score(trace, 1))
-                                }
-                              >
-                                Correct
-                              </Button>
-                              <Button
-                                size="sm"
-                                aria-label={`Mark response incorrect: ${trace.id}`}
-                                disabled={busy}
-                                onClick={() =>
-                                  void action(() => score(trace, 0))
-                                }
-                              >
-                                Incorrect
-                              </Button>
-                              <Button size="sm" onClick={() => setFix(trace)}>
-                                Fix
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="danger"
-                                disabled={busy}
-                                onClick={() =>
-                                  void action(async () => {
-                                    if (
-                                      await studio.confirm(
-                                        "Delete this inference trace?",
-                                        "Delete trace",
-                                      )
-                                    ) {
-                                      await studio.api.del(
-                                        `/api/traces/${encodeURIComponent(trace.id)}`,
-                                      );
-                                      setChecked((previous) =>
-                                        previous.filter(
-                                          (item) => item.id !== trace.id,
-                                        ),
-                                      );
-                                      if (inspectedId === trace.id)
-                                        closeInspector();
-                                      traces.reload();
-                                    }
-                                  })
-                                }
-                              >
-                                Delete
-                              </Button>
-                            </div>
-                          </>
-                        ),
-                      },
-                    ]}
-                  />
-                )}
-                <div className="actions">
-                  <Button
-                    disabled={!offset || traces.loading}
-                    onClick={() => setOffset((v) => Math.max(0, v - 200))}
-                  >
-                    Previous 200
-                  </Button>
-                  <span>
-                    Showing {traces.data?.length ? offset + 1 : 0}–
-                    {offset + (traces.data?.length ?? 0)}
-                  </span>
-                  <Button
-                    disabled={
-                      traces.loading || (traces.data?.length ?? 0) < 200
-                    }
-                    onClick={() => setOffset((v) => v + 200)}
-                  >
-                    Next 200
-                  </Button>
-                </div>
+                <AdvancedTable
+                  layout="fill"
+                  toolbarContent={
+                    <CollectionToolbar
+                      label="Find a trace on this page"
+                      query={query}
+                      onQueryChange={setQuery}
+                      selectedCount={checked.length}
+                      onCompare={(event) => {
+                        compareFocus.current = event.currentTarget;
+                        compare(true);
+                      }}
+                      onClearSelection={() => setChecked([])}
+                    />
+                  }
+                  label="Recent inference traces"
+                  rows={visibleTraces}
+                  onVisibleRowsChange={setReviewRows}
+                  getRowId={(trace) => trace.id}
+                  scopeKey={studio.scopeKey}
+                  externalPage={{
+                    offset,
+                    pageSize,
+                    count: pageTraces?.length ?? 0,
+                    hasNext: (traces.data?.length ?? 0) > pageSize,
+                    status: traces.loading
+                      ? "pending"
+                      : traces.error
+                        ? "error"
+                        : "success",
+                    onOffsetChange: setOffset,
+                    onPageSizeChange: resizePage,
+                  }}
+                  empty={
+                    traces.loading
+                      ? "Loading traces…"
+                      : traces.error
+                        ? "Traces could not be loaded. Refresh to retry."
+                        : "No traces available."
+                  }
+                  pagination="external"
+                  rowProps={(trace) => ({
+                    className:
+                      trace.id === inspectedId ? "trace-selected" : undefined,
+                  })}
+                  renderRow={(trace, { key, ...props }, cells) => (
+                    <Evidence
+                      key={key}
+                      as="tr"
+                      {...props}
+                      label="Inference trace"
+                      data={trace}
+                    >
+                      {cells}
+                    </Evidence>
+                  )}
+                  columns={[
+                    {
+                      id: "select",
+                      label: "Select",
+                      value: (trace) => trace.id,
+                      sortable: false,
+                      filterable: false,
+                      hideable: false,
+                      render: (trace) => (
+                        <>
+                          <Checkbox
+                            aria-label={`Select trace ${trace.id}`}
+                            isSelected={checked.some(
+                              (item) => item.id === trace.id,
+                            )}
+                            onChange={() => toggleTrace(trace)}
+                          />
+                        </>
+                      ),
+                    },
+                    {
+                      id: "when",
+                      label: "When · model",
+                      value: (trace) => `${trace.time || ""} ${trace.model}`,
+                      hideable: false,
+                      render: (trace) => (
+                        <div className="trace-identity">
+                          <span className="trace-model" title={trace.model}>
+                            {trace.model}
+                          </span>
+                          <span
+                            className="trace-recorded"
+                            title={trace.time || "Time unavailable"}
+                          >
+                            {compactTraceTime(trace.time)}
+                          </span>
+                        </div>
+                      ),
+                    },
+                    {
+                      id: "message",
+                      label: "User message",
+                      hideable: false,
+                      value: (trace) =>
+                        [...trace.messages]
+                          .reverse()
+                          .find((message) => message.role === "user")?.content,
+                      render: (trace) => (
+                        <>
+                          <span className="trace-preview">
+                            {
+                              [...trace.messages]
+                                .reverse()
+                                .find((m) => m.role === "user")?.content
+                            }
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(event) => {
+                              returnFocus.current = event.currentTarget;
+                              inspect(trace.id);
+                            }}
+                          >
+                            Inspect trace
+                          </Button>
+                        </>
+                      ),
+                    },
+                    {
+                      id: "response",
+                      label: "Response",
+                      value: (trace) => trace.corrected || trace.response,
+                      render: (trace) => (
+                        <>
+                          <span className="trace-preview">
+                            {trace.corrected || trace.response}
+                          </span>
+                          {trace.corrected && <Badge>Corrected</Badge>}
+                        </>
+                      ),
+                    },
+                    {
+                      id: "score",
+                      label: "Score",
+                      value: (trace) => trace.score,
+                      render: (trace) => (
+                        <>
+                          {trace.score == null
+                            ? "Unscored"
+                            : `${(trace.score * 100).toFixed(1)}%`}
+                        </>
+                      ),
+                    },
+                  ]}
+                />
               </Panel>
             </div>
           </InspectionWorkspace>
@@ -543,7 +731,8 @@ export function TracesPage() {
           <TraceCorrection
             trace={fix}
             onClose={() => setFix(null)}
-            onSaved={() => {
+            onSaved={(trace) => {
+              updateSelectedSnapshot(trace);
               setFix(null);
               traces.reload();
             }}
@@ -560,7 +749,7 @@ function TraceCorrection({
 }: {
   trace: Trace;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (trace: Trace) => void;
 }) {
   const { api } = useStudio(),
     [answer, setAnswer] = useState(trace.corrected || trace.response),
@@ -577,12 +766,13 @@ function TraceCorrection({
     setBusy(true);
     setError("");
     try {
-      await api.post(
+      const updated = await api.post<Trace>(
         `/api/traces/${encodeURIComponent(trace.id)}/score`,
         { score: 1, corrected: answer, note },
         owner.current?.signal,
       );
-      onSaved();
+      if (!owner.current?.signal.aborted)
+        onSaved({ ...trace, score: 1, corrected: answer, note, ...updated });
     } catch (e: any) {
       if (e.name !== "AbortError") setError(e.message);
     } finally {

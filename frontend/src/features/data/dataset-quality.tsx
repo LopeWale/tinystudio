@@ -12,6 +12,7 @@ import {
   Panel,
 } from "../../components/studio/primitives";
 import { SimpleTable } from "../../components/studio/data-table";
+import { SettingsSection } from "../../components/studio/settings-section";
 import { RecordsScroll } from "./records-workspace";
 import { enc, ErrorNotice, Histogram, track, useAction } from "./common";
 import "../../components/studio/form-controls.css";
@@ -66,6 +67,167 @@ const rules = [
   ["require_json_answer", "Keep only JSON answers"],
   ["redact_pii", "Redact personal information"],
 ];
+
+/** One distribution at a time, with its exact evidence in the same region. */
+function QualityDistributions({
+  profile,
+  active,
+}: {
+  profile: any;
+  active: boolean;
+}) {
+  const [metric, setMetric] = useState("user_chars");
+  const [presentation, setPresentation] = useState("chart");
+  const [composition, setComposition] = useState("buckets");
+  const metrics = [
+    { value: "user_chars", label: "User messages" },
+    { value: "answer_chars", label: "Responses" },
+    { value: "ratings", label: "Ratings" },
+  ];
+  const titles: Record<string, string> = {
+    user_chars: "User message length (chars)",
+    answer_chars: "Assistant response length (chars)",
+    ratings: "Curation ratings",
+  };
+  useComponentAction({
+    id: "dataset.quality.distribution",
+    label: "Choose quality distribution",
+    kind: "select",
+    disabled: !active,
+    state: metric,
+    options: metrics,
+    run: (value) => {
+      if (!metrics.some((option) => option.value === value))
+        throw Error("Choose a distribution");
+      setMetric(value!);
+    },
+  });
+  useComponentAction({
+    id: "dataset.quality.presentation",
+    label: "Show chart or bin counts",
+    kind: "select",
+    disabled: !active,
+    state: presentation,
+    options: [
+      { value: "chart", label: "Chart" },
+      { value: "table", label: "Bin counts" },
+    ],
+    run: (value) => {
+      if (value !== "chart" && value !== "table")
+        throw Error("Choose a presentation");
+      setPresentation(value);
+    },
+  });
+  useComponentAction({
+    id: "dataset.quality.composition",
+    label: "Choose dataset composition",
+    kind: "select",
+    disabled: !active,
+    state: composition,
+    options: [
+      { value: "buckets", label: "Buckets" },
+      { value: "labels", label: "Labels" },
+      { value: "sources", label: "Sources" },
+    ],
+    run: (value) => {
+      if (!value || !["buckets", "labels", "sources"].includes(value))
+        throw Error("Choose a composition");
+      setComposition(value);
+    },
+  });
+  const current = profile[metric];
+  const pairs =
+    composition === "buckets"
+      ? Object.entries(profile.buckets)
+      : profile[composition];
+  const plot = (
+    <Histogram
+      key={metric}
+      label={titles[metric]}
+      integerValues
+      focusOccupiedRange
+      unit={metric === "ratings" ? "rounded rating" : "characters"}
+      {...current.histogram}
+      view={presentation as "chart" | "table"}
+    />
+  );
+  return (
+    <div className="quality-analysis-grid">
+      <Panel title="Distribution">
+        <div className="quality-analysis-controls">
+          <SegmentedControl
+            aria-label="Distribution measure"
+            value={metric}
+            onChange={setMetric}
+            options={metrics}
+          />
+          <SegmentedControl
+            aria-label="Distribution presentation"
+            value={presentation}
+            onChange={setPresentation}
+            options={[
+              { value: "chart", label: "Chart" },
+              { value: "table", label: "Bin counts" },
+            ]}
+          />
+        </div>
+        <h3 className="quality-measure-title">{titles[metric]}</h3>
+        <p className="quality-measure-summary">
+          {metric === "ratings"
+            ? `${current.count} rated datapoints · Mean ${current.mean ?? "—"}/10`
+            : `Median ${current.summary.median} · p95 ${current.summary.p95} · Max ${current.summary.max}`}
+        </p>
+        {presentation === "table" ? (
+          <div className="quality-bin-table">
+            <RecordsScroll
+              key={metric}
+              label={`${titles[metric]} exact counts`}
+            >
+              {plot}
+            </RecordsScroll>
+          </div>
+        ) : (
+          plot
+        )}
+        <p className="quality-help quality-analysis-note">
+          {metric === "ratings"
+            ? "Bins use rounded ratings; the mean uses original values."
+            : "Aggregate counts only. Bins do not identify individual records."}
+        </p>
+      </Panel>
+      <Panel title="Dataset composition">
+        <SegmentedControl
+          aria-label="Composition measure"
+          value={composition}
+          onChange={setComposition}
+          options={[
+            { value: "buckets", label: "Buckets" },
+            { value: "labels", label: "Labels" },
+            { value: "sources", label: "Sources" },
+          ]}
+        />
+        <p className="quality-composition-scope">{profile.count} datapoints</p>
+        <SimpleTable
+          label={`Dataset ${composition}`}
+          rows={pairs}
+          getRowId={([label]: any) => String(label)}
+          columns={[
+            { id: "value", label: "Value", value: ([label]: any) => label },
+            { id: "count", label: "Count", value: ([, count]: any) => count },
+          ]}
+          empty={<p>No values in this profile.</p>}
+        />
+        <p className="quality-help quality-analysis-note">
+          {composition === "labels"
+            ? "A datapoint can have multiple labels. Counts overlap and must not be added together."
+            : composition === "buckets"
+              ? "Each datapoint belongs to one bucket."
+              : "Source counts from the complete quality profile."}
+        </p>
+      </Panel>
+    </div>
+  );
+}
 
 /** Profile reads and cleaning results belong to this mounted dataset scope. */
 export function QualityDialog({
@@ -153,10 +315,37 @@ export function QualityDialog({
   });
   const field = (key: keyof typeof values) => (value: any) =>
     setValues((previous) => ({ ...previous, [key]: value }));
+  const cleaningChoices =
+    chosen.length +
+    [values.min_total_chars, values.max_total_chars, values.min_rating].filter(
+      (value) => value !== "",
+    ).length +
+    (values.drop_labels.split(",").some((label) => label.trim()) ? 1 : 0);
+  const invalidCharacters = [
+    values.min_total_chars,
+    values.max_total_chars,
+  ].some(
+    (value) =>
+      value !== "" &&
+      (!Number.isSafeInteger(Number(value)) || Number(value) < 0),
+  );
+  const thresholdError = invalidCharacters
+    ? "Character limits must be non-negative whole numbers."
+    : values.min_total_chars !== "" &&
+        values.max_total_chars !== "" &&
+        Number(values.min_total_chars) > Number(values.max_total_chars)
+      ? "Minimum characters cannot exceed maximum characters."
+      : values.min_rating !== "" &&
+          (!Number.isFinite(Number(values.min_rating)) ||
+            Number(values.min_rating) < 0 ||
+            Number(values.min_rating) > 10)
+        ? "Minimum rating must be between 0 and 10."
+        : "";
   async function clean() {
     if (submitting.current) return;
     submitting.current = true;
     await action.run(async () => {
+      if (thresholdError) throw Error(thresholdError);
       const spec: any = Object.fromEntries(chosen.map((key) => [key, true]));
       for (const key of [
         "min_total_chars",
@@ -436,53 +625,10 @@ export function QualityDialog({
               className="quality-pane"
             >
               <RecordsScroll label="Quality distributions">
-                <p className="quality-help">
-                  Aggregate profile. Histogram bins do not identify individual
-                  records.
-                </p>
-                <div className="quality-chart-grid">
-                  {[
-                    ["user_chars", "User message length (chars)"],
-                    ["answer_chars", "Assistant response length (chars)"],
-                  ].map(([key, title]) => (
-                    <Panel key={key} title={title}>
-                      <p>
-                        Median {profile[key].summary.median} · p95{" "}
-                        {profile[key].summary.p95} · Max{" "}
-                        {profile[key].summary.max}
-                      </p>
-                      {profile[key].histogram.counts.length ? (
-                        <Histogram
-                          label={title}
-                          integerValues
-                          unit="characters"
-                          {...profile[key].histogram}
-                        />
-                      ) : (
-                        <p>No messages to measure.</p>
-                      )}
-                    </Panel>
-                  ))}
-                </div>
-                <div className="quality-distribution-grid">
-                  {distribution("Labels", profile.labels)}
-                  {distribution("Sources", profile.sources)}
-                  {distribution("Buckets", Object.entries(profile.buckets))}
-                </div>
-                {profile.ratings.count > 0 && (
-                  <Panel title="Curation ratings">
-                    <p>
-                      Distribution uses rounded ratings; the mean uses original
-                      values.
-                    </p>
-                    <Histogram
-                      label="Curation ratings"
-                      integerValues
-                      unit="rounded rating"
-                      {...profile.ratings.histogram}
-                    />
-                  </Panel>
-                )}
+                <QualityDistributions
+                  profile={profile}
+                  active={view === "distributions"}
+                />
               </RecordsScroll>
             </section>
             <section
@@ -495,8 +641,10 @@ export function QualityDialog({
             >
               <RecordsScroll label="Cleaning options">
                 <div className="quality-cleaning-grid">
-                  <Panel title="Cleaning rules">
-                    <p>Choose only the transformations you need.</p>
+                  <SettingsSection
+                    title="Cleaning rules"
+                    description="Choose the transformations to apply to this dataset."
+                  >
                     <div className="quality-rules">
                       {rules.map(([key, label]) => (
                         <Checkbox
@@ -515,25 +663,28 @@ export function QualityDialog({
                         </Checkbox>
                       ))}
                     </div>
-                  </Panel>
-                  <Panel title="Optional thresholds">
+                  </SettingsSection>
+                  <SettingsSection
+                    title="Optional thresholds"
+                    description="Leave a limit blank to keep it unrestricted. Character limits apply to the whole conversation."
+                  >
                     <div className="quality-thresholds">
                       <NumberField
-                        label={`Min total chars (short below ${profile.outliers.fences.low})`}
+                        label="Min total chars"
                         min={0}
                         value={values.min_total_chars}
                         onChange={field("min_total_chars")}
                         disabled={action.busy || !!pendingClean}
                       />
                       <NumberField
-                        label={`Max total chars (long above ${profile.outliers.fences.high})`}
+                        label="Max total chars"
                         min={0}
                         value={values.max_total_chars}
                         onChange={field("max_total_chars")}
                         disabled={action.busy || !!pendingClean}
                       />
                       <NumberField
-                        label="Min rating (1–10)"
+                        label="Min rating (0–10)"
                         min={0}
                         max={10}
                         step={0.5}
@@ -541,25 +692,36 @@ export function QualityDialog({
                         onChange={field("min_rating")}
                         disabled={action.busy || !!pendingClean}
                       />
-                      <StyledInput
-                        label="Drop labels (comma separated)"
-                        value={values.drop_labels}
-                        onChange={field("drop_labels")}
-                        isDisabled={action.busy || !!pendingClean}
-                        fieldClassName="studio-form-control"
-                      />
                     </div>
-                    <p className="quality-help">
-                      Leave a threshold blank to keep it unrestricted.
+                    <p className="quality-help quality-fence-note">
+                      Profile outlier fences: below{" "}
+                      {profile.outliers.fences.low} or above{" "}
+                      {profile.outliers.fences.high} characters.
                     </p>
-                  </Panel>
+                    <StyledInput
+                      label="Drop labels (comma separated)"
+                      value={values.drop_labels}
+                      onChange={field("drop_labels")}
+                      isDisabled={action.busy || !!pendingClean}
+                      fieldClassName="studio-form-control"
+                    />
+                    {thresholdError && <ErrorNotice error={thresholdError} />}
+                  </SettingsSection>
                 </div>
                 <div className="quality-cleaning-actions">
-                  <p>Applied in place and recorded in cleaning history.</p>
+                  <p>
+                    {cleaningChoices
+                      ? `${cleaningChoices} selected · Applied in place and recorded in cleaning history.`
+                      : "Choose a rule or enter a threshold to continue."}
+                  </p>
                   <Button
                     variant="primary"
                     loading={action.busy}
-                    disabled={!!pendingClean}
+                    disabled={
+                      !!pendingClean ||
+                      cleaningChoices === 0 ||
+                      !!thresholdError
+                    }
                     onClick={clean}
                   >
                     Apply cleaning

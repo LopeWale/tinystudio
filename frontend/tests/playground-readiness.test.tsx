@@ -86,7 +86,8 @@ describe("Playground inventory initialization is an owned state transition", () 
       "Prepared while inventory is loading",
     );
     await act(async () => view.resolve(rows));
-    expect(screen.getByLabelText("Model")).toHaveValue("job/1");
+    expect(screen.getByRole("button", { name: /Tuned/ })).toBeInTheDocument();
+    expect(view.controller().getSnapshot().model).toBe("job/1");
     expect(screen.getByLabelText("Message your model")).toHaveValue(
       "Prepared while inventory is loading",
     );

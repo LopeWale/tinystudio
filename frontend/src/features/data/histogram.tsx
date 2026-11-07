@@ -12,6 +12,10 @@ type HistogramProps = {
   onSelect?: (index: number) => void;
   selected?: number | null;
   data?: unknown;
+  /** Controlled presentation; omitted keeps the legacy expandable table. */
+  view?: "chart" | "table";
+  /** Crop only empty edge bins in the plot; tables and evidence remain complete. */
+  focusOccupiedRange?: boolean;
 };
 const number = (value: number) =>
   value.toLocaleString("en-US", { maximumFractionDigits: 6 });
@@ -27,6 +31,8 @@ export function Histogram({
   onSelect,
   selected,
   data,
+  view,
+  focusOccupiedRange = false,
 }: HistogramProps) {
   const descriptionId = useId();
   const [active, setActive] = useState<number | null>(null);
@@ -67,6 +73,18 @@ export function Histogram({
     );
   }
   const total = counts.reduce((sum, count) => sum + count, 0);
+  const first =
+    focusOccupiedRange && total > 0
+      ? counts.findIndex((count) => count > 0)
+      : 0;
+  const last =
+    focusOccupiedRange && total > 0
+      ? counts.length -
+        1 -
+        [...counts].reverse().findIndex((count) => count > 0)
+      : counts.length - 1;
+  const plotted = counts.map((_, index) => index).slice(first, last + 1);
+  const cropped = first > 0 || last < counts.length - 1;
   const maximum = Math.max(1, ...counts);
   const top = maximum <= 4 ? maximum : Math.ceil(maximum / 4) * 4;
   const ticks = Array.from(
@@ -94,14 +112,14 @@ export function Histogram({
     plotHeight = 112;
   const x = (value: number) =>
     left +
-    ((value - bins[0]) / (bins[bins.length - 1] - bins[0])) * (right - left);
+    ((value - bins[first]) / (bins[last + 1] - bins[first])) * (right - left);
   const labelSpacing = Math.max(
-    ...counts.map((_, i) => interval(i).length * 5.5 + 10),
+    ...plotted.map((i) => interval(i).length * 5.5 + 10),
   );
   const displayed =
-    active !== null && active < counts.length
+    active !== null && active >= first && active <= last
       ? active
-      : selected != null && selected < counts.length && selected >= 0
+      : selected != null && selected <= last && selected >= first
         ? selected
         : null;
   const center = (index: number) => (x(bins[index]) + x(bins[index + 1])) / 2;
@@ -114,9 +132,9 @@ export function Histogram({
   const candidates = [
     ...(displayed === null ? [] : [displayed]),
     ...populated,
-    0,
-    counts.length - 1,
-    ...counts.map((_, i) => i),
+    first,
+    last,
+    ...plotted,
   ];
   const visibleLabels = new Set<number>();
   for (const index of candidates) {
@@ -128,6 +146,26 @@ export function Histogram({
       visibleLabels.add(index);
     }
   }
+  const table = (
+    <div className="histogram-data-scroll">
+      <table aria-label={`${label} bin counts`}>
+        <thead>
+          <tr>
+            <th scope="col">{unit} interval</th>
+            <th scope="col">Observations</th>
+          </tr>
+        </thead>
+        <tbody>
+          {counts.map((count, i) => (
+            <tr key={i}>
+              <th scope="row">{integerValues ? interval(i) : membership(i)}</th>
+              <td>{number(count)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
   return (
     <Evidence
       as="figure"
@@ -135,145 +173,136 @@ export function Histogram({
       data={data ?? { counts, bins }}
       className="histogram-figure"
     >
-      <div className="histogram-axis-heading">
-        <span>Observations</span>
-        <span>{observations(total)}</span>
-      </div>
-      <div ref={setPlot} className="histogram-scroll">
-        <svg
-          viewBox={`0 0 ${width} 181`}
-          role={onSelect ? "group" : "img"}
-          aria-label={label}
-          aria-description={`${observations(total)} by ${unit}`}
-          aria-describedby={descriptionId}
-          className="histogram-chart"
-        >
-          {ticks.map((tick) => (
-            <g key={tick} className="histogram-grid">
-              <line
-                x1={left}
-                x2={right}
-                y1={baseline - (tick / top) * plotHeight}
-                y2={baseline - (tick / top) * plotHeight}
-              />
-              <text
-                x={left - 8}
-                y={baseline - (tick / top) * plotHeight + 4}
-                textAnchor="end"
-              >
-                {number(tick)}
-              </text>
-            </g>
-          ))}
-          {counts.map((count, i) => {
-            const start = x(bins[i]),
-              end = x(bins[i + 1]),
-              center = (start + end) / 2;
-            const barWidth = Math.min(64, Math.max(1, end - start - 5));
-            const height = (count / top) * plotHeight;
-            return (
-              <g
-                key={`${bins[i]}:${bins[i + 1]}`}
-                role={onSelect ? "button" : undefined}
-                tabIndex={0}
-                aria-label={description(i)}
-                aria-pressed={onSelect ? selected === i : undefined}
-                className={`histogram-bin${selected === i ? " is-selected" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onMouseLeave={() => setActive(null)}
-                onFocus={() => setActive(i)}
-                onBlur={() => setActive(null)}
-                onClick={() => onSelect?.(i)}
-                onKeyDown={(event) => {
-                  if (
-                    onSelect &&
-                    (event.key === "Enter" || event.key === " ")
-                  ) {
-                    event.preventDefault();
-                    onSelect(i);
-                  }
-                }}
-              >
-                <title>{description(i)}</title>
-                <rect
-                  className="histogram-hit-area"
-                  x={start}
-                  y="18"
-                  width={end - start}
-                  height="154"
-                />
-                {count > 0 && (
-                  <rect
-                    className="histogram-bar"
-                    x={center - barWidth / 2}
-                    y={baseline - height}
-                    width={barWidth}
-                    height={height}
-                    rx="2"
+      {view !== "table" && (
+        <>
+          <div className="histogram-axis-heading">
+            <span>Observations</span>
+            <span>{observations(total)}</span>
+          </div>
+          <div ref={setPlot} className="histogram-scroll">
+            <svg
+              viewBox={`0 0 ${width} 181`}
+              role={onSelect ? "group" : "img"}
+              aria-label={label}
+              aria-description={`${observations(total)} by ${unit}`}
+              aria-describedby={descriptionId}
+              className="histogram-chart"
+            >
+              {ticks.map((tick) => (
+                <g key={tick} className="histogram-grid">
+                  <line
+                    x1={left}
+                    x2={right}
+                    y1={baseline - (tick / top) * plotHeight}
+                    y2={baseline - (tick / top) * plotHeight}
                   />
-                )}
-                {count > 0 && (
                   <text
-                    className="histogram-bar-count"
-                    x={center}
-                    y={baseline - height - 7}
-                    textAnchor="middle"
+                    x={left - 8}
+                    y={baseline - (tick / top) * plotHeight + 4}
+                    textAnchor="end"
                   >
-                    {number(count)}
+                    {number(tick)}
                   </text>
-                )}
-                {visibleLabels.has(i) && (
-                  <text
-                    className="histogram-bin-label"
-                    x={center}
-                    y="168"
-                    textAnchor="middle"
-                  >
-                    {interval(i)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-      <figcaption id={descriptionId} className="histogram-caption">
-        <span className="histogram-unit">{unit}</span>
-        <span role="status" className="histogram-readout">
-          {displayed === null
-            ? "Hover or focus a bin for its count and share."
-            : description(displayed)}
-        </span>
-        <span className="histogram-note">
-          Bin ranges include empty intervals; endpoints are not observed minima
-          or maxima.
-          {!integerValues &&
-            " Upper bounds are excluded except in the final bin."}
-        </span>
-      </figcaption>
-      <details className="histogram-data">
-        <summary>View bin counts</summary>
-        <div className="histogram-data-scroll">
-          <table aria-label={`${label} bin counts`}>
-            <thead>
-              <tr>
-                <th scope="col">{unit} interval</th>
-                <th scope="col">Observations</th>
-              </tr>
-            </thead>
-            <tbody>
-              {counts.map((count, i) => (
-                <tr key={i}>
-                  <th scope="row">
-                    {integerValues ? interval(i) : membership(i)}
-                  </th>
-                  <td>{number(count)}</td>
-                </tr>
+                </g>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+              {plotted.map((i) => {
+                const count = counts[i];
+                const start = x(bins[i]),
+                  end = x(bins[i + 1]),
+                  center = (start + end) / 2;
+                const barWidth = Math.min(64, Math.max(1, end - start - 5));
+                const height = (count / top) * plotHeight;
+                return (
+                  <g
+                    key={`${bins[i]}:${bins[i + 1]}`}
+                    role={onSelect ? "button" : undefined}
+                    tabIndex={0}
+                    aria-label={description(i)}
+                    aria-pressed={onSelect ? selected === i : undefined}
+                    className={`histogram-bin${selected === i ? " is-selected" : ""}`}
+                    onMouseEnter={() => setActive(i)}
+                    onMouseLeave={() => setActive(null)}
+                    onFocus={() => setActive(i)}
+                    onBlur={() => setActive(null)}
+                    onClick={() => onSelect?.(i)}
+                    onKeyDown={(event) => {
+                      if (
+                        onSelect &&
+                        (event.key === "Enter" || event.key === " ")
+                      ) {
+                        event.preventDefault();
+                        onSelect(i);
+                      }
+                    }}
+                  >
+                    <title>{description(i)}</title>
+                    <rect
+                      className="histogram-hit-area"
+                      x={start}
+                      y="18"
+                      width={end - start}
+                      height="154"
+                    />
+                    {count > 0 && (
+                      <rect
+                        className="histogram-bar"
+                        x={center - barWidth / 2}
+                        y={baseline - height}
+                        width={barWidth}
+                        height={height}
+                        rx="2"
+                      />
+                    )}
+                    {count > 0 && (
+                      <text
+                        className="histogram-bar-count"
+                        x={center}
+                        y={baseline - height - 7}
+                        textAnchor="middle"
+                      >
+                        {number(count)}
+                      </text>
+                    )}
+                    {visibleLabels.has(i) && (
+                      <text
+                        className="histogram-bin-label"
+                        x={center}
+                        y="168"
+                        textAnchor="middle"
+                      >
+                        {interval(i)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+          <figcaption id={descriptionId} className="histogram-caption">
+            <span className="histogram-unit">{unit}</span>
+            <span role="status" className="histogram-readout">
+              {displayed === null
+                ? "Hover or focus a bin for its count and share."
+                : description(displayed)}
+            </span>
+            <span className="histogram-note">
+              {cropped
+                ? "Empty edge intervals omitted from the chart. Bin counts retains all intervals; displayed bounds describe bins, not exact observations."
+                : "Bin ranges include empty intervals; endpoints are not observed minima or maxima."}
+              {!integerValues &&
+                " Upper bounds are excluded except in the final bin."}
+            </span>
+          </figcaption>
+        </>
+      )}
+      {view === "table" ? (
+        table
+      ) : !view ? (
+        <details className="histogram-data">
+          <summary>View bin counts</summary>
+          {table}
+        </details>
+      ) : null}
     </Evidence>
   );
 }

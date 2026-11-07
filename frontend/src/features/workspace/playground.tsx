@@ -1,3 +1,10 @@
+import { Select, SelectItem } from "@/components/boardui/base/select/select";
+import { Textarea } from "@/components/boardui/base/textarea/textarea";
+import { TextField, InputBase } from "@/components/boardui/base/input/input";
+import { Label } from "@/components/boardui/base/input/label";
+import { HintText } from "@/components/boardui/base/input/hint-text";
+import { Checkbox } from "@/components/boardui/base/checkbox/checkbox";
+import { cx } from "@/components/boardui/utils/cx";
 import { ConversationTemplate } from "../../components/studio/templates";
 import {
   useEffect,
@@ -17,12 +24,38 @@ import {
   Button,
   EmptyState,
   Evidence,
-  Field,
   Page,
   Panel,
 } from "../../components/studio/primitives";
 export { PlaygroundController } from "../../controllers/playground";
 export { PlaygroundProvider } from "../../app/PlaygroundProvider";
+function NumericSetting({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step = 1,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <TextField size="small" value={String(value)} isDisabled={disabled} onChange={onChange}>
+      <Label>{label}</Label>
+      <InputBase type="number" min={min} max={max} step={step} />
+      {hint && <HintText>{hint}</HintText>}
+    </TextField>
+  );
+}
 export function PlaygroundPage() {
   const [params] = useSearchParams(),
     models = useResource<any[]>("/api/models"),
@@ -34,7 +67,8 @@ export function PlaygroundPage() {
     ),
     [showSettings, setShowSettings] = useState(false),
     [logScrolled, setLogScrolled] = useState(0),
-    log = useRef<HTMLDivElement>(null);
+    log = useRef<HTMLDivElement>(null),
+    composerToolbar = useRef<HTMLDivElement>(null);
   useEffect(() => {
     controller.activate();
     return () => controller.deactivate();
@@ -115,13 +149,6 @@ export function PlaygroundPage() {
       actions={
         <>
           <a href="#/traces">Review traces</a>
-          <Button
-            onClick={() => setShowSettings((v) => !v)}
-            aria-expanded={showSettings}
-            aria-controls="playground-inspector"
-          >
-            {showSettings ? "Hide settings" : "Show settings"}
-          </Button>
         </>
       }
     >
@@ -132,9 +159,7 @@ export function PlaygroundPage() {
           </p>
         )}
         <div
-          className={
-            showSettings ? "playground-grid inspector-open" : "playground-grid"
-          }
+          className={cx("playground-grid", showSettings && "inspector-open")}
         >
           {showSettings && (
             <Panel
@@ -145,7 +170,10 @@ export function PlaygroundPage() {
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setShowSettings(false)}
+                  onClick={() => {
+                    setShowSettings(false);
+                    composerToolbar.current?.querySelector<HTMLButtonElement>("button")?.focus();
+                  }}
                 >
                   Close configuration
                 </Button>
@@ -155,101 +183,134 @@ export function PlaygroundPage() {
                 className="playground-settings-body"
                 aria-label="Playground configuration"
               >
-                <Field label="System prompt">
-                  <textarea
-                    rows={4}
+                <section
+                  className="playground-settings-group"
+                  aria-labelledby="system-settings-title"
+                >
+                  <h3 id="system-settings-title" className="text-body-medium">
+                    System instructions
+                  </h3>
+                  <Textarea
+                    label="System prompt"
+                    size="small"
+                    rows={2}
                     value={state.system}
-                    disabled={state.busy}
-                    onChange={(e) =>
-                      controller.configure({ system: e.target.value })
-                    }
+                    isDisabled={state.busy}
+                    onChange={(system) => controller.configure({ system })}
                     placeholder="You are a helpful assistant."
                   />
-                </Field>
-                <Field
-                  label="Knowledge repositories"
-                  hint="Retrieved passages provide context. Use ⌘ or Ctrl to select multiple."
+                </section>
+                <section
+                  className="playground-settings-group"
+                  aria-labelledby="retrieval-settings-title"
                 >
-                  <select
-                    multiple
-                    size={3}
-                    value={state.repositories}
-                    disabled={state.busy || repositories.loading}
-                    onChange={(e) =>
-                      controller.configure({
-                        repositories: Array.from(e.target.selectedOptions).map(
-                          (o) => o.value,
-                        ),
-                      })
-                    }
+                  <h3
+                    id="retrieval-settings-title"
+                    className="text-body-medium"
                   >
-                    {repositories.data?.map((repo) => (
-                      <option value={repo.name} key={repo.name}>
-                        {repo.name} ({repo.chunk_count} chunks)
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                {!repositories.loading && !repositories.data?.length && (
-                  <p className="muted">
-                    Create a repository to add reference material.
-                  </p>
-                )}
-                <div className="row">
-                  <Field label="Passages">
-                    <input
-                      type="number"
-                      min="1"
-                      max="20"
+                    Retrieval
+                  </h3>
+                  <fieldset className="playground-repositories">
+                    <legend className="text-body-2-medium">
+                      Knowledge repositories
+                    </legend>
+                    <p className="text-caption-1-regular">
+                      Select reference material to retrieve with each message.
+                    </p>
+                    <AssistantScrollArea
+                      className="playground-repository-options"
+                      aria-label="Repository selection"
+                    >
+                      <div className="playground-repository-list">
+                        {repositories.data?.map((repo) => (
+                          <Checkbox
+                            key={repo.name}
+                            isSelected={state.repositories.includes(repo.name)}
+                            isDisabled={state.busy || repositories.loading}
+                            onChange={(selected) =>
+                              controller.configure({
+                                repositories: selected
+                                  ? [...state.repositories, repo.name]
+                                  : state.repositories.filter(
+                                      (name) => name !== repo.name,
+                                    ),
+                              })
+                            }
+                          >
+                            {repo.name}{" "}
+                            <span className="text-text-tertiary">
+                              · {repo.chunk_count} chunks
+                            </span>
+                          </Checkbox>
+                        ))}
+                      </div>
+                    </AssistantScrollArea>
+                    {repositories.loading && (
+                      <p role="status">Loading repositories…</p>
+                    )}
+                    {!repositories.loading && !repositories.data?.length && (
+                      <p>Create a repository to add reference material.</p>
+                    )}
+                  </fieldset>
+                  <div className="row">
+                    <NumericSetting
+                      label="Passages"
+                      min={1}
+                      max={20}
                       value={state.repoLimit}
                       disabled={state.busy}
-                      onChange={(e) =>
+                      onChange={(value) =>
                         controller.configure({
                           repoLimit: Math.min(
                             20,
-                            Math.max(1, Number(e.target.value) || 1),
+                            Math.max(1, Number(value) || 1),
                           ),
                         })
                       }
                     />
-                  </Field>
-                  <Field label="Minimum similarity">
-                    <input
-                      type="number"
-                      min="-1"
-                      max="1"
-                      step=".05"
+                    <NumericSetting
+                      label="Minimum similarity"
+                      min={-1}
+                      max={1}
+                      step={0.05}
                       value={state.repoThreshold}
                       disabled={state.busy}
-                      onChange={(e) =>
+                      onChange={(value) =>
                         controller.configure({
                           repoThreshold: Math.min(
                             1,
-                            Math.max(-1, Number(e.target.value)),
+                            Math.max(-1, Number(value)),
                           ),
                         })
                       }
                     />
-                  </Field>
-                </div>
-                <Field
-                  label={`Temperature · ${state.temperature}`}
-                  hint="Lower values favor focused responses; higher values add variety."
+                  </div>
+                </section>
+                <section
+                  className="playground-settings-group"
+                  aria-labelledby="generation-settings-title"
                 >
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step=".05"
+                  <h3
+                    id="generation-settings-title"
+                    className="text-body-medium"
+                  >
+                    Generation
+                  </h3>
+                  <NumericSetting
+                    label="Temperature"
+                    hint="Lower values favor focused responses; higher values add variety."
+                    min={0}
+                    max={1}
+                    step={0.05}
                     value={state.temperature}
                     disabled={state.busy}
-                    onChange={(e) =>
+                    onChange={(value) =>
                       controller.configure({
-                        temperature: Number(e.target.value),
+                        temperature: Math.min(1, Math.max(0, Number(value))),
                       })
                     }
                   />
-                </Field>
+                </section>
               </AssistantScrollArea>
             </Panel>
           )}
@@ -257,56 +318,22 @@ export function PlaygroundPage() {
             className="playground-conversation"
             title="Conversation"
             actions={
-              state.seconds != null ? (
-                <Badge>{state.seconds.toFixed(2)} s</Badge>
-              ) : state.busy ? (
-                <span role="status">Generating…</span>
-              ) : undefined
+              <>
+                {state.seconds != null ? (
+                  <Badge>{state.seconds.toFixed(2)} s</Badge>
+                ) : state.busy ? (
+                  <span role="status">Generating…</span>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => controller.reset()}
+                >
+                  Reset conversation
+                </Button>
+              </>
             }
           >
-            <div className="playground-toolbar">
-              <Field
-                label="Model"
-                hint="Loaded models show ●. Other supported models load on the first message."
-              >
-                <select
-                  value={state.model}
-                  disabled={state.busy || models.loading}
-                  onChange={(e) => controller.selectModel(e.target.value)}
-                >
-                  {!state.model && (
-                    <option value="">
-                      {models.loading
-                        ? "Loading models…"
-                        : options.length
-                          ? "Choose a model"
-                          : "No models available"}
-                    </option>
-                  )}
-                  {options.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.alias || model.id}
-                      {model.status === "up" ? " ●" : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Button variant="ghost" onClick={() => controller.reset()}>
-                Reset conversation
-              </Button>
-            </div>
-            {(state.system.trim() || state.repositories.length > 0) && (
-              <div
-                className="playground-context"
-                aria-label="Active Playground context"
-              >
-                {state.system.trim() && <span>System instructions active</span>}
-                {state.repositories.map((repository) => (
-                  <span key={repository}>{repository}</span>
-                ))}
-                <small>Temperature {state.temperature}</small>
-              </div>
-            )}
             <div className="playground-transcript-frame">
               <div className="scroll-edge" aria-hidden="true">
                 <i style={{ opacity: Math.min(logScrolled / 24, 1) }} />
@@ -330,8 +357,8 @@ export function PlaygroundPage() {
                       label={`Playground ${message.role} message`}
                       data={message}
                     >
-                      <article className="playground-message">
-                        <strong>
+                      <article className="playground-message text-body-regular">
+                        <strong className="text-caption-1-semibold">
                           {message.role === "user" ? "You" : "Model"}
                         </strong>
                         <p
@@ -376,46 +403,100 @@ export function PlaygroundPage() {
               </div>
             </div>
             {state.error && <p role="alert">{state.error}</p>}
-            <form className="playground-composer" onSubmit={submit}>
-              <Field label="Message your model">
-                <textarea
+            <div className="playground-composer-dock">
+              <form className="playground-composer" onSubmit={submit}>
+                <Textarea
+                  aria-label="Message your model"
+                  fieldClassName="playground-prompt-field"
                   rows={2}
+                  autoResize
+                  maxRows={6}
                   value={state.draft}
-                  onChange={(e) =>
-                    controller.configure({ draft: e.target.value })
-                  }
-                  onKeyDown={(e) => {
+                  onChange={(draft) => controller.configure({ draft })}
+                  onKeyDown={(event) => {
                     if (
-                      e.key === "Enter" &&
-                      !e.shiftKey &&
-                      !e.nativeEvent.isComposing
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
                     ) {
-                      e.preventDefault();
+                      event.preventDefault();
                       void controller.send();
                     }
                   }}
                   placeholder="Try a question or paste a prompt…"
                 />
-              </Field>
-              <div className="actions">
-                {state.busy ? (
-                  <Button type="button" onClick={() => controller.cancel()}>
-                    Cancel response
-                  </Button>
-                ) : (
+                <div className="playground-composer-toolbar" ref={composerToolbar}>
                   <Button
-                    type="submit"
-                    variant="primary"
-                    disabled={!state.model || !state.draft.trim()}
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowSettings((value) => !value)}
+                    aria-expanded={showSettings}
+                    aria-controls="playground-inspector"
                   >
-                    Send
+                    {showSettings ? "Hide settings" : "Settings"}
                   </Button>
-                )}
-                <small className="muted">
+                  <div className="playground-composer-send">
+                    <Select
+                      aria-label="Model"
+                      className="playground-model-select"
+                      size="sm"
+                      selectedKey={state.model || null}
+                      isDisabled={state.busy || models.loading}
+                      placeholder={
+                        models.loading
+                          ? "Loading models…"
+                          : options.length
+                            ? "Choose a model"
+                            : "No models available"
+                      }
+                      onSelectionChange={(key) => {
+                        if (key != null) controller.selectModel(String(key));
+                      }}
+                    >
+                      {options.map((model) => (
+                        <SelectItem
+                          key={model.id}
+                          id={model.id}
+                          textValue={model.alias || model.id}
+                        >
+                          <span>
+                            {model.alias || model.id}
+                            {model.status === "up" ? " ●" : ""}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </Select>
+                    {state.busy ? (
+                      <Button type="button" onClick={() => controller.cancel()}>
+                        Cancel response
+                      </Button>
+                    ) : (
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        disabled={!state.model || !state.draft.trim()}
+                      >
+                        Send
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </form>
+              <div
+                className="playground-context text-caption-1-regular"
+                aria-label="Active Playground context"
+              >
+                {state.system.trim() && <span>System instructions active</span>}
+                {state.repositories.map((repository) => (
+                  <span key={repository}>{repository}</span>
+                ))}
+                <small>Temperature {state.temperature}</small>
+                <small className="playground-keyboard-hint">
                   Enter to send · Shift + Enter for a new line
                 </small>
               </div>
-            </form>
+            </div>
           </Panel>
         </div>
       </ConversationTemplate>

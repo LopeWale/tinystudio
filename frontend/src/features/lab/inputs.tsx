@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
+import { ScrollPane } from "../../components/studio/scroll-pane";
 import { FileUploadField } from "../../components/studio/uploads";
 import { Button, EmptyState } from "../../components/studio/primitives";
 import {
@@ -273,115 +274,118 @@ export function InputArtifacts({
           </h3>
           <p>Reuse retained inputs and manage their role in this experiment.</p>
         </header>
-        {inputs.loading && <p role="status">Loading input artifacts…</p>}
-        {libraryRows.map((row) => (
-          <div className="lab-input-row" key={row.id}>
-            <div>
-              <strong>{row.name}</strong>
-              <small>
-                {row.size == null
-                  ? "Metadata unavailable"
-                  : `${row.size.toLocaleString()} bytes`}{" "}
-                · {row.media_type}
-              </small>
-              {row.origin && (
-                <small className="break-words">
-                  {row.origin.definition_name} · r{row.origin.revision} ·{" "}
-                  {row.origin.run_id}
+        <ScrollPane label="Input library artifacts">
+          {inputs.loading && <p role="status">Loading input artifacts…</p>}
+          {libraryRows.map((row) => (
+            <div className="lab-input-row" key={row.id}>
+              <div>
+                <strong title={row.name}>{row.name}</strong>
+                <small>
+                  {row.size == null
+                    ? "Metadata unavailable"
+                    : `${row.size.toLocaleString()} bytes`}{" "}
+                  · {row.media_type}
                 </small>
-              )}
-              <details className="lab-input-checksum">
-                <summary>Checksum</summary>
-                <code>{row.sha256}</code>
-              </details>
-            </div>
-            {chosen.some((item) => item.artifact_id === row.id) && (
-              <div className="lab-input-binding">
-                <LabChoice
-                  label={`Role for ${row.name}`}
-                  value={
-                    chosen.find((item) => item.artifact_id === row.id)?.role ??
-                    "source"
-                  }
-                  onChange={(next) =>
-                    onChange(
-                      chosen.map((item) =>
-                        item.artifact_id === row.id
-                          ? {
-                              ...item,
-                              role: next,
-                              visibility:
-                                defaultVisibility(next) === "truth"
-                                  ? "truth"
-                                  : item.visibility === "truth"
-                                    ? "truth"
-                                    : defaultVisibility(next) === "evaluation"
-                                      ? "evaluation"
-                                      : (item.visibility ?? "model"),
-                            }
-                          : item,
-                      ),
-                    )
-                  }
-                  options={artifactRoles.map((id) => ({ id, name: id }))}
-                />
-                <LabChoice
-                  label={`Visibility for ${row.name}`}
-                  value={
-                    chosen.find((item) => item.artifact_id === row.id)
-                      ?.visibility ?? "model"
-                  }
-                  onChange={(next) =>
-                    onChange(
-                      chosen.map((item) =>
-                        item.artifact_id === row.id
-                          ? {
-                              ...item,
-                              visibility: next as InputBinding["visibility"],
-                            }
-                          : item,
-                      ),
-                    )
-                  }
-                  options={visibilityOptions.map((option) => ({
-                    ...option,
-                    disabled:
-                      option.id === "model" &&
-                      defaultVisibility(
-                        chosen.find((item) => item.artifact_id === row.id)
-                          ?.role ?? "source",
-                      ) === "truth",
-                  }))}
-                />
+                {row.origin && (
+                  <small className="break-words">
+                    {row.origin.definition_name} · r{row.origin.revision} ·{" "}
+                    {row.origin.run_id}
+                  </small>
+                )}
+                <details className="lab-input-checksum">
+                  <summary>Checksum</summary>
+                  <code>{row.sha256}</code>
+                </details>
               </div>
-            )}
-            <Button
-              aria-label={`${chosen.some((item) => item.artifact_id === row.id) ? "Detach" : "Attach"} ${row.name}${row.origin ? ` from ${row.origin.definition_name} revision ${row.origin.revision} run ${row.origin.run_id}` : ""}`}
-              aria-pressed={chosen.some((item) => item.artifact_id === row.id)}
-              onClick={() =>
-                chosen.some((item) => item.artifact_id === row.id)
-                  ? onChange(
-                      chosen.filter((item) => item.artifact_id !== row.id),
-                    )
-                  : attach(row)
-              }
-            >
-              {chosen.some((item) => item.artifact_id === row.id)
-                ? "Detach"
-                : "Attach"}{" "}
-              {row.name}
-            </Button>
-          </div>
-        ))}
-        {!inputs.loading && !libraryRows.length && (
-          <EmptyState>No imported inputs in this project.</EmptyState>
-        )}
-        {!!chosen.length && (
-          <details>
-            <summary>Bound input checksums ({chosen.length})</summary>
-            <pre>{JSON.stringify(chosen, null, 2)}</pre>
-          </details>
-        )}
+              {chosen.some((item) => item.artifact_id === row.id) && (
+                <div className="lab-input-binding">
+                  <LabChoice
+                    label={`Role for ${row.name}`}
+                    value={
+                      chosen.find((item) => item.artifact_id === row.id)
+                        ?.role ?? "source"
+                    }
+                    onChange={(next) =>
+                      onChange(
+                        chosen.map((item) =>
+                          item.artifact_id === row.id
+                            ? {
+                                ...item,
+                                role: next,
+                                visibility:
+                                  defaultVisibility(next) === "truth"
+                                    ? "truth"
+                                    : item.visibility === "truth"
+                                      ? "truth"
+                                      : defaultVisibility(next) === "evaluation"
+                                        ? "evaluation"
+                                        : (item.visibility ?? "model"),
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                    options={artifactRoles.map((id) => ({ id, name: id }))}
+                  />
+                  <LabChoice
+                    label={`Visibility for ${row.name}`}
+                    value={
+                      chosen.find((item) => item.artifact_id === row.id)
+                        ?.visibility ?? "model"
+                    }
+                    onChange={(next) =>
+                      onChange(
+                        chosen.map((item) =>
+                          item.artifact_id === row.id
+                            ? {
+                                ...item,
+                                visibility: next as InputBinding["visibility"],
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                    options={visibilityOptions.map((option) => ({
+                      ...option,
+                      disabled:
+                        option.id === "model" &&
+                        defaultVisibility(
+                          chosen.find((item) => item.artifact_id === row.id)
+                            ?.role ?? "source",
+                        ) === "truth",
+                    }))}
+                  />
+                </div>
+              )}
+              <Button
+                aria-label={`${chosen.some((item) => item.artifact_id === row.id) ? "Detach" : "Attach"} ${row.name}${row.origin ? ` from ${row.origin.definition_name} revision ${row.origin.revision} run ${row.origin.run_id}` : ""}`}
+                aria-pressed={chosen.some(
+                  (item) => item.artifact_id === row.id,
+                )}
+                onClick={() =>
+                  chosen.some((item) => item.artifact_id === row.id)
+                    ? onChange(
+                        chosen.filter((item) => item.artifact_id !== row.id),
+                      )
+                    : attach(row)
+                }
+              >
+                {chosen.some((item) => item.artifact_id === row.id)
+                  ? "Detach"
+                  : "Attach"}
+              </Button>
+            </div>
+          ))}
+          {!inputs.loading && !libraryRows.length && (
+            <EmptyState>No imported inputs in this project.</EmptyState>
+          )}
+          {!!chosen.length && (
+            <details>
+              <summary>Bound input checksums ({chosen.length})</summary>
+              <pre>{JSON.stringify(chosen, null, 2)}</pre>
+            </details>
+          )}
+        </ScrollPane>
       </div>
     </section>
   );

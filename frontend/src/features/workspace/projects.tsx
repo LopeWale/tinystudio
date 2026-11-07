@@ -18,7 +18,7 @@ import {
   RecordsInspector,
   useRetainedResource,
 } from "../data/records-workspace";
-import { ErrorNotice, enc } from "../data/common";
+import { ErrorNotice, RecordDate, enc } from "../data/common";
 import "../data/records-workspace.css";
 import "../data/affect-data.css";
 import "../../components/studio/form-controls.css";
@@ -228,20 +228,36 @@ function ProjectDirectory() {
                 </Evidence>
               )}
               empty={
-                <EmptyState>
-                  {r.loading ? (
+                r.loading ? (
+                  <EmptyState>
                     <span role="status">Loading projects…</span>
-                  ) : r.error ? (
-                    "Project directory unavailable."
-                  ) : r.data?.length ? (
-                    <div className="records-empty-recovery">
-                      <span>No projects match this search.</span>
+                  </EmptyState>
+                ) : r.error ? (
+                  <EmptyState heading="Project directory unavailable">
+                    Retry loading projects using the control above.
+                  </EmptyState>
+                ) : r.data?.length ? (
+                  <EmptyState
+                    heading="No projects match this search"
+                    actions={
                       <Button onClick={() => setQuery("")}>Clear search</Button>
-                    </div>
-                  ) : (
-                    "No projects yet. Create a project and give your model a goal."
-                  )}
-                </EmptyState>
+                    }
+                  >
+                    Try another project name or a phrase from its goal.
+                  </EmptyState>
+                ) : (
+                  <EmptyState
+                    heading="Create your first project"
+                    actions={
+                      <Button variant="primary" onClick={showDialog}>
+                        Create a project
+                      </Button>
+                    }
+                  >
+                    Keep a model goal, its data and experiments in one
+                    workspace.
+                  </EmptyState>
+                )
               }
               columns={[
                 {
@@ -250,18 +266,27 @@ function ProjectDirectory() {
                   value: (pr) => pr.name,
                   hideable: false,
                   render: (pr) => (
-                    <div className="projects-identity">
-                      <Button
-                        variant="ghost"
-                        aria-pressed={selected?.slug === pr.slug}
-                        onClick={(event) => {
-                          returnFocus.current = event.currentTarget;
-                          setInspected(pr.slug);
-                        }}
-                      >
-                        {pr.name}
-                      </Button>
-                      {s.project === pr.slug && <Badge>current</Badge>}
+                    <div className="projects-summary">
+                      <div className="projects-identity">
+                        <Button
+                          variant="ghost"
+                          aria-pressed={selected?.slug === pr.slug}
+                          onClick={(event) => {
+                            returnFocus.current = event.currentTarget;
+                            setInspected(pr.slug);
+                          }}
+                        >
+                          {pr.name}
+                        </Button>
+                        {s.project === pr.slug && (
+                          <Badge>Current project</Badge>
+                        )}
+                      </div>
+                      {pr.goal && (
+                        <p className="projects-goal" title={pr.goal}>
+                          {pr.goal}
+                        </p>
+                      )}
                     </div>
                   ),
                 },
@@ -281,7 +306,7 @@ function ProjectDirectory() {
                   id: "created",
                   label: "Created",
                   value: (pr) => pr.created,
-                  render: (pr) => <>{pr.created || "—"}</>,
+                  render: (pr) => <RecordDate value={pr.created} />,
                 },
               ]}
             />
@@ -305,7 +330,9 @@ function ProjectDirectory() {
                   <dt>Training jobs</dt>
                   <dd>{selected.jobs ?? "—"}</dd>
                   <dt>Created</dt>
-                  <dd>{selected.created || "—"}</dd>
+                  <dd>
+                    <RecordDate value={selected.created} />
+                  </dd>
                 </dl>
                 <div className="projects-detail-actions">
                   <Button
