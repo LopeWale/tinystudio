@@ -1090,7 +1090,11 @@ describe("laboratory authoring and execution", () => {
     expect(within(records).getAllByRole("row")[1]).toHaveTextContent(/^1/);
     fireEvent.click(screen.getByRole("button", { name: "Next records" }));
     await waitFor(() =>
-      expect(within(records).getAllByRole("row")[1]).toHaveTextContent(/^101/),
+      expect(
+        within(
+          screen.getByRole("table", { name: "Retained records" }),
+        ).getAllByRole("row")[1],
+      ).toHaveTextContent(/^101/),
     );
     expect(api.get).toHaveBeenCalledWith(
       "/api/lab/runs/recovery-run/records?offset=100&limit=100&artifact=processed.jsonl",

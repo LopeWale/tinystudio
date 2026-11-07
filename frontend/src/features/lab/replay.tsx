@@ -60,18 +60,28 @@ export function timelineSeries(
   );
 }
 
+export type ReplayRecordSource = {
+  label: string;
+  status: "waiting" | "loading" | "ready" | "error" | "missing";
+  error?: unknown;
+};
+
 export function ReplayViews({
   records,
   rawRecords,
   events,
   run,
   active = true,
+  recordSources,
+  onRetryRecords,
 }: {
   records: any[];
   rawRecords: any[];
   events: any[];
   run: LabRun;
   active?: boolean;
+  recordSources?: ReplayRecordSource[];
+  onRetryRecords?: () => void;
 }) {
   const { scopeKey } = useStudio();
   const [coverageSelectionState, setCoverageSelectionState] = useState<{
@@ -82,6 +92,70 @@ export function ReplayViews({
     coverageSelectionState?.scopeKey === scopeKey
       ? coverageSelectionState.source
       : undefined;
+  const hasObservations = records.length > 0 || rawRecords.length > 0;
+  const sourceStates = recordSources ?? [
+    { label: "Processed records", status: "ready" as const },
+    { label: "Original records", status: "ready" as const },
+  ];
+  const loadingRecords = sourceStates.some(
+    (source) => source.status === "loading",
+  );
+  const failedSources = sourceStates.filter(
+    (source) => source.status === "error",
+  );
+  const waitingRecords = sourceStates.some(
+    (source) => source.status === "waiting",
+  );
+  const missingSources = sourceStates.filter(
+    (source) => source.status === "missing",
+  );
+  const recordNotice = failedSources.length ? (
+    <EmptyState
+      heading="Replay records unavailable"
+      role="alert"
+      actions={
+        onRetryRecords && (
+          <Button onClick={onRetryRecords}>Retry replay records</Button>
+        )
+      }
+    >
+      {failedSources.map((source) => (
+        <p key={source.label}>
+          {source.label}:{" "}
+          {source.error instanceof Error
+            ? source.error.message
+            : String(source.error ?? "Retrieval failed.")}
+        </p>
+      ))}
+      <p>Other retained evidence remains available through Evidence view.</p>
+    </EmptyState>
+  ) : loadingRecords ? (
+    <EmptyState heading="Loading replay records" role="status" aria-busy="true">
+      Retrieving the retained observation windows for this run.
+    </EmptyState>
+  ) : waitingRecords ? (
+    <EmptyState heading="Replay is not available yet" role="status">
+      Retained observations can be retrieved after this run finishes.
+    </EmptyState>
+  ) : missingSources.length ? (
+    <EmptyState
+      heading={
+        missingSources.length === sourceStates.length
+          ? "No replay artifacts retained"
+          : "Some replay artifacts were not retained"
+      }
+    >
+      {missingSources.map((source) => (
+        <p key={source.label}>{source.label}: no retained artifact.</p>
+      ))}
+      <p>Other retained evidence remains available through Evidence view.</p>
+    </EmptyState>
+  ) : !hasObservations ? (
+    <EmptyState heading="No replay observations">
+      The retained artifacts returned no observations. Other retained evidence
+      remains available through Evidence view.
+    </EmptyState>
+  ) : null;
   const [inspecting, setInspecting] = useState(false);
   const [view, setView] = useState(replayViews[0]);
   const episodes = useMemo(
@@ -164,8 +238,8 @@ export function ReplayViews({
     playing = trend.playing,
     setPlaying = trend.setPlaying;
   useEffect(() => {
-    if (!active) setPlaying(false);
-  }, [active, setPlaying]);
+    if (!active || !hasObservations) setPlaying(false);
+  }, [active, hasObservations, setPlaying]);
   const point = trend.selected?.record;
   const result = run.result as any;
   const timedEvents = events.filter((event) =>
@@ -192,7 +266,7 @@ export function ReplayViews({
             </SelectItem>
           ))}
         </Select>
-        {replayViews.slice(0, 4).includes(view) && (
+        {replayViews.slice(0, 4).includes(view) && hasObservations && (
           <>
             <div className="lab-actions lab-replay-controls">
               <Select
@@ -244,7 +318,7 @@ export function ReplayViews({
             </div>
           </>
         )}
-        {view === replayViews[0] && (
+        {view === replayViews[0] && hasObservations && (
           <Button
             size="sm"
             variant="ghost"
@@ -345,7 +419,12 @@ export function ReplayViews({
                       <pre>{JSON.stringify(point, null, 2)}</pre>
                     ) : (
                       <EmptyState>
-                        No state records retained for this run.
+                        {failedSources.length ||
+                        missingSources.length ||
+                        loadingRecords ||
+                        waitingRecords
+                          ? "No observation is available for this frame. Record retrieval has not completed successfully."
+                          : "No state records retained for this run."}
                       </EmptyState>
                     )}
                   </>
@@ -409,36 +488,55 @@ export function ReplayViews({
             ) : undefined
           }
         >
-          <Evidence
-            label="Laboratory trend component state"
-            data={{
-              run_id: run.id,
-              selection: trend.selected,
-              preview: trend.preview?.identity,
-              clock: trend.model.clock,
-              viewport: trend.range,
-              time_basis: trend.basis,
-              fields: trend.fields,
-              graph: {
-                view: trend.view,
-                mapping: trend.mapping,
-                group: trend.spatialGroup?.key,
-                geometry: trend.geometry,
-                opacity: trend.opacity,
-                camera: trend.camera,
-                camera_revision: trend.cameraRevision,
-              },
-            }}
-          >
-            <TrendWorkbench controller={trend} />
-          </Evidence>
+          {recordNotice}
+          {hasObservations && (
+            <Evidence
+              label="Laboratory trend component state"
+              data={{
+                run_id: run.id,
+                selection: trend.selected,
+                preview: trend.preview?.identity,
+                clock: trend.model.clock,
+                viewport: trend.range,
+                time_basis: trend.basis,
+                fields: trend.fields,
+                graph: {
+                  view: trend.view,
+                  mapping: trend.mapping,
+                  group: trend.spatialGroup?.key,
+                  geometry: trend.geometry,
+                  opacity: trend.opacity,
+                  camera: trend.camera,
+                  camera_revision: trend.cameraRevision,
+                },
+              }}
+            >
+              <TrendWorkbench controller={trend} />
+            </Evidence>
+          )}
         </InspectionWorkspace>
       )}
-      <p className="lab-evidence-window text-text-secondary">
-        Loaded window: {records.length} processed · {rawRecords.length} original
-        records · up to 1,000 per artifact. Original and derived time
-        coordinates remain independent.
-      </p>
+      {hasObservations && replayViews.slice(0, 4).includes(view) && (
+        <p className="lab-evidence-window text-text-secondary">
+          Loaded window:{" "}
+          {sourceStates
+            .map(
+              (source, index) =>
+                `${source.label}: ${
+                  source.status === "ready"
+                    ? `${index === 0 ? records.length : rawRecords.length} loaded`
+                    : source.status === "error"
+                      ? "unavailable"
+                      : source.status === "missing"
+                        ? "not retained"
+                        : source.status
+                }`,
+            )
+            .join(" · ")}{" "}
+          · up to 1,000 per artifact. Original and derived time coordinates
+          remain independent.
+        </p>
+      )}
       {view === replayViews[4] && (
         <RetainedBaselineComparison
           artifacts={retained.all}

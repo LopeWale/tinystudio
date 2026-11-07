@@ -40,11 +40,18 @@ const succeeded = {
   },
 };
 const queued = { id: "capture-op", kind: "data_bridge", state: "queued" };
-function Harness({ initial = [] }: { initial?: InputBinding[] }) {
+function Harness({
+  initial = [],
+  active = true,
+}: {
+  initial?: InputBinding[];
+  active?: boolean;
+}) {
   const [inputs, setInputs] = useState(initial);
   return (
     <>
       <RepositoryInput
+        active={active}
         inputs={inputs}
         onChange={(next) => {
           changed(next);
@@ -76,6 +83,7 @@ function view(
   scopeKey = "alpha",
   initial: InputBinding[] = [],
   registry?: ComponentActionRegistry,
+  active = true,
 ) {
   const runtime = {
     api: { post, get },
@@ -90,7 +98,7 @@ function view(
       <ComponentActionsProvider
         registry={registry ?? new ComponentActionRegistry()}
       >
-        <Harness key={scopeKey} initial={initial} />
+        <Harness key={scopeKey} initial={initial} active={active} />
       </ComponentActionsProvider>
     </StudioContext.Provider>
   );
@@ -104,7 +112,10 @@ beforeEach(() => {
   changed = vi.fn();
   parent = new AbortController();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 async function choose() {
   await userEvent.click(
     screen.getByText("Capture an existing repository", {
@@ -348,4 +359,157 @@ it("refuses invalid capture result bindings instead of attaching an artifact inf
   ).toHaveTextContent("invalid corpus input bindings");
   expect(changed).not.toHaveBeenCalled();
   expect(captured).not.toHaveBeenCalled();
+});
+
+it("disables repository actions while its retained pane is hidden and restores its selection on return", async () => {
+  const registry = new ComponentActionRegistry(async () => true);
+  registry.setScope({ user: "user", project: "alpha", route: "/lab" });
+  const mounted = render(view("alpha", [], registry));
+  await choose();
+  const ref = registry.inspect().actions[0].ref;
+  mounted.rerender(view("alpha", [], registry, false));
+  expect(registry.inspect().actions[0]).toMatchObject({
+    disabled: true,
+    state: { repository: "engineering" },
+  });
+  await expect(registry.execute(ref, undefined, true)).rejects.toThrow(
+    "currently disabled",
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Capture and attach repository" }),
+  );
+  expect(post).not.toHaveBeenCalled();
+  mounted.rerender(view("alpha", [], registry, true));
+  await waitFor(() =>
+    expect(registry.inspect().actions[0]).toMatchObject({
+      disabled: false,
+      state: { repository: "engineering" },
+    }),
+  );
+  post.mockResolvedValue(succeeded);
+  await act(async () => {
+    await registry.execute(ref, undefined, true);
+  });
+  expect(changed).toHaveBeenCalledWith([binding]);
+});
+
+it("does not admit repository capture if its pane hides while assistant confirmation is pending", async () => {
+  let confirm!: (value: boolean) => void;
+  const registry = new ComponentActionRegistry(
+    () =>
+      new Promise((resolve) => {
+        confirm = resolve;
+      }),
+  );
+  registry.setScope({ user: "user", project: "alpha", route: "/lab" });
+  const mounted = render(view("alpha", [], registry));
+  await choose();
+  const pending = registry.execute(
+    registry.inspect().actions[0].ref,
+    undefined,
+    true,
+  );
+  const rejected = expect(pending).rejects.toThrow(
+    "changed while waiting for confirmation",
+  );
+  mounted.rerender(view("alpha", [], registry, false));
+  await act(async () => {
+    confirm(true);
+    await rejected;
+  });
+  expect(post).not.toHaveBeenCalled();
+  expect(changed).not.toHaveBeenCalled();
+});
+
+it("does not attach a late capture result after the pane hides", async () => {
+  let finish!: (value: unknown) => void;
+  post.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const mounted = render(view());
+  await choose();
+  await capture();
+  const requestSignal = post.mock.calls[0][2] as AbortSignal;
+  mounted.rerender(view("alpha", [], undefined, false));
+  expect(requestSignal.aborted).toBe(true);
+  await act(async () => finish(succeeded));
+  expect(changed).not.toHaveBeenCalled();
+  expect(captured).not.toHaveBeenCalled();
+});
+
+it("tracks the mobile import branch and viewport without clearing repository selection", async () => {
+  let narrow = true;
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", () => ({
+    get matches() {
+      return narrow;
+    },
+    addEventListener: (_: string, listener: () => void) =>
+      listeners.add(listener),
+    removeEventListener: (_: string, listener: () => void) =>
+      listeners.delete(listener),
+  }));
+  const registry = new ComponentActionRegistry(async () => true);
+  registry.setScope({ user: "user", project: "alpha", route: "/lab" });
+  const runtime = {
+    api: {
+      post,
+      get: vi.fn(async (path: string) =>
+        path === "/api/repositories" ? [{ name: "engineering" }] : [],
+      ),
+    },
+    scopeKey: "alpha",
+    route: "/lab",
+    project: "alpha",
+    user: { id: "user" },
+    evidence: new EvidenceRegistry(),
+  } as unknown as StudioRuntime;
+  render(
+    <StudioContext.Provider value={runtime}>
+      <ComponentActionsProvider registry={registry}>
+        <InputArtifacts
+          definition={makeDefinition()}
+          onChange={changed}
+          signal={() => parent.signal}
+        />
+      </ComponentActionsProvider>
+    </StudioContext.Provider>,
+  );
+  expect(registry.inspect().actions[0].disabled).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "Import input" }));
+  // Use this fixture's repository request rather than the standalone harness spy.
+  await userEvent.click(
+    screen.getByText("Capture an existing repository", {
+      selector: "summary span",
+    }),
+  );
+  await userEvent.click(
+    await screen.findByRole("button", { name: /Repository to capture$/ }),
+  );
+  await userEvent.click(
+    await screen.findByRole("option", { name: "engineering" }),
+  );
+  expect(registry.inspect().actions[0].disabled).toBe(false);
+  fireEvent.click(screen.getByRole("radio", { name: "Input library" }));
+  expect(registry.inspect().actions[0].disabled).toBe(true);
+  await expect(
+    registry.execute(registry.inspect().actions[0].ref, undefined, true),
+  ).rejects.toThrow("currently disabled");
+  expect(post).not.toHaveBeenCalled();
+  act(() => {
+    narrow = false;
+    listeners.forEach((listener) => listener());
+  });
+  expect(registry.inspect().actions[0]).toMatchObject({
+    disabled: false,
+    state: { repository: "engineering" },
+  });
+  act(() => {
+    narrow = true;
+    listeners.forEach((listener) => listener());
+  });
+  expect(registry.inspect().actions[0].disabled).toBe(true);
 });

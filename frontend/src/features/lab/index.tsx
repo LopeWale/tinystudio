@@ -47,7 +47,7 @@ import { LanguageLearning } from "./language-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
 import { DefinitionGraph } from "./graph";
-import { ReplayViews } from "./replay";
+import { ReplayViews, type ReplayRecordSource } from "./replay";
 import { dataArtifacts } from "./evidence";
 import { DatasetPromotion } from "./dataset-promotion";
 import { FileUploadField } from "../../components/studio/uploads";
@@ -152,8 +152,9 @@ function LabWorkspace() {
   const [authoringGeneration, setAuthoringGeneration] = useState(0);
   const [dataPreparationValid, setDataPreparationValid] = useState(true);
   const [languageLearningValid, setLanguageLearningValid] = useState(true);
+  const [pendingInputWork, setPendingInputWork] = useState(false);
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
-  const [savedText, setSavedText] = useState("");
+  const [baselineText, setBaselineText] = useState(draft);
   const [area, setArea] = useState("runs");
   const [experimentOpen, setExperimentOpen] = useState(false);
   const [creatingExperiment, setCreatingExperiment] = useState(false);
@@ -222,7 +223,7 @@ function LabWorkspace() {
     setAuthoringGeneration((generation) => generation + 1);
     setSaved(row);
     setDraft(json(row.definition));
-    setSavedText(json(row.definition));
+    setBaselineText(json(row.definition));
     setConflict(false);
     setError(null);
     setView("parameters");
@@ -314,12 +315,19 @@ function LabWorkspace() {
       setDraft((current) =>
         current === submittedDraft ? json(row.definition) : current,
       );
-      setSavedText(json(row.definition));
+      setBaselineText(json(row.definition));
       setConflict(false);
       definitions.reload();
       studio.toast(`Saved revision ${row.revision}`);
     });
-  const dirty = !saved || draft !== savedText;
+  // Invalid structured text and unimported files belong to the current editor
+  // even when they cannot yet be serialized into its portable definition.
+  const hasAuthoringEdits =
+    draft !== baselineText ||
+    !dataPreparationValid ||
+    !languageLearningValid ||
+    pendingInputWork;
+  const dirty = !saved || hasAuthoringEdits;
   const structuredEngine = ["data.pipeline", "learning.language"].includes(
     definition?.engine ?? "",
   );
@@ -355,9 +363,10 @@ function LabWorkspace() {
     setView("parameters");
     setGraphVisited(false);
     setSaved(null);
-    setSavedText("");
+    const fresh = json(makeDefinition());
+    setBaselineText(fresh);
     setAuthoringGeneration((generation) => generation + 1);
-    setDraft(json(makeDefinition()));
+    setDraft(fresh);
     setConflict(false);
     setError(null);
     setTarget("local");
@@ -377,7 +386,7 @@ function LabWorkspace() {
         const row = definitions.data?.find((item) => item.id === id);
         if (row) {
           if (row.id === saved?.id) return;
-          if (saved && dirty && row.id !== saved.id) setPendingDefinition(row);
+          if (hasAuthoringEdits) setPendingDefinition(row);
           else load(row);
         }
       }}
@@ -962,7 +971,7 @@ function LabWorkspace() {
                                   (generation) => generation + 1,
                                 );
                                 setSaved(null);
-                                setSavedText("");
+                                setBaselineText("");
                               }}
                             />
                             <div className="lab-engine-status" role="status">
@@ -1528,9 +1537,16 @@ function LabWorkspace() {
                           hidden={view !== "inputs"}
                         >
                           <InputArtifacts
+                            active={
+                              view === "inputs" &&
+                              (creatingExperiment
+                                ? experimentOpen
+                                : area === "experiment")
+                            }
                             key={`${authoringGeneration}:${definition.engine}`}
                             definition={definition}
                             onChange={(inputs) => change({ inputs })}
+                            onPendingChange={setPendingInputWork}
                             signal={() => lifetime.current?.signal}
                           />
                         </section>
@@ -1565,7 +1581,7 @@ function LabWorkspace() {
                             );
                             setSaved(latest);
                             setDraft(json(latest.definition));
-                            setSavedText(json(latest.definition));
+                            setBaselineText(json(latest.definition));
                             setConflict(false);
                             definitions.reload();
                           })
@@ -1839,9 +1855,6 @@ function RunEvidence({
   const studio = useStudio();
   const [run, setRun] = useState<LabRun | null>(null);
   const [events, setEvents] = useState<any[]>([]);
-  const [records, setRecords] = useState<any[]>([]);
-  const [chartRecords, setChartRecords] = useState<any[]>([]);
-  const [rawRecords, setRawRecords] = useState<any[]>([]);
   const [requestedArtifact, setArtifact] = useState("processed.jsonl");
   const [runView, setRunView] = useState("replay");
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -1854,9 +1867,9 @@ function RunEvidence({
     ? requestedArtifact
     : (retained?.derived?.name ??
       retained?.original?.name ??
+      recordArtifacts[0]?.name ??
       requestedArtifact);
   const [offset, setOffset] = useState(0);
-  const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [pollError, setPollError] = useState<unknown>(null);
   const [recovery, setRecovery] = useState<unknown>(null);
@@ -1940,54 +1953,89 @@ function RunEvidence({
       abort.abort();
     };
   }, [studio.api, id, refresh, onChanged]);
+  // Each artifact owns its retrieval state: a missing counterpart must not
+  // erase successfully retained observations or independent run evidence.
+  const recordsAvailable = !!run && isTerminal(run.state);
+  const recordPath = (name: string, start: number, limit: number) =>
+    recordsAvailable
+      ? `/api/lab/runs/${enc(id)}/records?offset=${start}&limit=${limit}&artifact=${enc(name)}`
+      : null;
+  type RecordWindow = {
+    records: any[];
+    next_offset?: number | null;
+    artifact?: { id: string; name: string };
+  };
+  const page = useResource<RecordWindow>(recordPath(artifact, offset, 100));
+  const processedName = retained?.derived?.name ?? "processed.jsonl";
+  const originalName = retained?.original?.name ?? "raw.jsonl";
+  const processed = useResource<RecordWindow>(
+    recordPath(processedName, 0, 1000),
+  );
+  const original = useResource<RecordWindow>(recordPath(originalName, 0, 1000));
   useEffect(() => {
-    const abort = new AbortController();
-    setRecords([]);
-    setNextOffset(null);
-    if (!run || !isTerminal(run.state)) return () => abort.abort();
-    studio.api
-      .get<any>(
-        `/api/lab/runs/${enc(id)}/records?offset=${offset}&limit=100&artifact=${enc(artifact)}`,
-        abort.signal,
-      )
-      .then((page) => {
-        if (!abort.signal.aborted) {
-          setRecords(page.records);
-          setNextOffset(page.next_offset ?? null);
-        }
-      })
-      .catch((e) => {
-        if (!abort.signal.aborted && e.name !== "AbortError") setError(e);
-      });
-    return () => abort.abort();
-  }, [studio.api, id, run?.state, offset, artifact, refresh]);
-  useEffect(() => {
-    const abort = new AbortController();
-    setChartRecords([]);
-    setRawRecords([]);
-    if (!run || !isTerminal(run.state)) return () => abort.abort();
-    Promise.all(
-      [
-        dataArtifacts(run).derived?.name ?? "processed.jsonl",
-        dataArtifacts(run).original?.name ?? "raw.jsonl",
-      ].map((artifact) =>
-        studio.api.get<any>(
-          `/api/lab/runs/${enc(id)}/records?offset=0&limit=1000&artifact=${enc(artifact)}`,
-          abort.signal,
+    if (!refresh) return;
+    page.reload();
+    processed.reload();
+    original.reload();
+  }, [refresh, page.reload, processed.reload, original.reload]);
+  const recordSource = (
+    label: string,
+    name: string,
+    resource: typeof processed,
+  ): ReplayRecordSource => {
+    if (!recordsAvailable) return { label, status: "waiting" };
+    if (resource.loading) return { label, status: "loading" };
+    if (resource.error)
+      return { label, status: "error", error: resource.error };
+    const response = resource.data;
+    if (!Array.isArray(response?.records))
+      return {
+        label,
+        status: "error",
+        error: new Error(
+          "The record response did not contain a records array.",
         ),
-      ),
+      };
+    const declared = retained?.all.find((item) => item.name === name);
+    if (
+      response.artifact &&
+      (response.artifact.name !== name ||
+        typeof response.artifact.id !== "string" ||
+        (declared && response.artifact.id !== declared.id))
     )
-      .then(([processed, raw]) => {
-        if (!abort.signal.aborted) {
-          setChartRecords(processed.records);
-          setRawRecords(raw.records);
-        }
-      })
-      .catch((e) => {
-        if (!abort.signal.aborted && e.name !== "AbortError") setError(e);
-      });
-    return () => abort.abort();
-  }, [studio.api, id, run?.state, refresh]);
+      return {
+        label,
+        status: "error",
+        error: new Error(
+          "The record response belongs to a different retained artifact.",
+        ),
+      };
+    // The service returns an empty, unqualified window when the name is absent.
+    // Older retained responses may omit identity; accept those only when the run
+    // manifest establishes it or the response carries actual observations.
+    if (!response.artifact && !declared && !response.records.length)
+      return { label, status: "missing" };
+    return { label, status: "ready" };
+  };
+  const pageSource = recordSource("Retained records", artifact, page);
+  const processedSource = recordSource(
+    "Processed records",
+    processedName,
+    processed,
+  );
+  const originalSource = recordSource(
+    "Original records",
+    originalName,
+    original,
+  );
+  const pageError = pageSource.error;
+  const records = pageSource.status === "ready" ? page.data!.records : [];
+  const nextOffset =
+    pageSource.status === "ready" ? (page.data?.next_offset ?? null) : null;
+  const chartRecords =
+    processedSource.status === "ready" ? processed.data!.records : [];
+  const rawRecords =
+    originalSource.status === "ready" ? original.data!.records : [];
   const command = async (operation: "cancel" | "retry" | "recover") => {
     const signal = controller.current?.signal;
     if (!signal || signal.aborted || busy) return;
@@ -2255,6 +2303,11 @@ function RunEvidence({
             <ReplayViews
               records={chartRecords}
               rawRecords={rawRecords}
+              recordSources={[processedSource, originalSource]}
+              onRetryRecords={() => {
+                if (processedSource.status === "error") processed.reload();
+                if (originalSource.status === "error") original.reload();
+              }}
               events={events}
               run={run}
               active={active && runView === "replay"}
@@ -2289,103 +2342,145 @@ function RunEvidence({
               setOffset(0);
             }}
           />
-          <Evidence
-            label="Laboratory records"
-            data={{ run_id: id, artifact, offset, records }}
-          >
-            <p className="lab-context-hint">
-              Filters and sorting apply to this loaded window of{" "}
-              {records.length} records. Use Previous records and Next records to
-              load another window.
-            </p>
-            <DataTable<{ record: any; position: number }>
-              assistantActionsEnabled={active && runView === "records"}
-              label="Retained records"
-              rows={records.map((record, index) => ({
-                record,
-                position: offset + index + 1,
-              }))}
-              getRowId={(row) => `${id}:${artifact}:${row.position}`}
-              scopeKey={`${id}:${artifact}`}
-              empty=""
-              columns={[
-                { id: "record", label: "Record", value: (row) => row.position },
-                {
-                  id: "original",
-                  label: "Original fields",
-                  value: ({ record }) =>
-                    json(
-                      record.original ??
-                        record.raw ??
-                        (artifact === (retained?.original?.name ?? "raw.jsonl")
-                          ? record
-                          : null),
-                    ),
-                  render: ({ record }) => (
-                    <EvidenceValue
-                      value={
+          {!recordsAvailable ? (
+            <EmptyState heading="Records are not available yet" role="status">
+              Retained records can be retrieved after this run finishes.
+            </EmptyState>
+          ) : page.loading ? (
+            <EmptyState
+              heading="Loading retained records"
+              role="status"
+              aria-busy="true"
+            >
+              Retrieving {artifact} for the selected record window.
+            </EmptyState>
+          ) : pageSource.status === "missing" ? (
+            <EmptyState heading="No retained record artifact">
+              This run has no retained {artifact} artifact. Choose another
+              artifact or inspect the other run evidence.
+            </EmptyState>
+          ) : pageError ? (
+            <EmptyState
+              heading="Retained records unavailable"
+              role="alert"
+              actions={<Button onClick={page.reload}>Retry records</Button>}
+            >
+              {pageError instanceof Error
+                ? pageError.message
+                : String(pageError)}
+            </EmptyState>
+          ) : (
+            <Evidence
+              label="Laboratory records"
+              data={{ run_id: id, artifact, offset, records }}
+            >
+              <p className="lab-context-hint">
+                Filters and sorting apply to this loaded window of{" "}
+                {records.length} records. Use Previous records and Next records
+                to load another window.
+              </p>
+              <DataTable<{ record: any; position: number }>
+                assistantActionsEnabled={active && runView === "records"}
+                label="Retained records"
+                rows={records.map((record, index) => ({
+                  record,
+                  position: offset + index + 1,
+                }))}
+                getRowId={(row) => `${id}:${artifact}:${row.position}`}
+                scopeKey={`${id}:${artifact}`}
+                empty=""
+                columns={[
+                  {
+                    id: "record",
+                    label: "Record",
+                    value: (row) => row.position,
+                  },
+                  {
+                    id: "original",
+                    label: "Original fields",
+                    value: ({ record }) =>
+                      json(
                         record.original ??
-                        record.raw ??
-                        (artifact === (retained?.original?.name ?? "raw.jsonl")
-                          ? record
-                          : null)
-                      }
-                    />
-                  ),
-                },
-                {
-                  id: "derived",
-                  label: "Derived fields",
-                  value: ({ record }) =>
-                    json(
-                      record.derived ??
-                        record.processed ??
-                        (artifact ===
-                        (retained?.derived?.name ?? "processed.jsonl")
-                          ? record
-                          : null),
+                          record.raw ??
+                          (artifact ===
+                          (retained?.original?.name ?? "raw.jsonl")
+                            ? record
+                            : null),
+                      ),
+                    render: ({ record }) => (
+                      <EvidenceValue
+                        value={
+                          record.original ??
+                          record.raw ??
+                          (artifact ===
+                          (retained?.original?.name ?? "raw.jsonl")
+                            ? record
+                            : null)
+                        }
+                      />
                     ),
-                  render: ({ record }) => (
-                    <EvidenceValue
-                      value={
+                  },
+                  {
+                    id: "derived",
+                    label: "Derived fields",
+                    value: ({ record }) =>
+                      json(
                         record.derived ??
-                        record.processed ??
-                        (artifact ===
-                        (retained?.derived?.name ?? "processed.jsonl")
-                          ? record
-                          : null)
-                      }
-                    />
-                  ),
-                },
-                {
-                  id: "lineage",
-                  label: "Lineage and full record",
-                  value: ({ record }) => json(record),
-                  render: ({ record }) => (
-                    <details>
-                      <summary>Inspect record</summary>
-                      <pre>{json(record)}</pre>
-                    </details>
-                  ),
-                },
-              ]}
-            />
-            {!records.length && (
-              <EmptyState>
-                No retained records loaded for this artifact.
-              </EmptyState>
-            )}
-          </Evidence>
+                          record.processed ??
+                          (artifact ===
+                          (retained?.derived?.name ?? "processed.jsonl")
+                            ? record
+                            : null),
+                      ),
+                    render: ({ record }) => (
+                      <EvidenceValue
+                        value={
+                          record.derived ??
+                          record.processed ??
+                          (artifact ===
+                          (retained?.derived?.name ?? "processed.jsonl")
+                            ? record
+                            : null)
+                        }
+                      />
+                    ),
+                  },
+                  {
+                    id: "lineage",
+                    label: "Lineage and full record",
+                    value: ({ record }) => json(record),
+                    render: ({ record }) => (
+                      <details>
+                        <summary>Inspect record</summary>
+                        <pre>{json(record)}</pre>
+                      </details>
+                    ),
+                  },
+                ]}
+              />
+              {!records.length && (
+                <EmptyState heading="No retained records in this window">
+                  {artifact} returned no records at offset {offset}. Choose
+                  another artifact or record window to inspect other retained
+                  evidence.
+                </EmptyState>
+              )}
+            </Evidence>
+          )}
           <div className="lab-actions">
             <Button
-              disabled={!offset}
+              disabled={!recordsAvailable || page.loading || !offset}
               onClick={() => setOffset(Math.max(0, offset - 100))}
             >
               Previous records
             </Button>
             <Button
-              disabled={nextOffset == null}
+              disabled={
+                !recordsAvailable ||
+                page.loading ||
+                !!pageError ||
+                nextOffset == null
+              }
               onClick={() => setOffset(nextOffset!)}
             >
               Next records

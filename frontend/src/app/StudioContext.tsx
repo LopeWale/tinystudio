@@ -139,6 +139,8 @@ export function StudioProvider({
     [settleConfirmation],
   );
   const latest = useRef({ user, project });
+  const sessionGeneration = useRef(0),
+    projectsGeneration = useRef(0);
   latest.current = { user, project };
   const scopeKey = `${user?.id ?? ""}:${project}`;
   scope.setIdentity(scopeKey);
@@ -148,12 +150,15 @@ export function StudioProvider({
     evidence.clear();
   }
   const unauthorized = useCallback(() => {
+    sessionGeneration.current++;
+    projectsGeneration.current++;
     scope.invalidate();
     evidence.clear();
     latest.current = { user: null, project: "" };
     settleConfirmation(false);
     setUser(null);
     setProject("");
+    setProjects([]);
     setOverview(null);
     setTasks([]);
     setPhase("login");
@@ -191,41 +196,63 @@ export function StudioProvider({
     },
     [scope, evidence, settleConfirmation],
   );
-  const refreshProjects = useCallback(async () => {
-    const rows = await api.get<any[]>("/api/projects");
-    setProjects(rows);
-    if (!rows.some((p) => p.slug === latest.current.project)) {
-      let wanted = "";
-      try {
-        wanted = localStorage.getItem("tinystudio.project") ?? "";
-      } catch {}
-      selectProject(
-        rows.some((p) => p.slug === wanted) ? wanted : (rows[0]?.slug ?? ""),
-      );
-    }
-  }, [api, selectProject]);
+  const refreshProjects = useCallback(
+    async (signal?: AbortSignal) => {
+      const request = ++projectsGeneration.current,
+        session = sessionGeneration.current,
+        owner = latest.current.user?.id;
+      const rows = await api.get<any[]>("/api/projects", signal);
+      if (
+        signal?.aborted ||
+        request !== projectsGeneration.current ||
+        session !== sessionGeneration.current ||
+        owner == null ||
+        owner !== latest.current.user?.id
+      )
+        throw new DOMException(
+          "Project lookup is no longer current",
+          "AbortError",
+        );
+      setProjects(rows);
+      if (!rows.some((p) => p.slug === latest.current.project)) {
+        let wanted = "";
+        try {
+          wanted = localStorage.getItem("tinystudio.project") ?? "";
+        } catch {}
+        selectProject(
+          rows.some((p) => p.slug === wanted) ? wanted : (rows[0]?.slug ?? ""),
+        );
+      }
+    },
+    [api, selectProject],
+  );
   const refreshOverview = useCallback(async () => {
     if (latest.current.project) setOverview(await api.get("/api/overview"));
   }, [api]);
   useEffect(() => {
     const controller = new AbortController();
+    const session = ++sessionGeneration.current;
     let active = true;
     setPhase("loading");
     api
       .get<any>("/api/auth/status", controller.signal)
       .then((status) => {
-        if (!active) return;
+        if (!active || session !== sessionGeneration.current) return;
         setUser(status.user);
         setPhase(
           status.setup_required
             ? "setup"
-            : status.authenticated
-              ? "ready"
+            : status.authenticated && status.user
+              ? "projects"
               : "login",
         );
       })
       .catch((error) => {
-        if (active && error.name !== "AbortError") {
+        if (
+          active &&
+          session === sessionGeneration.current &&
+          error.name !== "AbortError"
+        ) {
           setAuthError(error.message);
           setPhase("unavailable");
         }
@@ -236,11 +263,30 @@ export function StudioProvider({
     };
   }, [api, retry]);
   useEffect(() => {
-    if (phase !== "ready" || !user) return;
-    refreshProjects().catch((error) => {
-      if (error.name !== "AbortError") toast(error.message, true);
-    });
-  }, [phase, user?.id, refreshProjects, toast]);
+    if (phase !== "projects" || !user) return;
+    const controller = new AbortController(),
+      session = sessionGeneration.current;
+    let active = true;
+    setAuthError("");
+    refreshProjects(controller.signal)
+      .then(() => {
+        if (active && session === sessionGeneration.current) setPhase("ready");
+      })
+      .catch((error) => {
+        if (
+          active &&
+          session === sessionGeneration.current &&
+          error.name !== "AbortError"
+        ) {
+          setAuthError(error.message);
+          setPhase("project-unavailable");
+        }
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [phase, user?.id, refreshProjects]);
   useEffect(() => {
     if (!project || phase !== "ready") return;
     refreshOverview().catch((error) => {
@@ -347,10 +393,18 @@ export function StudioProvider({
               onRetry: () => void refreshProjects(),
             })
         : authView({
-            phase,
+            phase:
+              phase === "projects"
+                ? "loading"
+                : phase === "project-unavailable"
+                  ? "unavailable"
+                  : phase,
             error: authError,
             onSubmit: authenticate,
-            onRetry: () => setRetry((v) => v + 1),
+            onRetry: () =>
+              phase === "project-unavailable"
+                ? setPhase("projects")
+                : setRetry((v) => v + 1),
           })}
       <div className="toast-region" aria-live="polite">
         {notices.map((n) => (

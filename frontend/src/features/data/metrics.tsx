@@ -1,14 +1,16 @@
 import { DataTable } from "../../components/studio/data-table";
 import { CollectionTemplate } from "../../components/studio/templates";
 import "./analytical-workspace.css";
+import { useAnalyticalResource } from "./analytical-resource";
 import { useState, useEffect } from "react";
-import { useStudio, useResource } from "../../app/StudioContext";
+import { useStudio } from "../../app/StudioContext";
 import {
   Page,
   Panel,
   Button,
   Modal,
   Evidence,
+  EmptyState,
 } from "../../components/studio/primitives";
 import {
   enc,
@@ -26,7 +28,7 @@ import {
 export function MetricsPage() {
   const s = useStudio(),
     a = useAction(),
-    r = useResource<any[]>("/api/metrics");
+    r = useAnalyticalResource<any[]>("/api/metrics");
   const [editing, E] = useState<any>(null),
     [kind, K] = useState("rubric"),
     [v, V] = useState<any>({}),
@@ -91,9 +93,16 @@ export function MetricsPage() {
       title="Metrics"
       description="Define good answers with rules, code checks, or your evaluator."
       actions={
-        <Button variant="primary" onClick={() => open({})}>
-          Create metric
-        </Button>
+        <div className="data-actions">
+          {r.data !== undefined && (
+            <Button onClick={r.reload} disabled={r.loading}>
+              Refresh metrics
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => open({})}>
+            Create metric
+          </Button>
+        </div>
       }
     >
       <CollectionTemplate
@@ -102,24 +111,32 @@ export function MetricsPage() {
         summary={
           <div className="analytical-scope">
             <strong>{r.data?.length ?? "—"} scoring definitions</strong>
-            <span>
-              {(r.data || []).filter((me) => me.kind === "rubric").length}{" "}
-              rubrics ·{" "}
-              {(r.data || []).filter((me) => me.kind === "code").length} code
-              checks ·{" "}
-              {(r.data || []).filter((me) => me.kind === "webhook").length}{" "}
-              webhooks
-            </span>
+            {r.data !== undefined && (
+              <span>
+                {r.data.filter((me) => me.kind === "rubric").length} rubrics ·{" "}
+                {r.data.filter((me) => me.kind === "code").length} code checks ·{" "}
+                {r.data.filter((me) => me.kind === "webhook").length} webhooks
+              </span>
+            )}
             <a href="#/evaluations">Review evaluation evidence →</a>
           </div>
         }
       >
         <ErrorNotice error={r.error} />
+        {(r.loading || r.stale) && (
+          <p role="status" aria-label="Metric read status">
+            {r.loading
+              ? r.stale
+                ? "Refreshing metrics… Previous definitions remain visible."
+                : "Loading metrics…"
+              : "Refresh failed. Previous definitions remain visible."}
+          </p>
+        )}
 
         <div
           className={`data-master-detail ${selected ? "has-selection" : ""}`}
         >
-          <div className="data-master">
+          <div className="data-master" aria-busy={r.loading}>
             <DataTable
               scopeKey={s.scopeKey + ":" + s.route}
               label="Metrics"
@@ -146,11 +163,38 @@ export function MetricsPage() {
                 </div>
               }
               empty={
-                r.loading
-                  ? "Loading metrics…"
-                  : r.data?.length
-                    ? "No metrics match these filters."
-                    : "No metrics yet."
+                r.loading && r.data === undefined ? (
+                  <EmptyState heading="Loading metrics">
+                    Retrieving scoring definitions…
+                  </EmptyState>
+                ) : r.error && r.data === undefined ? (
+                  <EmptyState
+                    heading="Metrics could not be loaded"
+                    actions={<Button onClick={r.reload}>Retry metrics</Button>}
+                  >
+                    Check the read error above, then try again.
+                  </EmptyState>
+                ) : r.data?.length && (query.trim() || filter) ? (
+                  <EmptyState
+                    heading="No matching metrics"
+                    actions={
+                      <Button
+                        onClick={() => {
+                          setQuery("");
+                          setFilter("");
+                        }}
+                      >
+                        Clear metric filters
+                      </Button>
+                    }
+                  >
+                    No scoring definitions match the current search and kind.
+                  </EmptyState>
+                ) : (
+                  <EmptyState heading="No metrics yet">
+                    Create a scoring definition to evaluate model answers.
+                  </EmptyState>
+                )
               }
               rows={matching}
               getRowId={(me: any) => String(me.name)}

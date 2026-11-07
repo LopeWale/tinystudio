@@ -19,6 +19,7 @@ interface CaptureResult {
   qualification?: unknown;
 }
 interface Props {
+  active?: boolean;
   inputs: InputBinding[];
   onChange: (inputs: InputBinding[]) => void;
   onCaptured: () => void;
@@ -29,7 +30,13 @@ export function RepositoryInput(props: Props) {
   const studio = useStudio();
   return <RepositoryCapture key={studio.scopeKey} {...props} />;
 }
-function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
+function RepositoryCapture({
+  active = true,
+  inputs,
+  onChange,
+  onCaptured,
+  signal,
+}: Props) {
   const studio = useStudio();
   const repositories = useResource<{ name: string }[]>("/api/repositories");
   const rows = Array.isArray(repositories.data) ? repositories.data : [];
@@ -37,10 +44,14 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
   const [operation, setOperation] = useState<LabOperation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const latest = useRef({ inputs, onChange, onCaptured, signal });
-  latest.current = { inputs, onChange, onCaptured, signal };
+  const latest = useRef({ active, inputs, onChange, onCaptured, signal });
+  latest.current = { active, inputs, onChange, onCaptured, signal };
   const lifetime = useRef<AbortController | null>(null);
   const flight = useRef(false);
+  const observation = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!active) observation.current?.abort();
+  }, [active]);
   const admission = useRef<{ repository: string; key: string } | null>(null);
   const attached = useRef(new Set<string>());
   useEffect(() => {
@@ -55,6 +66,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
     const parentSignal = latest.current.signal();
     const localSignal = lifetime.current?.signal;
     if (
+      !latest.current.active ||
       !localSignal ||
       localSignal.aborted ||
       !parentSignal ||
@@ -69,6 +81,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
     setBusy(true);
     setError("");
     const observer = new AbortController();
+    observation.current = observer;
     const cancel = () => observer.abort();
     localSignal.addEventListener("abort", cancel, { once: true });
     parentSignal.addEventListener("abort", cancel, { once: true });
@@ -86,7 +99,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
           { repository: selected, idempotency_key: admission.current.key },
           observer.signal,
         );
-        if (observer.signal.aborted) return;
+        if (observer.signal.aborted || !latest.current.active) return;
         setOperation(current);
       }
       const completed = await waitForOperation(
@@ -94,10 +107,16 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
         current,
         observer.signal,
         (next) => {
-          if (!observer.signal.aborted) setOperation(next);
+          if (!observer.signal.aborted && latest.current.active)
+            setOperation(next);
         },
       );
-      if (observer.signal.aborted || attached.current.has(completed.id)) return;
+      if (
+        observer.signal.aborted ||
+        !latest.current.active ||
+        attached.current.has(completed.id)
+      )
+        return;
       const result = completed.result as CaptureResult | undefined;
       if (
         !result ||
@@ -138,6 +157,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
       localSignal.removeEventListener("abort", cancel);
       parentSignal.removeEventListener("abort", cancel);
       actionSignal?.removeEventListener("abort", cancel);
+      if (observation.current === observer) observation.current = null;
       flight.current = false;
       if (!localSignal.aborted && !parentSignal.aborted) setBusy(false);
     }
@@ -153,7 +173,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
       operation_id: operation?.id,
       operation_state: operation?.state,
     },
-    disabled: !valid || busy || terminal,
+    disabled: !active || !valid || busy || terminal,
     run: submit,
   });
   return (
@@ -192,7 +212,7 @@ function RepositoryCapture({ inputs, onChange, onCaptured, signal }: Props) {
       <div className="lab-actions">
         <Button
           onClick={() => void submit()}
-          disabled={!valid || busy || terminal}
+          disabled={!active || !valid || busy || terminal}
         >
           {busy
             ? "Observing repository capture…"

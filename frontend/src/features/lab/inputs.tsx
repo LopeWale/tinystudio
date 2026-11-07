@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
+import { SegmentedControl } from "../../components/affectui/controls";
 import { ScrollPane } from "../../components/studio/scroll-pane";
 import { FileUploadField } from "../../components/studio/uploads";
 import { Button, EmptyState } from "../../components/studio/primitives";
@@ -106,15 +107,35 @@ export interface LabInput {
 export function InputArtifacts({
   definition,
   onChange,
+  onPendingChange,
+  active = true,
   signal,
 }: {
   definition: ExperimentDefinition;
   onChange: (inputs: InputBinding[]) => void;
+  onPendingChange?: (pending: boolean) => void;
+  active?: boolean;
   signal: () => AbortSignal | undefined;
 }) {
   const { api } = useStudio();
   const inputs = useResource<LabInput[]>("/api/lab/inputs");
+  const [inputView, setInputView] = useState("library");
+  const [mobile, setMobile] = useState(
+    () => window.matchMedia?.("(max-width: 760px)").matches ?? false,
+  );
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 760px)");
+    if (!media) return;
+    const update = () => setMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const [files, setFiles] = useState<File[]>([]);
+  useEffect(() => {
+    onPendingChange?.(files.length > 0);
+  }, [files, onPendingChange]);
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const expectations = inputExpectations(definition);
@@ -157,7 +178,18 @@ export function InputArtifacts({
       },
     ]);
   return (
-    <section className="lab-inputs">
+    <section className="lab-inputs" data-input-view={inputView}>
+      <div className="lab-input-view">
+        <SegmentedControl
+          aria-label="Input source"
+          value={inputView}
+          onChange={setInputView}
+          options={[
+            { value: "library", label: "Input library" },
+            { value: "import", label: "Import input" },
+          ]}
+        />
+      </div>
       <div className="lab-input-sources">
         <header className="lab-input-heading">
           <h3>Add input</h3>
@@ -210,62 +242,69 @@ export function InputArtifacts({
         {(error || inputs.error) && (
           <p role="alert">{error || inputs.error?.message}</p>
         )}
-        <div className="lab-repository-source">
-          <RepositoryInput
-            inputs={chosen}
-            onChange={onChange}
-            onCaptured={inputs.reload}
-            signal={signal}
+        <div className="lab-input-import">
+          <div className="lab-repository-source">
+            <RepositoryInput
+              active={active && (!mobile || inputView === "import")}
+              inputs={chosen}
+              onChange={onChange}
+              onCaptured={inputs.reload}
+              signal={signal}
+            />
+          </div>
+          <FileUploadField
+            presentation="compact"
+            label="Import laboratory input"
+            files={files}
+            onChange={setFiles}
+            disabled={busy}
           />
-        </div>
-        <FileUploadField
-          presentation="compact"
-          label="Import laboratory input"
-          files={files}
-          onChange={setFiles}
-          disabled={busy}
-        />
-        <Button
-          disabled={busy || !files.length}
-          onClick={async () => {
-            const scopeSignal = signal();
-            if (!scopeSignal || scopeSignal.aborted) return;
-            const controller = new AbortController();
-            uploadAbort.current = controller;
-            const abort = controller.signal;
-            const cancel = () => controller.abort();
-            scopeSignal.addEventListener("abort", cancel, { once: true });
-            setBusy(true);
-            setError("");
-            try {
-              const body = new FormData();
-              body.append("file", files[0]);
-              const row = await api.upload<LabInput>("/api/lab/inputs", body, {
-                signal: abort,
-              });
-              if (!abort.aborted) {
-                attach(row);
-                setRecent((current) => [
-                  ...current.filter((item) => item.id !== row.id),
-                  row,
-                ]);
-                setFiles([]);
-                inputs.reload();
+          <Button
+            disabled={busy || !files.length}
+            onClick={async () => {
+              const scopeSignal = signal();
+              if (!scopeSignal || scopeSignal.aborted) return;
+              const controller = new AbortController();
+              uploadAbort.current = controller;
+              const abort = controller.signal;
+              const cancel = () => controller.abort();
+              scopeSignal.addEventListener("abort", cancel, { once: true });
+              setBusy(true);
+              setError("");
+              try {
+                const body = new FormData();
+                body.append("file", files[0]);
+                const row = await api.upload<LabInput>(
+                  "/api/lab/inputs",
+                  body,
+                  {
+                    signal: abort,
+                  },
+                );
+                if (!abort.aborted) {
+                  attach(row);
+                  setRecent((current) => [
+                    ...current.filter((item) => item.id !== row.id),
+                    row,
+                  ]);
+                  setFiles([]);
+                  inputs.reload();
+                }
+              } catch (e: any) {
+                if (!abort.aborted && e.name !== "AbortError")
+                  setError(e.message);
+              } finally {
+                scopeSignal.removeEventListener("abort", cancel);
+                if (!abort.aborted) setBusy(false);
               }
-            } catch (e: any) {
-              if (!abort.aborted && e.name !== "AbortError")
-                setError(e.message);
-            } finally {
-              scopeSignal.removeEventListener("abort", cancel);
-              if (!abort.aborted) setBusy(false);
-            }
-          }}
-        >
-          {busy ? "Importing input…" : "Import and attach input"}
-        </Button>
-        <p className="lab-input-note">
-          Evaluation and truth inputs stay outside model readers.
-        </p>
+            }}
+          >
+            {busy ? "Importing input…" : "Import and attach input"}
+          </Button>
+          <p className="lab-input-note">
+            Evaluation and truth inputs stay outside model readers.
+          </p>
+        </div>
       </div>
       <div className="lab-input-library">
         <header className="lab-input-heading">

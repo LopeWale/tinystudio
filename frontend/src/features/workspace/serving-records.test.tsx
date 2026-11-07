@@ -5,6 +5,8 @@ import {
   render,
   screen,
   within,
+  waitFor,
+  act,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -46,6 +48,149 @@ function mount(component: React.ReactNode, get: any) {
   return studio;
 }
 describe("model and trace collection workspaces", () => {
+  it("marks the initial trace read busy until a successful empty page arrives", async () => {
+    let resolve!: (rows: unknown[]) => void;
+    mount(
+      <TracesPage />,
+      vi.fn((path: string) =>
+        path.startsWith("/api/traces")
+          ? new Promise((done) => {
+              resolve = done;
+            })
+          : Promise.resolve([]),
+      ),
+    );
+    const table = screen.getByRole("table", {
+      name: "Recent inference traces",
+    });
+    expect(table.closest(".trace-table-host")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Loading traces" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No traces available" }),
+    ).toBeNull();
+    await act(async () => resolve([]));
+    expect(
+      await screen.findByRole("heading", { name: "No traces available" }),
+    ).toBeInTheDocument();
+    expect(table.closest(".trace-table-host")).toHaveAttribute(
+      "aria-busy",
+      "false",
+    );
+  });
+  it("shows initial trace permission failures as failed reads and retries without writing", async () => {
+    const traces = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Trace access denied"), { status: 403 }),
+      )
+      .mockResolvedValueOnce([]);
+    const get = vi.fn(async (path: string) =>
+      path.startsWith("/api/traces") ? traces() : [],
+    );
+    const studio = mount(<TracesPage />, get);
+    expect(
+      await screen.findByRole("heading", {
+        name: "Traces could not be loaded",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No traces available" }),
+    ).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Trace access denied");
+    expect(screen.queryByRole("button", { name: /^Refresh$/ })).toBeNull();
+    expect(
+      screen.getAllByRole("button", { name: "Retry traces" }),
+    ).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Retry traces" }));
+    expect(
+      await screen.findByRole("heading", { name: "No traces available" }),
+    ).toBeInTheDocument();
+    expect(traces).toHaveBeenCalledTimes(2);
+    expect(studio.api.post).not.toHaveBeenCalled();
+  });
+  it("retains trace rows and inspection during refresh failure and clears local no-match search without reading", async () => {
+    const row = {
+      id: "retained",
+      model: "base",
+      messages: [{ role: "user", content: "Retained prompt" }],
+      response: "Retained answer",
+    };
+    let reject!: (error: Error) => void;
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce([row])
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, fail) => {
+            reject = fail;
+          }),
+      )
+      .mockResolvedValueOnce([row]);
+    const get = vi.fn(async (path: string) =>
+      path.startsWith("/api/traces") ? read() : [],
+    );
+    const studio = mount(<TracesPage />, get);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Inspect trace" }),
+    );
+    const inspector = screen.getByRole("complementary", {
+      name: "Trace inspector",
+    });
+    const retainedReview = within(inspector).getByRole("button", {
+      name: "Mark response correct: retained",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.getByRole("complementary", { name: "Trace inspector" })).toBe(
+      inspector,
+    );
+    expect(within(inspector).getByText("Retained answer")).toBeVisible();
+    expect(retainedReview).toBeVisible();
+    expect(retainedReview).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", { name: "Select trace retained" }),
+    ).toBeInTheDocument();
+    await act(async () => reject(new Error("Trace refresh offline")));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Trace refresh offline",
+    );
+    expect(screen.getByRole("complementary", { name: "Trace inspector" })).toBe(
+      inspector,
+    );
+    expect(within(inspector).getByText("Retained answer")).toBeVisible();
+    expect(
+      within(inspector).getByRole("button", {
+        name: "Mark response correct: retained",
+      }),
+    ).toBe(retainedReview);
+    expect(retainedReview).toBeVisible();
+    expect(retainedReview).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", { name: "Select trace retained" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Find a trace on this page" }),
+      { target: { value: "missing" } },
+    );
+    expect(
+      screen.getByRole("heading", { name: "No matching traces" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "No traces available" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear trace search" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Select trace retained" }),
+    ).toBeInTheDocument();
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(studio.api.post).not.toHaveBeenCalled();
+  });
   it.each(["models", "traces"] as const)(
     "keeps %s no-match search mounted and clearable without losing focus",
     async (kind) => {

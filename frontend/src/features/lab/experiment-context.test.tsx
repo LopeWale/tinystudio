@@ -125,3 +125,137 @@ it("requires an inline choice before New experiment replaces existing edits", as
   expect(api.put).not.toHaveBeenCalled();
   expect(api.post).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["data.pipeline", "saved"],
+  ["data.pipeline", "new"],
+  ["learning.language", "saved"],
+  ["learning.language", "new"],
+  ["file", "saved"],
+  ["file", "new"],
+])(
+  "preserves child-owned %s work before a %s replacement",
+  async (kind, destination) => {
+    const definition = makeDefinition(kind === "file" ? undefined : kind);
+    if (kind === "data.pipeline")
+      definition.pipeline = [
+        { kind: "scale", version: "1", parameters: { factor: 2 } },
+      ];
+    const rows = [
+      { id: "first", name: "Original", revision: 1, definition },
+      {
+        id: "second",
+        name: "Replacement",
+        revision: 1,
+        definition: { ...makeDefinition(), name: "Replacement" },
+      },
+    ];
+    const api = {
+      get: vi.fn(async (path: string) => {
+        if (path === "/api/lab/definitions") return rows;
+        if (path === "/api/lab/catalog") return { adapters: [], methods: [] };
+        if (path === "/api/lab/targets")
+          return [{ id: "local", name: "Local" }];
+        return [];
+      }),
+      post: vi.fn(),
+      put: vi.fn(),
+      upload: vi.fn(),
+    };
+    render(
+      <StudioContext.Provider
+        value={
+          {
+            api,
+            scopeKey: `child-${kind}-${destination}`,
+            project: "review",
+            user: { id: "reviewer" },
+            route: "/lab",
+            evidence: new EvidenceRegistry(),
+            toast: vi.fn(),
+          } as unknown as StudioRuntime
+        }
+      >
+        <LabPage />
+      </StudioContext.Provider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open experiment" }));
+    await user.click(screen.getByRole("button", { name: /Saved experiment$/ }));
+    await user.click(
+      await screen.findByRole("option", { name: "Original · r1" }),
+    );
+    const originalJson = (
+      screen.getByLabelText("Experiment definition JSON") as HTMLTextAreaElement
+    ).value;
+    let field: HTMLInputElement;
+    const file = new File(["retained"], "pending.jsonl");
+    if (kind === "file") {
+      fireEvent.click(screen.getByRole("tab", { name: "Inputs" }));
+      field = screen.getByLabelText("Import laboratory input", {
+        selector: "input",
+      }) as HTMLInputElement;
+      fireEvent.change(field, { target: { files: [file] } });
+    } else {
+      if (kind === "data.pipeline")
+        await user.click(
+          screen.getByText("Ordered transformations", {
+            selector: "summary span",
+          }),
+        );
+      field = screen.getByLabelText(
+        kind === "data.pipeline" ? "Stage 1 factor" : "Hidden size",
+      ) as HTMLInputElement;
+      fireEvent.change(field, { target: { value: "-" } });
+      expect(
+        screen.getByRole("button", { name: "Save revision" }),
+      ).toBeDisabled();
+    }
+    expect(screen.getByLabelText("Experiment definition JSON")).toHaveValue(
+      originalJson,
+    );
+    const requestReplacement = async () => {
+      if (destination === "new")
+        await user.click(
+          screen.getByRole("button", { name: "New experiment" }),
+        );
+      else {
+        await user.click(
+          screen.getByRole("button", { name: /Saved experiment$/ }),
+        );
+        await user.click(
+          await screen.findByRole("option", { name: "Replacement · r1" }),
+        );
+      }
+    };
+    await requestReplacement();
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(
+      screen.getByLabelText(
+        kind === "file"
+          ? "Import laboratory input"
+          : kind === "data.pipeline"
+            ? "Stage 1 factor"
+            : "Hidden size",
+        kind === "file" ? { selector: "input" } : undefined,
+      ),
+    ).toBe(field);
+    if (kind === "file") expect(field.files?.[0]).toBe(file);
+    else expect(field).toHaveValue("-");
+    await requestReplacement();
+    await user.click(
+      screen.getByRole("button", {
+        name:
+          destination === "new"
+            ? "Discard edits and create new"
+            : "Discard edits and open",
+      }),
+    );
+    expect(screen.getByLabelText("Experiment name")).toHaveValue(
+      destination === "new" ? makeDefinition().name : "Replacement",
+    );
+    expect(api.post).not.toHaveBeenCalled();
+    expect(api.put).not.toHaveBeenCalled();
+    expect(api.upload).not.toHaveBeenCalled();
+  },
+);

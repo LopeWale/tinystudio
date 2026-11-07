@@ -98,9 +98,7 @@ it("opens Configure experiment in the Experiment page and loads a saved definiti
       "Author portable experiments, execute a saved revision, and inspect retained evidence.",
     ),
   ).toBeVisible();
-  await user.click(
-    screen.getByRole("tab", { name: /^Experiment$/ }),
-  );
+  await user.click(screen.getByRole("tab", { name: /^Experiment$/ }));
   expect(screen.getByRole("textbox", { name: "Experiment name" })).toHaveValue(
     "Retained unsaved name",
   );
@@ -128,4 +126,38 @@ it("keeps New experiment in a dialog with a fresh editor and no saved experiment
   expect(
     within(dialog).queryByText("Saved experiment", { exact: true }),
   ).not.toBeInTheDocument();
+});
+
+it("lets the user keep an unsaved definition before opening a saved experiment", async () => {
+  const { api, saved } = mount();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("tab", { name: "Experiment" }));
+  const workspace = within(
+    screen.getByRole("tabpanel", { name: "Experiment" }),
+  );
+  const name = workspace.getByRole("textbox", { name: "Experiment name" });
+  await user.clear(name);
+  await user.type(name, "Bench calibration");
+  const chooseSaved = async () => {
+    await user.click(
+      workspace.getByRole("button", { name: /Saved experiment$/ }),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${saved.name} · r${saved.revision}`,
+      }),
+    );
+  };
+  await chooseSaved();
+  await user.click(workspace.getByRole("button", { name: "Keep editing" }));
+  expect(name).toHaveValue("Bench calibration");
+  await chooseSaved();
+  await user.click(
+    workspace.getByRole("button", { name: "Discard edits and open" }),
+  );
+  expect(
+    workspace.getByRole("textbox", { name: "Experiment name" }),
+  ).toHaveValue(saved.name);
+  expect(api.post).not.toHaveBeenCalled();
+  expect(api.put).not.toHaveBeenCalled();
 });

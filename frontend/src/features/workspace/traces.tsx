@@ -16,6 +16,7 @@ import {
   Badge,
   Button,
   Evidence,
+  EmptyState,
   Field,
   Modal,
   Page,
@@ -94,6 +95,15 @@ export function TracesPage() {
     [comparing, compare] = useState(false),
     [promoting, setPromoting] = useState(false),
     [reviewRows, setReviewRows] = useState<readonly Trace[]>([]);
+  const collectionSearch = useRef<HTMLInputElement>(null);
+  const restoreComparisonFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (comparing || !restoreComparisonFocus.current) return;
+    restoreComparisonFocus.current = false;
+    const trigger = compareFocus.current;
+    if (trigger?.isConnected && !trigger.matches(":disabled")) trigger.focus();
+    else collectionSearch.current?.focus();
+  }, [comparing]);
   const returnFocus = useRef<HTMLElement | null>(null),
     compareFocus = useRef<HTMLElement | null>(null),
     collectionFocus = useRef<HTMLDivElement | null>(null),
@@ -236,7 +246,7 @@ export function TracesPage() {
     id: "traces.inspect",
     label: "Inspect an inference trace",
     kind: "select",
-    disabled: !pageTraces?.length,
+    disabled: comparing || !pageTraces?.length,
     state: { selected: inspectedId },
     options: (pageTraces || []).map((trace) => ({
       value: trace.id,
@@ -248,7 +258,7 @@ export function TracesPage() {
     id: "traces.close",
     label: "Close trace inspector",
     kind: "open",
-    disabled: !selected,
+    disabled: comparing || !selected,
     run: closeInspector,
   });
   useComponentAction({
@@ -267,7 +277,9 @@ export function TracesPage() {
           <Button onClick={() => setPromoting(true)}>
             Promote reviewed responses
           </Button>
-          <Button onClick={traces.reload}>Refresh</Button>
+          {traces.data !== undefined && (
+            <Button onClick={traces.reload}>Refresh</Button>
+          )}
         </div>
       }
     >
@@ -358,8 +370,8 @@ export function TracesPage() {
             ]}
             onRemove={toggleTrace}
             onClose={() => {
+              restoreComparisonFocus.current = true;
               compare(false);
-              compareFocus.current?.focus();
             }}
           />
         )}
@@ -561,15 +573,18 @@ export function TracesPage() {
           >
             <div
               className="trace-table-host"
+              aria-busy={traces.loading}
               ref={collectionFocus}
               tabIndex={-1}
             >
               <Panel title="Recent inference traces">
                 <AdvancedTable
+                  assistantActionsEnabled={!comparing}
                   layout="fill"
                   toolbarContent={
                     <CollectionToolbar
                       label="Find a trace on this page"
+                      searchRef={collectionSearch}
                       query={query}
                       onQueryChange={setQuery}
                       selectedCount={checked.length}
@@ -599,11 +614,35 @@ export function TracesPage() {
                     onPageSizeChange: resizePage,
                   }}
                   empty={
-                    traces.loading
-                      ? "Loading traces…"
-                      : traces.error
-                        ? "Traces could not be loaded. Refresh to retry."
-                        : "No traces available."
+                    traces.loading && traces.data === undefined ? (
+                      <EmptyState heading="Loading traces">
+                        Retrieving recorded inferences…
+                      </EmptyState>
+                    ) : traces.error && traces.data === undefined ? (
+                      <EmptyState
+                        heading="Traces could not be loaded"
+                        actions={
+                          <Button onClick={traces.reload}>Retry traces</Button>
+                        }
+                      >
+                        Check the read error above, then try again.
+                      </EmptyState>
+                    ) : pageTraces?.length && query.trim() ? (
+                      <EmptyState
+                        heading="No matching traces"
+                        actions={
+                          <Button onClick={() => setQuery("")}>
+                            Clear trace search
+                          </Button>
+                        }
+                      >
+                        No traces on this page match “{query.trim()}”.
+                      </EmptyState>
+                    ) : (
+                      <EmptyState heading="No traces available">
+                        Recorded inferences will appear here for review.
+                      </EmptyState>
+                    )
                   }
                   pagination="external"
                   rowProps={(trace) => ({

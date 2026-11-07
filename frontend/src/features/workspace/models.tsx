@@ -140,6 +140,15 @@ export function ModelsPage() {
     [inspectedId, inspect] = useState<string | null>(null),
     [checked, setChecked] = useState<Model[]>([]),
     [comparing, compare] = useState(false);
+  const collectionSearch = useRef<HTMLInputElement>(null);
+  const restoreComparisonFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (comparing || !restoreComparisonFocus.current) return;
+    restoreComparisonFocus.current = false;
+    const trigger = compareFocus.current;
+    if (trigger?.isConnected && !trigger.matches(":disabled")) trigger.focus();
+    else collectionSearch.current?.focus();
+  }, [comparing]);
   const returnFocus = useRef<HTMLElement | null>(null),
     compareFocus = useRef<HTMLElement | null>(null);
   const restoreInspectorFocus = useRef(false);
@@ -417,8 +426,8 @@ export function ModelsPage() {
             ]}
             onRemove={toggleModel}
             onClose={() => {
+              restoreComparisonFocus.current = true;
               compare(false);
-              compareFocus.current?.focus();
             }}
           />
         )}
@@ -437,10 +446,12 @@ export function ModelsPage() {
               <p role="status">Loading models…</p>
             ) : (
               <AdvancedTable
+                assistantActionsEnabled={!comparing}
                 layout="fill"
                 toolbarContent={
                   <CollectionToolbar
                     label="Find an inventory model"
+                    searchRef={collectionSearch}
                     query={inventoryQuery}
                     onQueryChange={setInventoryQuery}
                     selectedCount={checked.length}
