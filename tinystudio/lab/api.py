@@ -20,6 +20,8 @@ from tinystudio.db.models import Project
 from . import service as svc
 from .client_paths import RuntimeApiPaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
+from .study_import_paths import StudyImportPaths
+from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
 
 router = APIRouter()
 project_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory"])
@@ -180,6 +182,22 @@ def study_records(id_: str, db: DB, project: ProjectDep, after: int = Query(0, g
 def create_study_record(id_: str, body: dict, db: DB, project: ProjectDep, author: AuthorDep):
     from .studies import append_record
     return append_record(db, project.id, id_, body, author.user.id)
+
+
+@project_routes.post(StudyImportPaths.preview_route)
+def preview_study_observations(id_: str, body: ObservationImportPreview, db: DB, project: ProjectDep):
+    from .study_import import preview_import
+    return preview_import(db, project.id, id_, body.model_dump())
+
+
+@project_routes.post(StudyImportPaths.apply_route, status_code=201)
+def import_study_observations(id_: str, body: ObservationImport, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_import import apply_import
+    result = apply_import(db, project.id, id_, body.model_dump(), author.user.id)
+    # Request-scoped dependency finalizers may run after the response is sent.
+    # A successful import receipt must follow the outer transaction commit.
+    db.commit()
+    return result
 
 
 @project_routes.get('/studies/{id_}/manifest')

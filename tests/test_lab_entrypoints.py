@@ -32,6 +32,7 @@ def test_shared_lab_catalog_uses_authenticated_project_transport():
             "lab_analysis_methods", "lab_study_analysis_input", "lab_analysis_define", "lab_study_analysis_result",
             "lab_studies", "lab_study", "lab_study_save", "lab_study_revisions",
             "lab_study_records", "lab_study_record", "lab_study_manifest",
+            "lab_study_import_preview", "lab_study_import",
             "lab_run", "lab_events", "lab_cancel", "lab_retry", "lab_targets",
             "lab_export", "lab_operation", "lab_import", "lab_recover",
             "lab_operations", "lab_operation_cancel", "lab_operation_retry",

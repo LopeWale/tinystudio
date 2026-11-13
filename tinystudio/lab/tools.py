@@ -1,5 +1,6 @@
 """MCP and assistant methods are thin clients of laboratory HTTP services."""
 from .client_paths import RuntimeApiPaths, path_identifier, runtime_definition
+from .study_import_paths import StudyImportPaths
 
 def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
     def call(method, path, **kwargs):
@@ -146,6 +147,30 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Resolve a frozen study export boundary and authenticated JSONL download path. Referenced artifact bytes are external; use existing evidence exports for them."""
         return call('GET', f'/api/lab/studies/{path_identifier(study_id)}/manifest')
 
+    def lab_study_import_preview(study_id: str, artifact_id: str, revision: int, projection: dict) -> dict:
+        """Preview explicit artifact rows and mappings without appending records or retaining artifacts.
+
+        The researcher chooses rows, unit_id, condition, outcome data and
+        number_encoding (json or decimal_strings). Preserve projection exactly;
+        ask for missing choices instead of inventing them. POST performs
+        deterministic reads only. Inspect its digest before separately choosing
+        lab_study_import; preview never imports or starts execution.
+        """
+        return call('POST', StudyImportPaths(study_id).preview, json={
+            'artifact_id': path_identifier(artifact_id), 'revision': revision, 'projection': projection})
+
+    def lab_study_import(study_id: str, artifact_id: str, revision: int, projection: dict,
+                         preview_digest: str, idempotency_key: str) -> dict:
+        """Append explicitly chosen artifact rows using an inspected preview digest and stable import key.
+
+        Retain the researcher's exact projection, unit_id, condition, outcome
+        mapping and number_encoding. This writes observations and provenance;
+        row counts do not establish scientific independence or sample sizes.
+        """
+        return call('POST', StudyImportPaths(study_id).apply, json={
+            'artifact_id': path_identifier(artifact_id), 'revision': revision, 'projection': projection,
+            'preview_digest': preview_digest, 'idempotency_key': idempotency_key})
+
     def lab_preflight(definition: dict, target_id: str = "local") -> dict:
         """Check compatibility and actionable prerequisites without submitting or executing."""
         return call("POST", "/api/lab/preflight", json={"definition": definition, "target_id": target_id})
@@ -228,10 +253,11 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
     methods = [lab_catalog, lab_definitions, lab_runtime_methods, lab_runtime_define, lab_statistics_methods, lab_statistics_define,
                lab_analysis_methods, lab_study_analysis_input, lab_analysis_define, lab_study_analysis_result,
                lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
-               lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest]
+               lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest,
+               lab_study_import_preview, lab_study_import]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
     return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_runtime_methods, lab_statistics_methods, lab_analysis_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
-                                                          lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest},
+                                                          lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest, lab_study_import_preview},
                      long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input, lab_study_analysis_input})
             for f in methods]

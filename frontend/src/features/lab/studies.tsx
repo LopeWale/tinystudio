@@ -14,6 +14,10 @@ import { SettingsSection } from "../../components/studio/settings-section";
 import { SimpleTable } from "../../components/studio/data-table";
 import { DraftField } from "./data-preparation";
 import { StudyAnalysisPanel } from "./study-analysis";
+import {
+  StudyImportPanel,
+  type StudyObservationImportStudy,
+} from "./study-import";
 
 type JsonObject = Record<string, unknown>;
 type StudyDocument = JsonObject & {
@@ -29,7 +33,7 @@ type StudyDocument = JsonObject & {
   stopping_rules: JsonObject;
   metadata: JsonObject;
 };
-type Study = {
+type Study = StudyObservationImportStudy & {
   id: string;
   revision: number;
   head_revision: number;
@@ -177,6 +181,7 @@ function StudyDirectory() {
   const [selected, setSelected] = useState<string | null>(null);
   const [selectionGeneration, setSelectionGeneration] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [importPending, setImportPending] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const open = (id: string) => {
     setSelectionGeneration((value) => value + 1);
@@ -185,6 +190,7 @@ function StudyDirectory() {
     setDirty(false);
   };
   const select = (id: string) => {
+    if (importPending) return;
     if (dirty) setPending(id);
     else open(id);
   };
@@ -197,7 +203,14 @@ function StudyDirectory() {
           experiment engine. Statuses, assumptions and stopping rules are yours
           to define.
         </p>
-        <Button onClick={() => select("new")}>New study</Button>
+        <Button disabled={importPending} onClick={() => select("new")}>
+          New study
+        </Button>
+        {importPending && (
+          <p role="status">
+            Resolve the original observation import before changing studies.
+          </p>
+        )}
         {list.loading && <p role="status">Loading studies…</p>}
         {list.error && (
           <>
@@ -216,6 +229,7 @@ function StudyDirectory() {
               value: (row) => row.name,
               render: (row) => (
                 <Button
+                  disabled={importPending}
                   onClick={() => select(row.id)}
                   aria-label={`Open study ${row.name}`}
                 >
@@ -266,7 +280,7 @@ function StudyDirectory() {
           <Button onClick={() => setPending(null)}>
             Keep current study draft
           </Button>
-          <Button onClick={() => open(pending)}>
+          <Button disabled={importPending} onClick={() => open(pending)}>
             Discard draft and open study
           </Button>
         </div>
@@ -277,6 +291,7 @@ function StudyDirectory() {
           id={selected === "new" ? null : selected}
           onChanged={list.reload}
           onDirty={setDirty}
+          onImportPending={setImportPending}
         />
       ) : (
         <EmptyState>
@@ -291,10 +306,12 @@ function StudySession({
   id,
   onChanged,
   onDirty,
+  onImportPending,
 }: {
   id: string | null;
   onChanged: () => void;
   onDirty: (dirty: boolean) => void;
+  onImportPending: (pending: boolean) => void;
 }) {
   const [selectedProtocol, setSelectedProtocol] = useState<{
     id: string;
@@ -303,6 +320,7 @@ function StudySession({
   const activeId = selectedProtocol?.id ?? id;
   const revision = selectedProtocol?.revision ?? null;
   const [dirty, setDirty] = useState(false);
+  const [importPending, setImportPending] = useState(false);
   const [pendingRevision, setPendingRevision] = useState<{
     id: string;
     revision: number;
@@ -321,6 +339,7 @@ function StudySession({
     resource.reload();
   };
   const chooseRevision = (studyId: string, next: number) => {
+    if (importPending) return;
     const target = { id: studyId, revision: next };
     if (dirty) setPendingRevision(target);
     else openRevision(target);
@@ -350,6 +369,10 @@ function StudySession({
             initial={data ?? null}
             onChanged={onChanged}
             onDirty={reportDirty}
+            onImportPending={(pending) => {
+              setImportPending(pending);
+              onImportPending(pending);
+            }}
             onRevision={chooseRevision}
           />
         )
@@ -363,6 +386,7 @@ function StudySession({
             Keep current protocol draft
           </Button>
           <Button
+            disabled={importPending}
             onClick={() => {
               openRevision(pendingRevision);
               setPendingRevision(null);
@@ -381,11 +405,13 @@ function StudyEditor({
   onChanged,
   onDirty,
   onRevision,
+  onImportPending,
 }: {
   initial: Study | null;
   onChanged: () => void;
   onDirty: (dirty: boolean) => void;
   onRevision: (id: string, revision: number) => void;
+  onImportPending: (pending: boolean) => void;
 }) {
   const { api } = useStudio();
   const [base, setBase] = useState(initial);
@@ -402,6 +428,9 @@ function StudyEditor({
   const [latest, setLatest] = useState<Study | null>(null);
   const [recordDirty, setRecordDirty] = useState(false);
   const [analysisDirty, setAnalysisDirty] = useState(false);
+  const [importDirty, setImportDirty] = useState(false);
+  const [importPending, setImportPending] = useState(false);
+  const [recordRefresh, setRecordRefresh] = useState(0);
   const [exported, setExported] = useState<ExportManifest | null>(null);
   const draft = useDraftValidity();
   const action = useStudyAction();
@@ -414,7 +443,8 @@ function StudyEditor({
     json(doc) !== json(base?.study ?? blankStudy()) ||
     !!createAttempt ||
     recordDirty ||
-    analysisDirty;
+    analysisDirty ||
+    importDirty;
   const dirtyCallback = useRef(onDirty);
   dirtyCallback.current = onDirty;
   useEffect(() => dirtyCallback.current(dirty), [dirty]);
@@ -584,7 +614,7 @@ function StudyEditor({
         )}
         {action.busy && <p role="status">Study request in progress…</p>}
         <Button
-          disabled={action.busy || (!createAttempt && !valid)}
+          disabled={action.busy || importPending || (!createAttempt && !valid)}
           onClick={save}
         >
           {createAttempt && !action.busy
@@ -671,7 +701,10 @@ function StudyEditor({
             )}
             {(Array.isArray(history.data) ? history.data : []).map((row) => (
               <div key={row.revision}>
-                <Button onClick={() => onRevision(base.id, row.revision)}>
+                <Button
+                  disabled={importPending}
+                  onClick={() => onRevision(base.id, row.revision)}
+                >
                   Open protocol revision {row.revision}
                 </Button>
                 <p className="text-caption-1-regular text-text-secondary">
@@ -700,11 +733,25 @@ function StudyEditor({
           )}
           <CollectionRecords
             study={base}
+            refreshVersion={recordRefresh}
             onChanged={() => {
               header.reload();
               onChanged();
             }}
             onDirty={setRecordDirty}
+          />
+          <StudyImportPanel
+            study={base}
+            onDirty={setImportDirty}
+            onPendingChange={(pending) => {
+              setImportPending(pending);
+              onImportPending(pending);
+            }}
+            onImported={() => {
+              setRecordRefresh((value) => value + 1);
+              header.reload();
+              onChanged();
+            }}
           />
           <StudyAnalysisPanel
             key={base.id}
@@ -773,10 +820,12 @@ const blankRecord = (): RecordDraft => ({
 });
 function CollectionRecords({
   study,
+  refreshVersion,
   onChanged,
   onDirty,
 }: {
   study: Study;
+  refreshVersion: number;
   onChanged: () => void;
   onDirty: (dirty: boolean) => void;
 }) {
@@ -798,6 +847,10 @@ function CollectionRecords({
   const records = useResource<RecordPage>(
     `${studyPath(study.id)}/records?after=${after}&limit=100`,
   );
+  const refreshRecords = records.reload;
+  useEffect(() => {
+    if (refreshVersion) refreshRecords();
+  }, [refreshVersion, refreshRecords]);
   const draft = useDraftValidity();
   const action = useStudyAction();
   const dirty =

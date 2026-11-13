@@ -13,6 +13,7 @@ from tinystudio.config import ClientConfig
 
 from .runner import run as run_runner, validate_url
 from .client_paths import RuntimeApiPaths, path_identifier, runtime_definition
+from .study_import_paths import StudyImportPaths
 
 app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evidence and execution targets.")
 
@@ -160,6 +161,30 @@ def study_record(study_id: str, file: Path, project: str = typer.Option(..., '--
 def study_records(study_id: str, project: str = typer.Option(..., '--project', '-p'), after: int = 0, limit: int = 100):
     """Read collection records with durable sequence pagination."""
     show(call('GET', project, f'/studies/{identifier(study_id)}/records?after={after}&limit={limit}'))
+
+
+@app.command('study-import-preview')
+def study_import_preview(study_id: str, file: Path, project: str = typer.Option(..., '--project', '-p')):
+    """Preview authored artifact rows and mappings without appending records or retaining artifacts.
+
+    FILE supplies artifact_id, revision and projection. Explicitly choose rows,
+    unit_id, condition, outcome data and number_encoding (json or decimal_strings).
+    Inspect the preview before separately choosing study-import.
+    """
+    paths = StudyImportPaths(identifier(study_id), base='')
+    show(call('POST', project, paths.preview, json.loads(file.read_text())))
+
+
+@app.command('study-import')
+def study_import(study_id: str, file: Path, project: str = typer.Option(..., '--project', '-p')):
+    """Append explicitly chosen artifact rows using an inspected preview and stable import key.
+
+    FILE supplies artifact_id, revision, projection, preview_digest and
+    idempotency_key. Preserve authored unit, condition, outcome and numeric
+    encoding choices; row counts do not establish independent samples.
+    """
+    paths = StudyImportPaths(identifier(study_id), base='')
+    show(call('POST', project, paths.apply, json.loads(file.read_text())))
 
 
 @app.command('study-export')

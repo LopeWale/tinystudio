@@ -194,6 +194,48 @@ aliases also apply). Source qualifiers never silently qualify a different target
 converted value in the clock's units. Nonzero purges currently support the shared
 time registry's `s`, `ms` and `us`; other units require explicit alignment first.
 
+### Import curated observations into a study
+
+Retain acquisition bytes and curate their decoded records with `data.pipeline`.
+The study editor can then preview an explicit JSONL artifact projection and
+import its selected rows. Choose the protocol revision, physical source lines,
+unit IDs, conditions and named data fields. Repeated units remain repeated;
+counts describe rows and do not establish independence or sample size.
+
+A projection requires `selection: {"all": true}` or an explicit
+`selection: {"lines": [1, 3]}` list, plus `unit_id`, `condition`, `data`, and
+`number_encoding`. Each field selector is `{"pointer": "/your/field"}` or
+`{"literal": "your value"}`. Pointers follow [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901).
+`observed_at` is optional; `kind` defaults to `observation` and accepts authored
+record kinds. Choose `decimal_strings` to preserve source numeric tokens
+exactly as strings, or `json` for native JSON numbers with disclosed binary64
+rounding. Literal selector values retain their authored types.
+
+`tinystudio lab study-import-preview STUDY_ID REQUEST.json --project PROJECT`
+reads a request containing `artifact_id`, `revision`, and `projection`. Preview
+writes no ledger records or artifacts. It validates the complete source and
+returns the exact source hash, projected-row digest, normalized mapping,
+implementation identity, and up to five display examples. All selected rows
+contribute to the count and digest. The imported record retains its physical
+source line, raw-line hash, decoded-row hash, source artifact hash and projection
+digest. Bulk source verification happens once per import.
+
+`study-import` accepts that request plus `preview_digest` and an
+`idempotency_key`. Observations and their receipt publish in one database
+transaction. Retry an uncertain response with the unchanged request and key;
+a completed retry returns its original receipt, including after external source
+loss. A different key represents an intentional additional import. A changed
+source, mapping, or protocol fingerprint requires a new preview. Researcher
+record kinds remain open; the importer reserves its internal publication IDs.
+The assistant exposes the same two steps through `lab_study_import_preview`
+and `lab_study_import`. Shared route objects supply the service/client paths;
+the study response supplies action links to the browser.
+
+Freeze the resulting study boundary for `statistics.analyze`, then explicitly
+select the outcome, groups, units, repetitions/missingness policy and inference
+method. The original artifact, imported ledger rows and analysis selection
+remain separate inspectable evidence.
+
 ### Promote retained chats into existing training data
 
 The actual Laboratory run-evidence view can create an existing TinyStudio chat

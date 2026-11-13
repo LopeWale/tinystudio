@@ -53,11 +53,14 @@ def _summary(db, id_, through_seq):
 
 
 def get_study(db: Session, project: str, id_: str, *, revision: int | None = None):
+    from .study_import_paths import StudyImportPaths
     row = _study(db, project, id_)
     stored = _revision(db, row, row.revision if revision is None else revision)
+    imports = StudyImportPaths(row.id)
     return {'id': row.id, **deepcopy(stored.snapshot), 'digest': stored.digest,
             'head_revision': row.revision, 'created': svc.aware(row.created).isoformat(),
-            'updated': svc.aware(row.updated).isoformat(), 'summary': _summary(db, row.id, row.next_seq), 'last_sequence': row.next_seq}
+            'updated': svc.aware(row.updated).isoformat(), 'summary': _summary(db, row.id, row.next_seq), 'last_sequence': row.next_seq,
+            'actions': {'observation_import_preview': imports.preview, 'observation_import': imports.apply}}
 
 
 def list_studies(db: Session, project: str, *, offset=0, limit=100):
@@ -182,7 +185,10 @@ def _record(db, study, row):
 
 
 def append_record(db: Session, project: str, id_: str, body: dict, author_id: str):
+    from .study_import_paths import StudyImportKeys
     request = _validate(StudyRecordRequest, body)
+    if StudyImportKeys.reserved(request['idempotency_key']):
+        raise svc.LabError('this idempotency key namespace identifies internal observation imports', 422)
     study = _study(db, project, id_)
     request_digest = checksum({'request': request, 'author_id': author_id})
     previous = db.scalar(select(LabStudyRecord).where(LabStudyRecord.study_id == id_, LabStudyRecord.idempotency_key == request['idempotency_key']))
@@ -194,6 +200,16 @@ def append_record(db: Session, project: str, id_: str, body: dict, author_id: st
     # Prepare slow object verification without holding study/run write locks.
     # Snapshot source state before verification; later retries cannot rewrite it.
     run_refs, artifact_refs = _references(db, project, request)
+    return _append_verified_record(db, project, id_, request, author_id, run_refs, artifact_refs)
+
+
+def _append_verified_record(db, project, id_, request, author_id, run_refs, artifact_refs):
+    """Internal publication seam after validation and scoped byte verification.
+
+    Bulk import verifies its source once, then uses the same frozen references
+    for every row. Public callers continue through append_record.
+    """
+    request_digest = checksum({'request': request, 'author_id': author_id})
     study = _study(db, project, id_, lock=True)
     previous = db.scalar(select(LabStudyRecord).where(LabStudyRecord.study_id == id_, LabStudyRecord.idempotency_key == request['idempotency_key']))
     if previous is not None:
