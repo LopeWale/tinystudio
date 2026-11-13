@@ -24,4 +24,4 @@ Subsequent analysis should support researcher-selected estimates, intervals, dia
 
 ## Scope of this change
 
-These principles correct the product interpretation of the prior review. They do not claim that the statistics workbench, sample-size planner, new adapters or unrestricted cross-engine composition have already been implemented. The immediate work is the document corrections under [research/supervisory-slm](research/supervisory-slm/README.md); implementation of general mechanisms remains a separate development task.
+These principles guide the product beyond the [document corrections](research/supervisory-slm/README.md). The first [statistical-planning increment](statistical-planning.md) implements sample-size, power, detectable-effect and proportion-precision calculations through the existing Laboratory workflow. Broader post-collection analysis, study tracking, new adapters and unrestricted cross-engine composition remain development work.

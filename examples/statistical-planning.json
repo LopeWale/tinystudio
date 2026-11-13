@@ -1,0 +1,23 @@
+{
+  "name": "Illustrative paired-mean planning assumptions",
+  "domain": "statistics",
+  "engine": "statistics.plan",
+  "mode": "offline",
+  "parameters": {
+    "method": "means.paired",
+    "solve_for": "sample_size",
+    "alpha": 0.05,
+    "power": 0.8,
+    "alternative": "two-sided",
+    "delta": 0.5,
+    "sd": 1.0,
+    "unit": "unitless",
+    "attrition": 0.1,
+    "input_sources": {
+      "delta": "Illustrative desired mean difference; replace with the study's meaningful effect.",
+      "sd": "Illustrative SD of paired differences; not a measured pilot estimate."
+    },
+    "sensitivity": [{"delta": 0.25}, {"power": 0.9}]
+  },
+  "execution": {"profile": "trusted_native", "backend": "native", "max_seconds": 60}
+}

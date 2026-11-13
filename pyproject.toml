@@ -38,6 +38,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+statistics = ["scipy>=1.11"]
 youtube = ["youtube-transcript-api>=1.0"]
 assistant = ["anthropic>=2.1", "openai>=3.36"]
 mlx = ["mlx-lm>=0.24"]

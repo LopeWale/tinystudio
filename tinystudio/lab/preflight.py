@@ -38,6 +38,17 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
           "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
+    if engine == "statistics.plan":
+        from .statistics_selection import validate_statistics_selection
+        try:
+            validate_statistics_selection(definition.model_dump())
+            if not (runtime or {}).get("scipy"):
+                raise ValueError("Statistical planning requires SciPy on the selected target; install tinystudio[statistics].")
+        except (ValueError, KeyError, TypeError) as exc:
+            check("statistics_selection", False, str(exc))
+        else:
+            check("statistics_selection", True,
+                  "Planning inputs and goal are compatible; the result is conditional on the declared assumptions.")
     if engine == "retrieval.index":
         from .retrieval_selection import validate_retrieval_selection
         try:

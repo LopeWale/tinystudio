@@ -74,6 +74,7 @@ def catalog() -> dict:
         ("system.cosim", "Clock-coordinated system simulation", True),
         ("data.pipeline", "Scientific data preparation and grouped partitions", True),
         ("evaluation.compare", "Independent validation and paired comparison", True),
+        ("statistics.plan", "Statistical planning and power calculations", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),
@@ -86,7 +87,8 @@ def catalog() -> dict:
     for id_, name, implemented in methods:
         dependencies = (["torch", "transformers", "peft", "trl"] if id_ == "learning.pretrained" else
                         ["torch"] if id_.startswith("learning.") or id_ == "deployment.benchmark" else
-                        ["pyarrow"] if id_ in {"data.pipeline", "system.cosim"} else [])
+                        ["pyarrow"] if id_ in {"data.pipeline", "system.cosim"} else
+                        ["scipy"] if id_ == "statistics.plan" else [])
         missing = [dependency for dependency in dependencies if importlib.util.find_spec(dependency) is None]
         method_rows.append({"id": id_, "name": name, "implemented": implemented,
             "available": implemented and not missing, "dependencies": dependencies,
@@ -94,8 +96,10 @@ def catalog() -> dict:
             "Optional dependencies missing: " + ", ".join(missing) if missing else None,
             "qualification_reason": "Availability is not an execution receipt; method-specific selections have additional prerequisites."})
     method_rows = [{**row, "manifest": manifest_for(row)} for row in method_rows]
+    from .statistics_selection import method_catalog
     return {"schema_version": 1, "enabled_increments": ["A", "B"], "adapters": items, "methods": method_rows,
             "qualification_matrix": qualification_matrix(items+method_rows),
+            "statistics_methods": method_catalog(),
             "contract_schemas": deepcopy(SCHEMAS),
             "domains": sorted({item["domain"] for item in items})}
 

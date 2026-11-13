@@ -145,6 +145,7 @@ METHODS = {
     "system.cosim": (["simulation", "clock"], "cosim.py", "cosim"),
     "data.pipeline": (["transformation", "representation"], "data.py", "data"),
     "evaluation.compare": (["evaluator"], "research.py", "evaluation"),
+    "statistics.plan": (["evaluator"], "statistics.py", "statistics"),
     "deployment.benchmark": (["deployment"], "deployment.py", "deployment"),
 }
 
@@ -155,6 +156,9 @@ def manifest_for(row: dict) -> dict:
     if id_ in METHODS:
         kinds, source, fixture = METHODS[id_]
         version = "sha256:" + hashlib.sha256(Path(__file__).with_name(source).read_bytes()).hexdigest() if implemented else None
+        if id_ == "statistics.plan" and implemented:
+            version = "sha256:" + hashlib.sha256(b"".join(Path(__file__).with_name(name).read_bytes()
+                for name in ("statistics_selection.py", "statistics.py"))).hexdigest()
     else:
         kinds = ["source"] if id_ in {"synthetic.signal", "recorded.replay"} or id_.startswith("acquisition.") else ["simulation"]
         fixture = ("engine" if id_ in {"synthetic.signal", "recorded.replay", "simulation.plant"} else

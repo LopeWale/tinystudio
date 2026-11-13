@@ -16,6 +16,22 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """List project laboratory definitions and revisions."""
         return call("GET", "/api/lab/definitions")
 
+    def lab_statistics_methods() -> dict:
+        """Inspect statistical planning methods, goals, required inputs, assumptions and references. No calculation is run."""
+        return call("GET", "/api/lab/statistics/methods")
+
+    def lab_statistics_define(name: str, parameters: dict, execution: dict) -> dict:
+        """Save a statistical planning definition using researcher-supplied assumptions and source notes.
+
+        Inspect lab_statistics_methods first; ask for missing effects, variability,
+        sidedness, alpha/power or precision instead of inventing them. This only
+        saves a definition. Use lab_preflight, lab_submit and lab_run for the
+        existing frozen execution/evidence workflow. Calculations are planning
+        estimates, not measured results or guarantees.
+        """
+        return call("POST", "/api/lab/definitions", json={"definition": {
+            "name": name, "engine": "statistics.plan", "parameters": parameters, "execution": execution}})
+
     def lab_define(definition: dict) -> dict:
         """Save a new versioned laboratory definition without executing it."""
         return call("POST", "/api/lab/definitions", json={"definition": definition})
@@ -99,9 +115,9 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Queue an immutable, optimistically validated capture of an existing RAG repository; does not train."""
         return call("POST", "/api/lab/inputs/from-repository", json={"repository": repository, "idempotency_key": idempotency_key})
 
-    methods = [lab_catalog, lab_definitions, lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input]
+    methods = [lab_catalog, lab_definitions, lab_statistics_methods, lab_statistics_define, lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
-    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations},
+    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_statistics_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations},
                      long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input})
             for f in methods]
