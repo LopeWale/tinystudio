@@ -1,0 +1,148 @@
+{
+  "edition": "2026-11-12",
+  "scope": "Editorial corrections; no hardware validation or hypothesis results.",
+  "sources": {
+    "1-Supervisory-Small-Language-Models-for-Hardware.pdf": "2991c3e59d96aacf5b38baf218638cfa85211a4782a0756881d3119a347c3c2e",
+    "2-Lab-Guide-Supervisory-SLM-Testbed.md": "218a7e0af47908ff66bb629ce939fca54111c32bb039790803c3f0e7e6a32005",
+    "3-Supervisory-SLM-Explorer.html": "085344081e06df40f68aae5a31e12dfd7cfa877c5d3d5f8ad9d0fc5f30af0eca"
+  },
+  "outputs": {
+    "Supervisory-Small-Language-Models-for-Hardware-Corrected.pdf": "630e6e43806434bf9e817145e1f0f40b552b3ba5b225640ed2e854a567b4a45f",
+    "Lab-Guide-Supervisory-SLM-Testbed-Corrected.md": "2dbd022901571e6dc35d7f734d4a7fe2b44f145b4ccb076ecf663718e2f32e04",
+    "Supervisory-SLM-Explorer-Corrected.html": "6ada00b3cd94ca8d55056747d02b0a719b5722b92f80701655c0042607cb6b8c"
+  },
+  "pdf_edits": [
+    {
+      "page": 2,
+      "rect": [
+        55.0,
+        516.0,
+        545.0,
+        631.0
+      ],
+      "font_size": 10.5,
+      "replacement": "1. Hypothesis 1 (H1 - Supervisory Cognitive-Deterministic Decoupling): A quantized board-level SLM (500M-1.5B parameters), separated from direct 10-100 kHz actuation by a compiled guardrail, can synthesize controller parameters at 100 ms-1 s intervals. Test zero observed boundary violations and bounded fallback latency under declared faults and operating conditions. Bounds checks alone are not a stability proof; finite tests do not establish a universal safety guarantee (Sha, 2001; Wang et al., 2026)."
+    },
+    {
+      "page": 5,
+      "rect": [
+        173.0,
+        378.0,
+        354.0,
+        405.0
+      ],
+      "font_size": 8.5,
+      "replacement": "Offline operation; measured local latency\nPrivacy and power depend on deployment"
+    },
+    {
+      "page": 8,
+      "rect": [
+        65.0,
+        53.0,
+        545.0,
+        117.0
+      ],
+      "font_size": 10.5,
+      "replacement": "Local Objective Function L(x): The Tier 2 system prompt requests local stability, low wear and immediate operational goals. Prompt priority is a testable instruction, not a guarantee. Independent deterministic protections enforce the configured physical constraints."
+    },
+    {
+      "page": 8,
+      "rect": [
+        65.0,
+        210.0,
+        545.0,
+        291.0
+      ],
+      "font_size": 10.5,
+      "replacement": "Arbitration via Token Priorities: When local preservation conflicts with global demand, the intended SLM response to [CELL-TEMP-CRIT] is to curtail an [AGGRESSIVE-DISCHARGE] request. Measure whether the model actually proposes [SAFE-MODE-CURTAIL]. Log proposal errors separately from interlock overrides and committed actions; a protective interlock must not hide a failed arbitration decision."
+    },
+    {
+      "page": 9,
+      "rect": [
+        54.0,
+        470.0,
+        545.0,
+        550.0
+      ],
+      "font_size": 10.5,
+      "replacement": "3. Execution Guardrails (The Deterministic Step): A compiled C/C++ matrix or bounded verifier checks configured limits before actuation (Sha, 2001; Nesti et al., 2026). Valid numeric values outside bounds are clamped; malformed output is dropped. In-range parameter combinations can still destabilize a plant. State-dependent interlocks or validated gain regions, when used, are separately declared experimental mechanisms."
+    },
+    {
+      "page": 16,
+      "rect": [
+        62.0,
+        521.0,
+        545.0,
+        546.0
+      ],
+      "font_size": 9.5,
+      "replacement": "# Current upper bound only; not a stability or safety proof."
+    },
+    {
+      "page": 16,
+      "rect": [
+        50.0,
+        633.0,
+        545.0,
+        698.0
+      ],
+      "font_size": 10.5,
+      "replacement": "The following five mechanisms are research proposals to evaluate separately. Their usefulness and observability are not assumed. Compare against suitable classical baselines, retain negative results, and measure net energy over the complete intervention window."
+    },
+    {
+      "page": 17,
+      "rect": [
+        50.0,
+        537.0,
+        545.0,
+        667.0
+      ],
+      "font_size": 10.5,
+      "replacement": "3. Predictive Thermal-Electrical Co-Optimization (Hypothesis): Correlate weather forecasts with measured thermal/electrical state to test an authored MPPT or switching intervention before a sunny interval. Reduced electrical extraction can leave more absorbed solar energy to dissipate as heat, so panel cooling is not assumed. Measure panel and converter temperatures separately, and compare against MPP over the complete intervention and recovery window. A warmer detuned panel contradicts the cooling prediction under those conditions. Retain cooler, warmer and inconclusive outcomes, with measurement uncertainty and net energy including intervention costs."
+    },
+    {
+      "page": 18,
+      "rect": [
+        208.0,
+        159.0,
+        390.0,
+        180.0
+      ],
+      "font_size": 6.6,
+      "replacement": "Test MPPT detuning before the forecast window\nMeasure temperature and net energy; cooling is unproven"
+    },
+    {
+      "page": 21,
+      "rect": [
+        50.0,
+        231.0,
+        545.0,
+        328.0
+      ],
+      "font_size": 10.5,
+      "replacement": "Three design principles are proposed for resilient execution: (1) state isolation through deterministic interlocks; (2) shared global/local context with explicit local survival behavior during communication loss; and (3) graceful degradation under CPU or memory strain, with independently running classical controllers and protocol maps. These mechanisms require validation under the declared operating conditions. They do not guarantee defect-free execution or stable closed-loop behavior merely by being present."
+    },
+    {
+      "page": 22,
+      "rect": [
+        65.0,
+        213.0,
+        545.0,
+        293.0
+      ],
+      "font_size": 10.5,
+      "replacement": "Byte-to-Token Compilation & SunSpec Mapping: Parse the transport deterministically. The RTU request 01 03 00 20 00 02 C5 C1 has CRC-16/Modbus bytes low-first and maps to read/slave/register/count tokens after CRC validation. Modbus TCP uses MBAP framing, without the RTU CRC. Discover SunSpec model IDs and lengths before interpreting registers; raw byte values alone do not identify their device semantics."
+    },
+    {
+      "page": 22,
+      "rect": [
+        65.0,
+        370.0,
+        545.0,
+        467.0
+      ],
+      "font_size": 10.5,
+      "replacement": "Multi-Protocol Southbound Synthesis: An MQTT demand-response intent (farm/grid/demand-response, strategy curtail-battery, reduction 50 kW) can propose a Modbus control and CANopen SDO plan. Discover SunSpec Model 123 by walking model IDs and lengths from the declared base; resolve WMaxLimPct, its scale factor and WMaxLim_Ena from the model definition and device capabilities. Do not assume absolute register 40021. Validate each action and retain application acknowledgements and partial-application outcomes for the inverter and BMS."
+    }
+  ]
+}

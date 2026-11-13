@@ -1,0 +1,835 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Supervisory SLM Explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: a datasheet-style walkthrough; one column of sections, each a figure + prose pair, sticky section rail on top. */
+:root {
+  --bg: #F3F5F8; --surface: #FFFFFF; --surface-2: #E8EDF3; --ink: #132030; --muted: #546378; --line: #D2D9E2;
+  --t1: #B9800C; --t1-fill: #F2B53C; --t2: #0B7F73; --t3: #4F46E5; --red: #C8383E; --green: #157F3B;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0C141F; --surface: #121D2B; --surface-2: #1A2738; --ink: #E5ECF4; --muted: #9AA9BC; --line: #2A3A4E;
+  --t1: #F2B53C; --t1-fill: #F2B53C; --t2: #2EC4B2; --t3: #8D87FF; --red: #F06A6E; --green: #4ADE80; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0C141F; --surface: #121D2B; --surface-2: #1A2738; --ink: #E5ECF4; --muted: #9AA9BC; --line: #2A3A4E;
+  --t1: #F2B53C; --t1-fill: #F2B53C; --t2: #2EC4B2; --t3: #8D87FF; --red: #F06A6E; --green: #4ADE80; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.55; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.12; }
+h1 { font-size: clamp(30px, 5vw, 50px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(24px, 3.4vw, 34px); font-weight: 700; }
+h3 { font-size: 19px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--t2); font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+.tok { font-family: var(--mono); font-size: 13px; font-weight: 600; display: inline-block; padding: 2px 8px; border-radius: 5px; border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent); white-space: nowrap; }
+.tok.t1 { color: var(--t1); } .tok.t2 { color: var(--t2); } .tok.t3 { color: var(--t3); } .tok.red { color: var(--red); } .tok.green { color: var(--green); } .tok.sl { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+.cite { font-size: 13px; color: var(--muted); font-style: italic; }
+
+/* nav rail */
+.rail { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+.rail .wrap { display: flex; gap: 6px; overflow-x: auto; padding-block: 10px; scrollbar-width: thin; }
+.rail a { flex: none; font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: 999px; border: 1px solid transparent; }
+.rail a:hover, .rail a:focus-visible { color: var(--ink); border-color: var(--line); outline: none; }
+.rail a.on { color: var(--ink); background: var(--surface); border-color: var(--line); }
+
+section { padding-block: 56px; border-bottom: 1px solid var(--line); scroll-margin-top: 60px; }
+.head { display: grid; gap: 10px; margin-bottom: 28px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 860px) { .grid2, .grid3 { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; min-width: 0; }
+.panel.flat { background: var(--surface-2); border-color: transparent; }
+.stack { display: grid; gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* hero */
+.hero { padding-block: 48px 40px; }
+.hero h1 { max-width: 22ch; margin-top: 12px; }
+.hero .sub { font-size: 19px; color: var(--muted); margin-top: 14px; max-width: 60ch; }
+.pipeline { margin-top: 30px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; position: relative; }
+.stage { padding: 14px 12px; border: 1px solid var(--line); background: var(--surface); min-width: 0; position: relative; }
+.stage:first-child { border-radius: 10px 0 0 10px; } .stage:last-child { border-radius: 0 10px 10px 0; }
+.stage + .stage { border-left: none; }
+.stage .k { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.stage .v { font-family: var(--display); font-weight: 600; font-size: 18px; margin-top: 2px; }
+.stage .d { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.stage::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; background: var(--c, var(--line)); }
+.pulse { position: absolute; top: -12px; left: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--t2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--t2) 25%, transparent); animation: travel 6s linear infinite; }
+@keyframes travel { 0% { left: 0%; background: var(--t1-fill); } 38% { background: var(--t1-fill); } 40% { background: var(--t2); } 58% { background: var(--t2); } 62% { background: var(--red); } 78% { background: var(--red); } 80% { background: var(--green); } 100% { left: calc(100% - 18px); background: var(--green); } }
+@media (max-width: 760px) { .pipeline { grid-template-columns: minmax(0, 1fr); } .stage, .stage:first-child, .stage:last-child { border-radius: 0; border-left: 1px solid var(--line); } .stage + .stage { border-top: none; } .stage:first-child { border-radius: 10px 10px 0 0; } .stage:last-child { border-radius: 0 0 10px 10px; } .pulse { display: none; } }
+.facts { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 28px; }
+.fact .n { font-family: var(--display); font-weight: 700; font-size: 34px; line-height: 1; }
+.fact .l { font-size: 13px; color: var(--muted); margin-top: 4px; max-width: 22ch; }
+
+/* hypotheses */
+.hyp { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 860px) { .hyp { grid-template-columns: minmax(0, 1fr); } }
+.hcard { text-align: left; font: inherit; color: inherit; cursor: pointer; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 6px; transition: border-color .15s, transform .15s; }
+.hcard:hover, .hcard:focus-visible { border-color: var(--c); outline: none; transform: translateY(-1px); }
+.hcard .hn { font-family: var(--mono); font-weight: 600; color: var(--c); font-size: 13px; }
+.hcard h3 { font-size: 18px; }
+.hcard p { font-size: 14px; color: var(--muted); }
+.hcard .go { font-size: 13px; color: var(--c); font-weight: 500; }
+
+/* tiers */
+svg text { font-family: var(--body); }
+.tier-svg { width: 100%; height: auto; display: block; }
+.tier-box { cursor: pointer; }
+.tier-box rect { transition: opacity .15s; }
+.tier-box:focus-visible rect.frame { stroke: var(--ink); stroke-width: 3; }
+.tier-box.dim rect.fill { opacity: 0.35; }
+.detail h3 { margin-top: 4px; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; font-size: 14px; margin-top: 12px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tab { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.tab[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tab:focus-visible { outline: 2px solid var(--t2); outline-offset: 2px; }
+
+/* HTM */
+.meter { position: relative; height: 34px; border-radius: 6px; overflow: hidden; display: flex; }
+.meter span { display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 11px; font-weight: 600; color: #0E1A28; }
+.marker { position: absolute; top: -4px; bottom: -4px; width: 3px; background: var(--ink); border-radius: 2px; transform: translateX(-1px); }
+input[type=range] { width: 100%; accent-color: var(--t2); }
+.readout { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: baseline; }
+.big { font-family: var(--mono); font-size: 30px; font-weight: 600; }
+.hex { font-family: var(--mono); font-weight: 600; color: var(--t3); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+td.num, .tnum { font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; }
+.chart { width: 100%; height: auto; display: block; background: var(--surface-2); border-radius: 8px; }
+.state { font-family: var(--mono); font-weight: 600; font-size: 15px; padding: 8px 12px; border-radius: 8px; display: inline-flex; gap: 10px; align-items: center; }
+.state.nom { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.state.crit { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+.btn { font: inherit; font-size: 14px; font-weight: 500; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn:focus-visible { outline: 2px solid var(--t2); outline-offset: 2px; }
+.btn.primary { background: var(--t2); color: #fff; border-color: var(--t2); }
+.counter { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.counter div { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.counter b { font-family: var(--mono); font-size: 24px; display: block; font-variant-numeric: tabular-nums; }
+
+/* blocks */
+.codeblock { font-family: var(--mono); font-size: 13px; background: #0F1A27; color: #DCE6F2; border-radius: 8px; padding: 14px 16px; overflow-x: auto; white-space: pre; line-height: 1.5; }
+.codeblock .c1 { color: #F2B53C; } .codeblock .c2 { color: #2EC4B2; } .codeblock .c3 { color: #A7A2FF; } .codeblock .c4 { color: #F48A8E; }
+.flow { display: grid; gap: 10px; }
+.node { border-radius: 8px; padding: 12px 14px; font-size: 14px; border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 12%, var(--surface)); }
+.node b { display: block; font-family: var(--display); font-size: 16px; }
+.arrow { text-align: center; color: var(--muted); font-size: 18px; line-height: 1; }
+.verdict { border-radius: 10px; padding: 14px; font-size: 15px; border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 12%, var(--surface)); }
+.verdict b { font-family: var(--display); font-size: 18px; display: block; }
+.switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.switch button { font: inherit; font-size: 13px; padding: 7px 12px; border: none; background: var(--surface); color: var(--ink); cursor: pointer; }
+.switch button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.switch button:focus-visible { outline: 2px solid var(--t2); outline-offset: -2px; }
+label.chk { display: inline-flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
+
+/* OSI */
+.osi { display: grid; gap: 6px; }
+.layer { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); padding: 0; }
+.layer .ln { padding: 10px 12px; font-weight: 600; font-family: var(--display); background: color-mix(in srgb, var(--c) 18%, var(--surface)); color: var(--ink); border-right: 1px solid var(--line); }
+.layer .lp { padding: 10px 12px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.layer[aria-pressed="true"] { border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 40%, transparent); }
+.layer:focus-visible { outline: 2px solid var(--t2); outline-offset: 2px; }
+@media (max-width: 520px) { .layer { grid-template-columns: 1fr; } .layer .ln { border-right: none; } }
+
+/* bytes */
+.bytes { display: flex; flex-wrap: wrap; gap: 6px; }
+.byte { font-family: var(--mono); font-size: 20px; font-weight: 600; padding: 8px 10px; border-radius: 6px; background: var(--surface-2); border: 2px solid transparent; cursor: pointer; color: var(--ink); font-variant-numeric: tabular-nums; }
+.byte.hl { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--surface)); }
+.byte:focus-visible { outline: 2px solid var(--t2); outline-offset: 2px; }
+
+/* paradigms */
+.para { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 980px) { .para { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .para { grid-template-columns: minmax(0, 1fr); } }
+.pcard { border-radius: 10px; padding: 14px; background: var(--surface); border: 1px solid var(--line); display: grid; gap: 8px; align-content: start; }
+.pcard .lay { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--c); text-transform: uppercase; letter-spacing: 0.05em; }
+.pcard h3 { font-size: 17px; }
+.pcard p { font-size: 14px; color: var(--muted); }
+
+.refs { columns: 2 380px; column-gap: 32px; font-size: 14px; padding-left: 22px; margin: 0; }
+.refs li { break-inside: avoid; margin-bottom: 10px; }
+footer { padding-block: 28px 48px; font-size: 13px; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; display: none; } .hcard { transition: none; } }
+</style>
+
+<nav class="rail" aria-label="Sections">
+  <div class="wrap" id="rail">
+    <a href="#overview">Overview</a><a href="#hypotheses">Hypotheses</a><a href="#frameworks">Frameworks</a><a href="#edge">Edge silicon</a><a href="#tiers">Three tiers</a><a href="#objectives">L(x) vs G(x)</a><a href="#interlock">Guardrail</a><a href="#htm">HTM tokens</a><a href="#training">Training data</a><a href="#heuristics">Hyper-heuristics</a><a href="#solar">Solar farm</a><a href="#osi">Cognitive OSI</a><a href="#protocol">Protocol SLM</a><a href="#references">References</a>
+  </div>
+</nav>
+
+<main>
+<!-- HERO -->
+<section id="overview" class="hero"><div class="wrap">
+  <div class="eyebrow">Research article · Embedded cyber-physical control and SoS engineering</div>
+  <h1>Supervisory Small Language Models for Hardware Signal Control and System-of-Systems Optimization</h1>
+  <p class="small muted">Corrected edition · 12 November 2026. These are study-specific mechanisms and examples, not platform-wide restrictions or validated experimental results.</p>
+  <p class="sub">The paper puts a small, quantized language model beside a control board, not inside its fast loop. The model reads the board's signals as tokens and proposes parameters; deterministic code decides what reaches the pins.</p>
+  <div class="pipeline" aria-label="Signal path through the architecture">
+    <div class="pulse" aria-hidden="true"></div>
+    <div class="stage" style="--c: var(--t1-fill)"><div class="k">Physical I/O</div><div class="v">Hardware signals</div><div class="d">ADC, I2C/SPI registers, PWM duties, fieldbus bytes</div></div>
+    <div class="stage" style="--c: var(--t1-fill)"><div class="k">Tier 2 firmware</div><div class="v">HTM tokens</div><div class="d">Magnitude, Δ/Δt and noise, filtered by hysteresis</div></div>
+    <div class="stage" style="--c: var(--t2)"><div class="k">Tier 2 · 100 ms – 1 s</div><div class="v">Supervisory SLM</div><div class="d">Arbitrates L(x) vs G(x), tunes PID, steers PSO and GA</div></div>
+    <div class="stage" style="--c: var(--red)"><div class="k">Compiled C/C++</div><div class="v">Guardrail kernel</div><div class="d">Bounds-checks every value or falls back</div></div>
+    <div class="stage" style="--c: var(--green)"><div class="k">Tier 1 · 10 – 100 kHz</div><div class="v">Deterministic loop</div><div class="d">Writes PWM, DAC and GPIO pins</div></div>
+  </div>
+  <div class="facts">
+    <div class="fact"><div class="n tnum">500M–3B</div><div class="l">parameters for the domain-specific SLMs in scope</div></div>
+    <div class="fact"><div class="n tnum">3</div><div class="l">tiers in the hierarchical edge mesh</div></div>
+    <div class="fact"><div class="n tnum">6</div><div class="l">falsifiable hypotheses stated for evaluation</div></div>
+    <div class="fact"><div class="n tnum">22</div><div class="l">references in the corrected list</div></div>
+  </div>
+</div></section>
+
+<!-- HYPOTHESES -->
+<section id="hypotheses"><div class="wrap">
+  <div class="head"><div class="eyebrow">§1.2 · Formal research hypotheses</div><h2>Six hypotheses frame the study</h2>
+  <p class="muted">The paper states these as falsifiable claims to evaluate. It presents the architecture; it does not report experiments that test them. Select one to jump to the part of the paper that develops it.</p></div>
+  <div class="hyp">
+    <button class="hcard" style="--c: var(--t2)" data-go="interlock"><span class="hn">H1</span><h3>Cognitive-deterministic decoupling</h3><p>A 500M to 1.5B SLM, isolated from 10 to 100 kHz pins by a C/C++ guardrail, sets PID, MPPT and current limits every 100 ms to 1 s with a test target of zero observed safety-boundary violations and measured fallback latency on model fault. Bounds alone do not prove stability.</p><span class="go">See the guardrail →</span></button>
+    <button class="hcard" style="--c: var(--t3)" data-go="objectives"><span class="hn">H2</span><h3>Local L(x) vs global G(x) arbitration</h3><p>Local self-preservation is requested in the system prompt; global goals arrive as Policy Envelopes. Whether the model honors that priority and survives dropouts is measured; independent controller protections enforce the configured physical limits.</p><span class="go">See the objectives →</span></button>
+    <button class="hcard" style="--c: var(--t1)" data-go="htm"><span class="hn">H3</span><h3>Signal as language</h3><p>Registers decompose into Magnitude, Δ/Δt and FFT THD tokens. Dwell and deadband hysteresis stop boundary thrashing, and states compress to 16-bit hex identifiers.</p><span class="go">Try the HTM →</span></button>
+    <button class="hcard" style="--c: var(--green)" data-go="heuristics"><span class="hn">H4</span><h3>Hyper-heuristic supervision</h3><p>Over PSO and GA solvers, the SLM bounds the solution space, adapts fitness weights and switches algorithms, to avoid local optima and speed convergence.</p><span class="go">See the levers →</span></button>
+    <button class="hcard" style="--c: var(--red)" data-go="osi"><span class="hn">H5</span><h3>Cognitive OSI and gateway co-optimization</h3><p>The 7 OSI layers plus Modbus-TCP, CANopen and MQTT as one context window via eBPF: reroute ahead of EMI, 80 to 95% compression, spoof detection, a Semantic Diary State.</p><span class="go">Explore the stack →</span></button>
+    <button class="hcard" style="--c: var(--muted)" data-go="solar"><span class="hn">H6</span><h3>Micro-scale energy capture</h3><p>Test whether correlating physical telemetry with weather forecasts recovers net energy beyond classical baselines. Score each proposed mechanism separately, including negative, inconclusive and untested outcomes.</p><span class="go">See the paradigms →</span></button>
+  </div>
+</div></section>
+
+<!-- FRAMEWORKS -->
+<section id="frameworks"><div class="wrap">
+  <div class="head"><div class="eyebrow">§2.1 – 2.2 · Generative control frameworks</div><h2>Two ways to move control inside the model</h2></div>
+  <div class="grid2">
+    <div class="panel stack">
+      <h3>CELI · Controller-Embedded Language Model Interactions</h3>
+      <p class="small muted">Wagner et al., 2024</p>
+      <p>Conventional integrations wrap the model in a hard-coded external loop and query it as a passive text generator. CELI moves the control logic into the prompt architecture, so the model drives multi-stage execution itself.</p>
+      <div class="stack small">
+        <div><b>Autonomous state management.</b> The model tracks workflow transitions without external procedural scaffolding.</div>
+        <div><b>Arbitrary function calling.</b> Semantic states map to hardware tool actions, register changes or API calls with validated, structured arguments.</div>
+        <div><b>State-aware efficiency.</b> Immutable action paths are cached and only delta state tokens are passed, skipping redundant decoding.</div>
+      </div>
+    </div>
+    <div class="panel stack">
+      <h3>ELF · Embedded Language Flows</h3>
+      <p class="small muted">Hu et al., 2026</p>
+      <svg class="tier-svg" viewBox="0 0 440 170" role="img" aria-label="Autoregressive decoding projects to a token at each step; ELF stays continuous and decodes once at t equals 1">
+        <text x="0" y="16" font-size="13" fill="var(--muted)" font-weight="600">Autoregressive: a discrete token at every step</text>
+        <g>
+          <line x1="20" y1="44" x2="400" y2="44" stroke="var(--line)" stroke-width="2"/>
+          <circle cx="20" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="11" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+          <circle cx="96" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="87" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+          <circle cx="172" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="163" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+          <circle cx="248" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="239" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+          <circle cx="324" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="315" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+          <circle cx="400" cy="44" r="10" fill="var(--surface-2)" stroke="var(--muted)"/><rect x="391" y="62" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+        </g>
+        <text x="0" y="110" font-size="13" fill="var(--t2)" font-weight="600">ELF: continuous flow over t ∈ [0, 1], one decode at the end</text>
+        <rect x="10" y="124" width="370" height="22" rx="11" fill="var(--t2)" opacity="0.85"/>
+        <rect x="392" y="128" width="18" height="14" rx="2" fill="var(--t1-fill)"/>
+        <text x="10" y="164" font-size="11" fill="var(--muted)">t = 0</text><text x="410" y="164" font-size="11" fill="var(--muted)" text-anchor="end">t = 1</text>
+      </svg>
+      <p class="small">Projecting onto discrete tokens at every step adds quantization noise and latency at a continuous physical interface. ELF keeps reasoning in the embedding space via flow matching, so live sensor feedback can enter the generative trajectory smoothly.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- EDGE -->
+<section id="edge"><div class="wrap">
+  <div class="head"><div class="eyebrow">§2.3 – 2.4 · Scaling to edge hardware</div><h2>Fitting a transformer onto edge silicon</h2>
+  <p class="muted">Four optimization pillars, as surveyed by Lamaakal et al. (2025), take a transformer (Vaswani et al., 2017) down to MCU and SoC budgets.</p></div>
+  <div class="grid3" style="grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));">
+    <div class="panel stack"><h3>Knowledge distillation</h3><p class="small">A large teacher Mt transfers domain reasoning to a compact student Ms (Hinton et al., 2015).</p><p class="mono small" style="color: var(--t3)">Ltotal = (1 − α)·Ltask + α·T²·KL(Pt ‖ Ps)</p></div>
+    <div class="panel stack"><h3>INT4 / INT8 quantization</h3>
+      <svg viewBox="0 0 220 70" class="tier-svg" role="img" aria-label="Bits per weight: FP32 32, INT8 8, INT4 4"><text x="0" y="16" font-size="11" fill="var(--muted)" font-family="var(--mono)">FP32</text><rect x="44" y="6" width="170" height="12" rx="2" fill="var(--t1-fill)" opacity="0.45"/><text x="0" y="40" font-size="11" fill="var(--muted)">INT8</text><rect x="44" y="30" width="42.5" height="12" rx="2" fill="var(--t1-fill)"/><text x="0" y="64" font-size="11" fill="var(--muted)">INT4</text><rect x="44" y="54" width="21.25" height="12" rx="2" fill="var(--t1-fill)"/></svg>
+      <p class="small">Survey figures the paper cites: over 50% less memory and over 2× faster inference, with minimal accuracy loss.</p></div>
+    <div class="panel stack"><h3>Structured and magnitude pruning</h3><p class="small">Weights, heads or channels below a sensitivity threshold τ are removed, giving sparse, low-latency graphs.</p><p class="mono small" style="color: var(--green)">wp = 0 if |w| &lt; τ, else w</p></div>
+    <div class="panel stack"><h3>Memory-efficient attention</h3><p class="small">Grouped-Query Attention (Ainslie et al., 2023) or Multi-Head Latent Attention shares key-value caches across query groups; RoPE and RMSNorm bound SRAM on edge NPUs.</p></div>
+  </div>
+  <div class="grid2" style="margin-top: 20px">
+    <div class="panel scroll">
+      <table>
+        <thead><tr><th>Feature</th><th>On-device edge SLMs</th><th>Cloud foundation models</th></tr></thead>
+        <tbody>
+          <tr><td><b>Model size</b></td><td>500M to 3B parameters, down to &lt;1B nano-models</td><td>Hundreds of billions (e.g. 175B to 540B)</td></tr>
+          <tr><td><b>Hardware</b></td><td>ARM Cortex-M, ESP32, STM32MP1, Raspberry Pi 5, local NPUs</td><td>Cloud GPU and TPU clusters</td></tr>
+          <tr><td><b>Constraints</b></td><td>4 to 8 GB DRAM down to MB-scale SRAM</td><td>High compute, distributed VRAM, high power</td></tr>
+          <tr><td><b>Optimization</b></td><td>INT4/INT8, structured pruning, distillation</td><td>None required on the client edge</td></tr>
+          <tr><td><b>Benefit</b></td><td>Zero latency variance, privacy, offline, low power</td><td>Broad multi-domain reasoning</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel flat stack">
+      <h3>Cascaded control loops</h3>
+      <p class="small">Nano models (<span class="mono">Qwen2-0.5B</span>, <span class="mono">MobiLlama-0.5B</span>, <span class="mono">SmolLM-135M/360M</span>, <span class="mono">OpenELM-270M</span>) handle sensory filtering, immediate safety heuristics and routine tokens on device. An out-of-distribution exception or a system-wide diagnostic cascades up to an edge server or cloud-augmented SLM for planning.</p>
+      <h3>Hardware-in-the-loop development</h3>
+      <p class="small">Virtual hardware such as Wokwi lets an agent flash firmware to a simulated MCU, watch GPIO and PWM, and self-correct before deployment. EmbedCopilot-Bench evaluates vision-language models on schematics, layouts and register configurations (Yuan et al., 2026).</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- TIERS -->
+<section id="tiers"><div class="wrap">
+  <div class="head"><div class="eyebrow">§3.1 · Architectural topology</div><h2>A three-tier hierarchical edge mesh</h2>
+  <p class="muted">Select a tier to see where it runs, how fast, and what it owns.</p></div>
+  <div class="grid2">
+    <div class="panel">
+      <svg class="tier-svg" viewBox="0 0 520 420" role="group" aria-label="Three-tier topology diagram">
+        <g class="tier-box" data-tier="3" tabindex="0" role="button" aria-label="Tier 3, farm-level orchestrator">
+          <rect class="frame" x="110" y="10" width="300" height="74" rx="10" fill="none" stroke="transparent"/>
+          <rect class="fill" x="110" y="10" width="300" height="74" rx="10" fill="var(--t3)"/>
+          <text x="260" y="42" text-anchor="middle" font-size="17" font-weight="700" fill="#fff">Tier 3 · Farm-level orchestrator</text>
+          <text x="260" y="64" text-anchor="middle" font-size="13" fill="#fff">edge computer / PLC · multi-second</text>
+        </g>
+        <line x1="150" y1="84" x2="150" y2="150" stroke="var(--t3)" stroke-width="2"/><line x1="370" y1="84" x2="370" y2="150" stroke="var(--t3)" stroke-width="2"/>
+        <text x="260" y="122" text-anchor="middle" font-size="12" fill="var(--muted)" font-style="italic">asynchronous swarm bus</text>
+        <g class="tier-box" data-tier="2" tabindex="0" role="button" aria-label="Tier 2, node-level SLM">
+          <rect class="frame" x="20" y="150" width="480" height="80" rx="10" fill="none" stroke="transparent"/>
+          <rect class="fill" x="20" y="150" width="225" height="80" rx="10" fill="var(--t2)"/>
+          <rect class="fill" x="275" y="150" width="225" height="80" rx="10" fill="var(--t2)"/>
+          <text x="132" y="184" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">Tier 2 · Node SLM</text>
+          <text x="132" y="205" text-anchor="middle" font-size="12" fill="#fff">100 ms – 1 s</text>
+          <text x="387" y="184" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">Tier 2 · Node SLM</text>
+          <text x="387" y="205" text-anchor="middle" font-size="12" fill="#fff">100 ms – 1 s</text>
+        </g>
+        <line x1="132" y1="230" x2="132" y2="290" stroke="var(--t2)" stroke-width="2"/><line x1="387" y1="230" x2="387" y2="290" stroke="var(--t2)" stroke-width="2"/>
+        <text x="260" y="265" text-anchor="middle" font-size="12" fill="var(--muted)" font-style="italic">synchronous SPI / I2C bus</text>
+        <g class="tier-box" data-tier="1" tabindex="0" role="button" aria-label="Tier 1, deterministic control">
+          <rect class="frame" x="20" y="290" width="480" height="80" rx="10" fill="none" stroke="transparent"/>
+          <rect class="fill" x="20" y="290" width="225" height="80" rx="10" fill="var(--t1-fill)"/>
+          <rect class="fill" x="275" y="290" width="225" height="80" rx="10" fill="var(--t1-fill)"/>
+          <text x="132" y="324" text-anchor="middle" font-size="15" font-weight="700" fill="#14202E">Tier 1 · Deterministic</text>
+          <text x="132" y="345" text-anchor="middle" font-size="12" fill="#14202E">10 – 100 kHz</text>
+          <text x="387" y="324" text-anchor="middle" font-size="15" font-weight="700" fill="#14202E">Tier 1 · Deterministic</text>
+          <text x="387" y="345" text-anchor="middle" font-size="12" fill="#14202E">10 – 100 kHz</text>
+        </g>
+        <rect x="20" y="384" width="480" height="30" rx="6" fill="var(--ink)"/>
+        <text x="260" y="404" text-anchor="middle" font-size="13" font-weight="600" fill="var(--bg)">Physical pins: PWM · DAC · GPIO</text>
+      </svg>
+    </div>
+    <div class="panel detail" id="tierDetail" aria-live="polite"></div>
+  </div>
+  <div class="panel" style="margin-top: 20px">
+    <h3>Each tier runs on its own clock</h3>
+    <p class="small muted" style="margin-top: 4px">Loop period on a log scale. Three to five orders of magnitude separate Tier 1 from the SLM.</p>
+    <div class="scroll"><svg viewBox="0 0 1000 200" style="min-width: 640px; width: 100%; height: auto; display: block; margin-top: 10px" role="img" aria-label="Log time axis from 10 microseconds to 10 seconds showing tier periods">
+      <g id="timeAxis"></g>
+    </svg></div>
+  </div>
+</div></section>
+
+<!-- OBJECTIVES -->
+<section id="objectives"><div class="wrap">
+  <div class="head"><div class="eyebrow">§3.2 · Data ingestion and dual-level objectives</div><h2>Two objective functions, with arbitration to test</h2></div>
+  <div class="grid2">
+    <div class="stack">
+      <div class="panel stack">
+        <h3>Hardware I/O as a sliding context window</h3>
+        <p class="small">Raw readings are normalized into state tokens such as <span class="tok t1">[TEMP-CRIT-104C]</span> or <span class="tok t1">[FLOW-RATE-DEGRADED]</span>, and the recent register history becomes the model's context:</p>
+        <div class="row"><span class="tok sl">[System-Tick: 1042]</span><span class="muted">→</span><span class="tok t1">[IO-In: Vin=4.2V, Iout=1.8A]</span><span class="muted">→</span><span class="tok t2">[Local-Obj: Maximize-Efficiency]</span><span class="muted">→</span><span class="tok t3">[SoS-Obj: Node-Power-Cap=10W]</span></div>
+      </div>
+      <div class="panel stack">
+        <div class="row"><span class="tok t2">L(x)</span><h3>Local objective</h3></div>
+        <p class="small">Expressed as priorities in the Tier 2 system prompt: stability, minimal wear and immediate operational goals. A prompt does not guarantee local safety; record the proposed decision and the independently protected committed action separately.</p>
+        <div class="row"><span class="tok t3">G(x)</span><h3>Global SoS objective</h3></div>
+        <p class="small">Built at Tier 3 from grid pricing, load forecasts and weather, then broadcast as Policy Envelopes over CAN, EtherCAT, Modbus-TCP or ROS2, e.g. <span class="tok t3">[MAX-BATTERY-RESERVE-DISCHARGE]</span> <span class="tok t3">[LOAD-SHED-PRIORITY-HIGH]</span>.</p>
+      </div>
+    </div>
+    <div class="panel stack">
+      <h3>The paper's arbitration example</h3>
+      <p class="small muted">A battery node receives a global request while reading its own health.</p>
+      <div class="flow">
+        <div class="node" style="--c: var(--t3)"><b>Global Policy Envelope</b><span class="tok t3">[AGGRESSIVE-DISCHARGE]</span></div>
+        <div class="node" style="--c: var(--red)"><b>Local physical health token</b><span class="tok red">[CELL-TEMP-CRIT]</span></div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="node" style="--c: var(--t2)"><b>Battery node SLM</b>The intended response is to prioritize local safety over the global request. Test whether the model actually does so.</div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="verdict" style="--c: var(--green)"><b>Synthesized configuration</b><span class="tok green">[SAFE-MODE-CURTAIL]</span></div>
+      </div>
+      <p class="small">Balancing across nodes: under the global goal of maximum system efficiency and revenue, a battery node (local target: minimize degradation) dictates its max discharge, while an appliance node (local target: user comfort) defers its HVAC cycle.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- INTERLOCK -->
+<section id="interlock"><div class="wrap">
+  <div class="head"><div class="eyebrow">§3.3 · Execution pipeline and deterministic guardrails</div><h2>Every proposal passes the interlock</h2>
+  <p class="muted">The SLM never writes pins. It proposes a register map; a compiled C/C++ kernel or bounded SMT verifier checks it against physical limits (Sha, 2001; Mohan et al., 2013; Nesti et al., 2026).</p></div>
+  <div class="grid2">
+    <div class="panel stack">
+      <h3>Try a proposal</h3>
+      <p class="small muted">Example field and bound from the paper's node code listing (§5.1): <span class="mono">chargeCurrentLimitA</span>, 120.0 A. The corrected paper clamps valid out-of-range numbers and drops malformed output. The alternative reject policy below is a researcher-selected comparison, not a second paper requirement. This one-field illustration does not prove closed-loop stability.</p>
+      <div class="switch" role="group" aria-label="Guardrail behaviour">
+        <button type="button" id="modeReject" aria-pressed="false">Comparison policy: reject</button>
+        <button type="button" id="modeClamp" aria-pressed="true">Paper policy: clamp</button>
+      </div>
+      <label for="amps" class="small">Proposed <span class="mono">chargeCurrentLimitA</span>: <b class="mono" id="ampsOut">95.0</b> A</label>
+      <input type="range" id="amps" min="0" max="200" step="0.5" value="95">
+      <label class="chk"><input type="checkbox" id="corrupt"> Emit corrupted syntax</label>
+      <div class="codeblock" id="proposal"></div>
+    </div>
+    <div class="stack">
+      <div class="flow">
+        <div class="node" style="--c: var(--t2)"><b>1 · State assessment</b>Read the sliding window of tokenized I/O plus active Tier 3 constraints.</div>
+        <div class="node" style="--c: var(--t2)"><b>2 · Parameter synthesis</b>Propose gains and structure for Tier 1 (Kp, Ki, Kd, an MPPT algorithm, Lyapunov-based adaptive gains).</div>
+        <div class="node" style="--c: var(--red)"><b>3 · Execution guardrails</b>Check the configured bounds. In-range gains may still destabilize a plant; assess state-dependent safety separately.</div>
+      </div>
+      <div class="verdict" id="verdict" aria-live="polite"></div>
+    </div>
+  </div>
+  <div class="panel scroll" style="margin-top: 20px">
+    <table>
+      <thead><tr><th>Dimension</th><th>LM-driven supervisory control</th><th>Traditional MPC / PID</th></tr></thead>
+      <tbody>
+        <tr><td><b>Complex SoS adaptability</b></td><td><span class="tok green">High</span> Translates vague or changing objectives into parameters on the fly.</td><td><span class="tok red">Low</span> Needs heavy re-mathematization if global constraints change drastically.</td></tr>
+        <tr><td><b>Unmodeled dynamics</b></td><td><span class="tok green">High</span> Semantic reasoning works around unforeseen sensor faults or wear.</td><td><span class="tok t1">Medium</span> Relies on precise, predetermined physical models.</td></tr>
+        <tr><td><b>Execution latency</b></td><td><span class="tok t1">Varying</span> Milliseconds to seconds on an edge NPU.</td><td><span class="tok green">Deterministic</span> Microseconds on the bare-metal loop.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div></section>
+
+<!-- HTM -->
+<section id="htm"><div class="wrap">
+  <div class="head"><div class="eyebrow">§4.1 · Hardware Translation Matrix</div><h2>From volts to tokens, with hysteresis</h2>
+  <p class="muted">The HTM runs as deterministic firmware on the Tier 2 processor. Its Dynamic Boundary Processor splits each register into Magnitude, Delta and Frequency/noise tokens, each with a 16-bit hex ID.</p></div>
+  <div class="grid2">
+    <div class="panel stack">
+      <h3>DC bus voltage magnitude</h3>
+      <div class="readout"><span class="big tnum" id="vOut">432.1 V</span><span class="tok" id="vTok">[V-NOM]</span><span class="hex" id="vHex">0x4A1F</span></div>
+      <div style="position: relative">
+        <div class="meter" aria-hidden="true">
+          <span style="flex: 380; background: #F2C66B">0x4A1E</span><span style="flex: 100; background: #6CC79A">0x4A1F</span><span style="flex: 120; background: #F08A8D">0x4A20</span>
+        </div>
+        <div class="marker" id="vMark" style="left: 72%"></div>
+      </div>
+      <div class="row small muted tnum" style="justify-content: space-between"><span>0 V</span><span>380 V</span><span>480 V</span><span>600 V</span></div>
+      <label for="volt" class="small">Drag the register value</label>
+      <input type="range" id="volt" min="0" max="600" step="0.1" value="432.1">
+      <p class="small muted">The other two vectors for the same register come from its trend and spectrum: <span class="tok t2">[V-STABLE] 0x4A30</span> within ±0.5 V/s, <span class="tok t2">[V-SPIKE-POS] 0x4A31</span> above 5.0 V/s, <span class="tok t2">[V-DROP-NEG] 0x4A32</span> below −5.0 V/s; <span class="tok t2">[F-CLEAN] 0x4A41</span> for THD under 3% and <span class="tok t2">[F-HARMONIC-DIST] 0x4A42</span> at 3% or more (10 kHz FFT ripple).</p>
+    </div>
+    <div class="panel stack">
+      <h3>The paper's three-step example</h3>
+      <div class="flow">
+        <div class="node" style="--c: var(--t1)"><b>1 · Telemetry capture</b><span class="mono">V 432.1 V · I 12.4 A · Temp 52 C · Wind 45 km/h</span></div>
+        <div class="node" style="--c: var(--t2)"><b>2 · Semantic map</b><span class="mono">430–440 V → [VOLT-NOMINAL]<br>&gt;40 km/h → [WIND-GUST]</span></div>
+        <div class="node" style="--c: var(--t3)"><b>3 · Token compilation</b><span class="mono">"[INV-01] [VOLT-NOMINAL] [WIND-GUST] [THERM-HIGH]"</span></div>
+      </div>
+      <p class="small">Every compiled payload follows one syntax: <span class="mono">[SYSTEM-CONTEXT] [GLOBAL-OBJECTIVE-TOKEN] [LOCAL-TELEMETRY-TOKENS] → [INFERENCE-TARGET]</span></p>
+    </div>
+  </div>
+
+  <div class="panel stack" style="margin-top: 20px">
+    <div class="row" style="justify-content: space-between"><h3>Hysteresis filter loop: battery cell temperature</h3><span class="small muted">Illustrative simulation of the paper's rule, one sample every 100 ms</span></div>
+    <div class="grid2">
+      <div class="stack">
+        <svg class="chart" id="hyChart" viewBox="0 0 560 220" role="img" aria-label="Rolling temperature trace with enter and exit thresholds"></svg>
+        <label for="temp" class="small">Set the cell temperature: <b class="mono" id="tempOut">42.0</b> °C</label>
+        <input type="range" id="temp" min="38" max="50" step="0.1" value="42">
+        <div class="row"><button class="btn" id="jitter" type="button" aria-pressed="false">Hover at the 45 °C boundary</button><button class="btn" id="resetHy" type="button">Reset counters</button></div>
+      </div>
+      <div class="stack">
+        <div><span class="small muted">HTM token now</span><br><span class="state nom" id="hyState">[TEMP-NOM] 0x5B13</span></div>
+        <p class="small"><b>Enter</b> <span class="tok red">[TEMP-CRIT-HIGH]</span> only after the reading stays above 45.0 °C for ≥ 3 consecutive 100 ms samples (300 ms dwell). <b>Exit</b> back to <span class="tok green">[TEMP-NOM]</span> only below 43.5 °C, a 1.5 °C deadband.</p>
+        <p class="small muted">Samples above 45.0 °C in a row: <b class="mono" id="dwell">0</b> / 3</p>
+        <div class="counter">
+          <div><b id="cHtm">0</b><span class="small muted">token changes with the HTM filter</span></div>
+          <div><b id="cNaive">0</b><span class="small muted">changes a bare 45.0 °C threshold would emit</span></div>
+        </div>
+        <p class="small muted">Other battery tokens in the table: <span class="tok t3">[TEMP-COLD] 0x5B12</span> below 5 °C; <span class="tok t2">[THERM-EQUILIBRIUM] 0x5B25</span> at ≤ 0.1 °C/min; <span class="tok red">[THERM-RUNAWAY-RISK] 0x5B26</span> above 2.0 °C/min.</p>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- TRAINING -->
+<section id="training"><div class="wrap">
+  <div class="head"><div class="eyebrow">§4.2 · ETL pipeline and training data</div><h2>Control-state engineering textures, not web text</h2></div>
+  <div class="grid2">
+    <div class="stack">
+      <div class="panel stack"><h3>Pillar 1 · Industrial telemetry interleaving</h3><p class="small">SCADA archives, historians (TimescaleDB) and inverter logs; the HTM turns floating-point time series into chronological state-token transitions.</p></div>
+      <div class="panel stack"><h3>Pillar 2 · Hardware domain context</h3><p class="small">Component datasheets, battery thermal manuals, firmware register maps and IEEE 1547 compliance protocols, parsed into structured markdown rule sets.</p></div>
+      <div class="panel stack"><h3>Pillar 3 · Operator-in-the-loop interventions</h3><p class="small">Maintenance logs, override tickets and field records, such as retarding DC bus engagement by 15 minutes when Inverter 4 shows a high-side leakage spike under morning dew.</p></div>
+    </div>
+    <div class="panel stack">
+      <h3>Four-block causal reasoning format</h3>
+      <p class="small muted">Instruction tuning makes the model justify its physics before emitting registers. The paper's worked sample:</p>
+<div class="codeblock"><span class="c1">### [STATE]</span>
+[NODE: INV-04] [V-NOM] [V-STABLE] [TEMP-CRIT-HIGH]
+[THERM-RUNAWAY-RISK] [GRID-FREQ: 60.1Hz]
+<span class="c3">### [SOS-CONTEXT]</span>
+[SOS-PRIORITY: CAPACITY-MAXIMIZATION]
+[MARKET-PRICE: PEAK-SURGE] [THERM-CEILING-ALLOWED: TRUE]
+<span class="c2">### [COGNITIVE-REASONING-CHAIN]</span>
+Near thermal limits, but the SoS window authorizes a
+higher ceiling. Steep dT/dt: mitigate without shutdown.
+Fans to max; gate-drive switching 16 kHz → 8 kHz to cut
+switching losses while keeping 94% power injection.
+<span class="c4">### [TARGET-PARAMETERS-SYNTHESIS]</span>
+{ "fan-duty-pct": 100, "switching-freq-hz": 8000,
+  "mppt-tracking-mode": "CONSERVATIVE" }</div>
+      <p class="cite">A training-sample illustration in the paper, not a measured result. The reasoning block is shortened here.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- HEURISTICS -->
+<section id="heuristics"><div class="wrap">
+  <div class="head"><div class="eyebrow">§4.3 · Metaheuristics and hyper-heuristic supervision</div><h2>The SLM steers the optimizers</h2>
+  <p class="muted">An SLM cannot reliably optimize a nonlinear, multi-variable equation through token generation alone. PSO runs on each Tier 2 node (e.g. finding the global maximum power point on a partially shaded string); GA runs at Tier 3 (e.g. battery discharge sequencing across 50 nodes over 24 hours). The SLM supervises them (van Stein &amp; Bäck, 2025; Narimani &amp; Emami, 2026).</p></div>
+  <div class="grid3">
+    <div class="panel stack">
+      <h3>1 · Solution-space bounding</h3>
+      <label class="chk"><input type="checkbox" id="cloudTok"> SLM reads <span class="tok t1">[CLOUD-SHADING-FRAGMENTED]</span></label>
+      <svg viewBox="0 0 300 70" class="tier-svg" role="img" aria-label="Tracker tilt search band from 0 to 90 degrees">
+        <rect x="10" y="20" width="280" height="22" rx="4" fill="var(--surface-2)" stroke="var(--line)"/>
+        <rect id="band" x="10" y="20" width="280" height="22" rx="4" fill="var(--t1-fill)" opacity="0.8"/>
+        <text x="10" y="62" font-size="12" fill="var(--muted)">0°</text><text x="290" y="62" font-size="12" fill="var(--muted)" text-anchor="end">90°</text>
+        <text id="bandLbl" x="150" y="14" font-size="12" fill="var(--ink)" text-anchor="middle" font-weight="600">Full 0° – 90° sweep</text>
+      </svg>
+      <p class="small">On fragmented cloud shading, the PSO tilt search narrows to 12° to 18° instead of the full 90° horizon.</p>
+    </div>
+    <div class="panel stack">
+      <h3>2 · Fitness function adaptation</h3>
+      <div class="row"><span class="tok green">[MODE: BAT-CONSERVE]</span></div>
+      <p class="small">On this SoS token, the SLM rewrites the active fitness function's penalty weights so searches aggressively penalize battery temperature spikes.</p>
+    </div>
+    <div class="panel stack">
+      <h3>3 · Algorithmic switching</h3>
+      <div class="row"><span class="tok t1">PSO</span><span class="muted">→ no convergence within the timeout window →</span><span class="tok t3">Simulated annealing</span></div>
+      <p class="small">The SLM halts the PSO thread and starts an alternate recovery algorithm, such as a simulated annealing cooling loop, to reset the system smoothly.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- SOLAR -->
+<section id="solar"><div class="wrap">
+  <div class="head"><div class="eyebrow">§5 · Distributed solar farm implementation</div><h2>A swarm of node SLMs under one orchestrator</h2>
+  <p class="muted">Each node runs a quantized 500M to 1.5B SLM on an ARM Cortex-M7, STM32MP1 or NPU module, talking to the Global SoS Orchestrator over Modbus-TCP / CANopen.</p></div>
+  <div class="tabs" role="group" aria-label="Node classes">
+    <button class="tab" data-node="0" aria-pressed="true">Tracking and inverter · L1</button>
+    <button class="tab" data-node="1" aria-pressed="false">Energy storage BMS · L2</button>
+    <button class="tab" data-node="2" aria-pressed="false">Appliance and end user · L3</button>
+  </div>
+  <div class="grid2" style="margin-top: 14px">
+    <div class="panel stack" id="nodeDetail" aria-live="polite"></div>
+    <div class="panel stack">
+      <h3>The node control loop (§5.1 listing)</h3>
+<div class="codeblock"><span class="c1">1 readRegisters()</span>      raw physical telemetry
+<span class="c1">2 tokenize</span>  [NODEID: BAT04] [SOC: 89.2%]
+            [TEMP: 42.1C] [TREND: STEEP-RISE]
+<span class="c3">3 fuse</span>      [GLOBALSOS: DEMANDSURGE]
+            [PRICE-SIGNAL: HIGH]
+<span class="c2">4 generate</span>  quantized on-device 1B SLM
+            "Maintain cell safety above all else."
+            # Prompt priority is a testable instruction.
+<span class="c4">5 guardrail</span> if chargeCurrentLimitA &gt; 120.0:
+                chargeCurrentLimitA = 120.0
+            # One-field clamp; not a stability proof.
+<span class="c1">6 writeRegisters()</span>     DAC, PWM, Modbus</div>
+    </div>
+  </div>
+  <h3 style="margin: 30px 0 12px">Five micro-scale paradigms for energy capture (§5.2)</h3>
+  <div class="para">
+    <div class="pcard" style="--c: var(--t1)"><span class="lay">Layer 1</span><h3>Cell degradation and bypass hypothesis</h3><p>Test degradation detection using identifiable voltage, current, impedance and bypass-state observations. Series-path current alone does not locate a weak panel; masked-panel tests are proxies for defects.</p></div>
+    <div class="pcard" style="--c: var(--t3)"><span class="lay">Layer 1 + sky imaging</span><h3>Cognitive albedo tracking</h3><p>When diffuse light off clouds, panels, ground or water beats the obscured direct beam, trackers tilt slightly away from the sun.</p></div>
+    <div class="pcard" style="--c: var(--red)"><span class="lay">Layer 7 + Layer 1</span><h3>Thermal detuning hypothesis</h3><p>Test whether detuning before a clear-sky window changes panel temperature and net energy. Reduced electrical extraction can leave more absorbed energy as heat. Cooling is not assumed; measure panel and converter temperatures separately.</p></div>
+    <div class="pcard" style="--c: var(--t2)"><span class="lay">SoS cross-layer</span><h3>Swarm wake deflection</h3><p>At low sun angles, front rows flatten their tilt to clear shadows for rear rows and lift net farm yield (Cooper et al., 2025).</p></div>
+    <div class="pcard" style="--c: var(--green)"><span class="lay">Layers 1 – 2</span><h3>EMI noise harvesting</h3><p>Inverters shift switching frequencies so IGBT noise cancels or aligns with passive capacitor harvesting loops feeding the DC bus (Zhang et al., 2021).</p></div>
+  </div>
+</div></section>
+
+<!-- OSI -->
+<section id="osi"><div class="wrap">
+  <div class="head"><div class="eyebrow">§6.1 – 6.2 · Deep-stack cognitive OSI model</div><h2>All seven layers in one context window</h2>
+  <p class="muted">The OSI-SLM intercepts payloads and metadata at each layer boundary through kernel hooks and eBPF (Soldani et al., 2023). Select a layer.</p></div>
+  <div class="grid2">
+    <div class="osi" id="osiList"></div>
+    <div class="panel stack" id="osiDetail" aria-live="polite"></div>
+  </div>
+  <div class="grid2" style="margin-top: 20px">
+    <div class="panel stack">
+      <h3>Zero-trust intrusion detection</h3>
+      <p class="small">A valid Layer 7 Modbus command <span class="tok t3">[MOVE-TILT-90]</span> over an established Layer 3 IP still gets caught when it coincides with an anomalous Layer 5 login pattern and an unexpected Layer 1 impedance shift on that wire.</p>
+      <div class="row"><span class="tok red">[SECURITY-ANOMALY-SPOOF]</span><span class="small muted">→ parameters rejected at the guardrail, port isolated</span></div>
+    </div>
+    <div class="panel stack">
+      <h3>Semantic compression, as stated</h3>
+      <svg viewBox="0 0 400 96" class="tier-svg" role="img" aria-label="Bars comparing payload sizes stated in the paper">
+        <text x="0" y="14" font-size="12" fill="var(--muted)">Verbose JSON diagnostic, ~2 KB each second</text>
+        <rect x="0" y="20" width="400" height="16" rx="3" fill="var(--muted)" opacity="0.5"/>
+        <text x="0" y="56" font-size="12" fill="var(--muted)">CBOR at Layer 6: up to 80% smaller</text>
+        <rect x="0" y="62" width="80" height="12" rx="3" fill="var(--t1-fill)"/>
+        <text x="0" y="90" font-size="12" fill="var(--muted)">Intent tokens: up to 95% less overhead</text>
+        <rect x="250" y="80" width="20" height="12" rx="3" fill="var(--t2)"/>
+      </svg>
+      <div class="row"><span class="tok t2">[BAT-04]</span><span class="tok t2">[CELL-STABLE]</span><span class="tok t2">[THERM-CYCLING-NOMINAL]</span></div>
+      <p class="cite">Bars drawn at the paper's stated maxima; the paper reports no measurement of them.</p>
+    </div>
+  </div>
+  <div class="panel scroll" style="margin-top: 20px">
+    <table>
+      <thead><tr><th>Scenario</th><th>Layers</th><th>Static stack</th><th>Unified model</th></tr></thead>
+      <tbody>
+        <tr><td><b>High irradiance + thermal load</b></td><td class="mono">L7 L4 L1</td><td>Max extraction until a hard thermal trip; static TCP window causes bus collisions; fans start late.</td><td>Tests an MPPT/cooling intervention; measures panel and converter temperatures and net energy; batches non-critical frames. No panel cooling benefit is assumed.</td></tr>
+        <tr><td><b>Severe weather transients</b></td><td class="mono">L3 L2</td><td>Central cloud loses signal, trackers stall; frames drop with line jitter.</td><td>Local peer-to-peer wireless mesh; shorter L2 packet intervals between interference bursts.</td></tr>
+        <tr><td><b>Congestion / swarm inundation</b></td><td class="mono">L6 L5</td><td>Verbose JSON overflows MCU buffers; heartbeat timeouts trigger re-handshake storms.</td><td>Switches JSON to CBOR on the fly; stretches heartbeats by payload criticality.</td></tr>
+      </tbody>
+    </table>
+    <p class="small" style="margin-top: 12px"><b>Design quality principles:</b> strict state isolation through the guardrail interlock; shared global/local context that scales down to local survival if the orchestrator drops; graceful degeneracy back to classical PID and static Modbus maps under CPU or memory strain.</p>
+  </div>
+</div></section>
+
+<!-- PROTOCOL -->
+<section id="protocol"><div class="wrap">
+  <div class="head"><div class="eyebrow">§6.3 · Communication protocol-specific SLM</div><h2>A semantic gateway between OT fieldbuses and IT</h2>
+  <p class="muted">Byte stream sniffer → protocol tokenizer → semantic cross-router. Select a byte to see the token it maps to in the paper's example frame.</p></div>
+  <div class="grid2">
+    <div class="panel stack">
+      <h3>Byte-to-token compilation</h3>
+      <div class="bytes" id="bytes"></div>
+      <div id="byteInfo" class="small" aria-live="polite"></div>
+      <div class="row"><span class="tok t2">[MODBUS-READ]</span><span class="tok t2">[SLAVE-01]</span><span class="tok t2">[START-REG-32]</span><span class="tok t2">[LEN-2]</span><span class="tok t2" id="frameCrc">[CRC-VALID]</span></div>
+      <p class="small muted">A deterministic parser validates transport framing and discovers the SunSpec model chain before interpreting fields. RTU uses a trailing CRC; Modbus TCP uses an MBAP header and no RTU CRC. On <span class="mono">[MODBUS-ERROR-04]</span>, the SLM checks Layer 1 noise to tell line noise from an overloaded inverter MCU and throttles polling instead of crashing the bus.</p>
+    </div>
+    <div class="panel stack">
+      <h3>One northbound intent, two southbound frames</h3>
+      <div class="flow">
+        <div class="node" style="--c: var(--t3)"><b>MQTT · farm/grid/demand-response</b><span class="mono small">{"strategy": "curtail-battery", "target-reduction-kw": 50}</span></div>
+        <div class="arrow" aria-hidden="true">↓ Protocol SLM ↓</div>
+        <div class="node" style="--c: var(--t1)"><b>Block A · Modbus-TCP write</b>Discover SunSpec Model 123; resolve WMaxLimPct, its scale factor and WMaxLim_Ena from the model definition and device map. No universal absolute control address is assumed.</div>
+        <div class="node" style="--c: var(--green)"><b>Block B · CANopen SDO</b>Lowers the discharge current limit across the BMS cells</div>
+      </div>
+      <p class="small"><b>Semantic Diary State.</b> During a cloud dropout the SLM keeps compiling Modbus and CAN frames into a compressed diary (MQTT-ACK store-and-forward). On reconnect it publishes one continuous state-history token instead of millions of raw registers.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- REFERENCES -->
+<section id="references"><div class="wrap">
+  <div class="head"><div class="eyebrow">§7 · References</div><h2>Corrected reference list</h2></div>
+  <ol class="refs">
+    <li>Ainslie, J., Lee-Thorp, J., de Jong, M., Zemlyanskiy, Y., Lebrón, F., &amp; Sanghai, S. (2023). GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints. arXiv:2305.13245.</li>
+    <li>Anderson, K. (2020). Maximizing Yield with Improved Single-Axis Backtracking on Cross-Axis Slopes: Preprint. NREL/CP-5K00-76023. 47th IEEE Photovoltaic Specialists Conference.</li>
+    <li>Anderson, K. S., Jensen, A. R., &amp; Riley, D. M. (2026). A Linear Programming Approach to Backtracking for Single-Axis Trackers on Rolling Terrain. IEEE Journal of Photovoltaics, 16(2), 291–298. doi:10.1109/JPHOTOV.2025.3645781</li>
+    <li>Bosio, C., Guarrera, M., Sangiovanni-Vincentelli, A., &amp; Mueller, M. W. (2025). Combining Large Language Models and Gradient-Free Optimization for Automatic Control Policy Synthesis. arXiv:2510.00373.</li>
+    <li>Cooper, E., Anderson, K., &amp; Riley, D. (2025). Performance Improvements Through Advanced PV Backtracking on Uneven Terrain. IEEE Journal of Photovoltaics, 15(4), 593–599. doi:10.1109/JPHOTOV.2025.3558254</li>
+    <li>Hinton, G., Vinyals, O., &amp; Dean, J. (2015). Distilling the Knowledge in a Neural Network. arXiv:1503.02531.</li>
+    <li>Hu, K., Qiu, L., Lu, Y., Zhao, H., Li, T., Kim, Y., Andreas, J., &amp; He, K. (2026). ELF: Embedded Language Flows. arXiv:2605.10938.</li>
+    <li>Lamaakal, I., Maleh, Y., El Makkaoui, K., Ouahbi, I., Pławiak, P., Alfarraj, O., Almousa, M., &amp; Abd El-Latif, A. A. (2025). Tiny Language Models for Automation and Control: Overview, Potential Applications, and Future Research Directions. Sensors, 25(5), 1318. doi:10.3390/s25051318</li>
+    <li>Maher, G. (2025). LLMPC: Large Language Model Predictive Control. Computers, 14(3), 104. doi:10.3390/computers14030104</li>
+    <li>Mohan, S., Bak, S., Betti, E., Yun, H., Sha, L., &amp; Caccamo, M. (2013). S3A: Secure System Simplex Architecture for Enhanced Security and Robustness of Cyber-Physical Systems. HiCoNS '13, 65–74.</li>
+    <li>Narimani, M., &amp; Emami, S. A. (2026). GA-Agent: Large Language Models as Hyperparameter Optimizers for Evolutionary Controller Synthesis. arXiv:2609.27725.</li>
+    <li>Nesti, F., Salamini, N., Marinoni, M., Cicero, G., Serra, G., Biondi, A., &amp; Buttazzo, G. (2026). The use of the Simplex architecture to enhance safety in deep-learning-powered autonomous systems. Engineering Applications of Artificial Intelligence, 174, 114583. doi:10.1016/j.engappai.2026.114583</li>
+    <li>Scherer, M., Macan, L., Jung, V. J., Wiese, P., Bompani, L., Burrello, A., Conti, F., &amp; Benini, L. (2024). Deeploy: Enabling Energy-Efficient Deployment of Small Language Models on Heterogeneous Microcontrollers. arXiv:2408.04413.</li>
+    <li>Sha, L. (2001). Using Simplicity to Control Complexity. IEEE Software, 18(4), 20–28. doi:10.1109/MS.2001.936213</li>
+    <li>Soldani, D., Nahi, P., Bour, H., Jafarizadeh, S., Soliman, M. F., Di Giovanna, L., Monaco, F., Ognibene, G., &amp; Risso, F. (2023). eBPF: A New Approach to Cloud-Native Observability, Networking and Security for Current (5G) and Future Mobile Networks (6G and Beyond). IEEE Access, 11, 57174–57202. doi:10.1109/ACCESS.2023.3281480</li>
+    <li>van Stein, N., &amp; Bäck, T. (2025). LLaMEA: A Large Language Model Evolutionary Algorithm for Automatically Generating Metaheuristics. IEEE Transactions on Evolutionary Computation, 29(2), 331–345. doi:10.1109/TEVC.2024.3497793</li>
+    <li>Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., &amp; Polosukhin, I. (2017). Attention Is All You Need. NeurIPS 2017, 30.</li>
+    <li>Wagner, J.-S., DeCaprio, D., Muthu Raja, A. C., Holman, J. M., Brady, L. K., et al. (2024). CELI: Controller-Embedded Language Model Interactions. arXiv:2410.14627.</li>
+    <li>Wang, H., Li, W., Zhang, J., &amp; Ren, L. (2026). AI Control Scientist: LLM-driven Agentic System for Automated Control Design. arXiv:2608.26780.</li>
+    <li>Xia, Y., Jazdi, N., Zhang, J., Shah, C., &amp; Weyrich, M. (2024). Control Industrial Automation System with Large Language Model Agents. arXiv:2409.18009.</li>
+    <li>Yuan, D., Deng, Y., &amp; Chen, H. (2026). EmbedCopilot-Bench: Evaluating Vision-Language Models for Hardware-Aware Embedded System Development. ECCV 2026.</li>
+    <li>Zhang, Z., Hu, Y., Chen, X., Jewell, G. W., &amp; Li, H. (2021). A Review on Conductive Common-Mode EMI Suppression Methods in Inverter Fed Motor Drives. IEEE Access, 9, 18345–18360. doi:10.1109/ACCESS.2021.3054514</li>
+  </ol>
+</div></section>
+</main>
+<footer><div class="wrap">Corrected walkthrough of the paper, 12 November 2026. The examples illustrate configurable study mechanisms; they do not establish safety, stability or energy gains. The reject policy is an optional comparison. The companion lab guide distinguishes the 24 V reference bench from separately configured PV rigs.</div></footer>
+
+<script>
+(function () {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+  // hypotheses jump
+  $$('.hcard').forEach(b => b.addEventListener('click', () => { const t = document.getElementById(b.dataset.go); if (t) t.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }));
+
+  // rail highlight
+  const links = $$('#rail a');
+  const io = new IntersectionObserver(es => { es.forEach(e => { if (e.isIntersecting) { links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id)); } }); }, { rootMargin: '-45% 0px -50% 0px' });
+  $$('main section').forEach(s => io.observe(s));
+
+  // tiers
+  const TIERS = {
+    3: { c: 'var(--t3)', name: 'Tier 3 · Farm-level orchestrator', rate: 'Multi-second horizon', hw: 'On-site industrial PC, PLC or high-availability edge server', role: 'Owns the global objective G(x), e.g. total farm yield versus battery degradation under real-time grid pricing. Aggregates low-bandwidth state tokens from Tier 2 and broadcasts Policy Envelopes. Runs GA scheduling across the farm.', runs: 'G(x), Policy Envelopes, genetic algorithms' },
+    2: { c: 'var(--t2)', name: 'Tier 2 · Cognitive node optimization', rate: '100 ms to 1 s', hw: 'Application processors with NPUs on real-time Linux: NXP i.MX8M Plus, STM32MP1, Raspberry Pi CM4, edge TPUs', role: 'Hosts the heavily quantized SLM (500M to 1.5B parameters, INT4). Samples Tier 1 telemetry every 100 ms to 1 s, processes global SoS instructions and refines Tier 1 parameter targets. The HTM firmware and PSO also run here.', runs: 'SLM, HTM, PSO, guardrail kernel' },
+    1: { c: 'var(--t1)', name: 'Tier 1 · Deterministic hardware actuation', rate: '10 to 100 kHz', hw: 'Bare-metal or RTOS microcontrollers: STM32, Texas Instruments C2000 DSPs', role: 'Drives MPPT tracking, battery cell balancing and inverter phase-matching. Never runs the SLM: it consumes static numerical parameters and writes directly to PWM, DAC and GPIO pins.', runs: 'Classical PID / MPPT loops' },
+  };
+  function showTier(n) {
+    const t = TIERS[n];
+    $$('.tier-box').forEach(g => g.classList.toggle('dim', g.dataset.tier !== String(n)));
+    $('#tierDetail').innerHTML = `<div class="eyebrow" style="color:${t.c}">Selected tier</div><h3>${t.name}</h3><p class="small" style="margin-top:8px">${t.role}</p><dl class="kv"><dt>Cadence</dt><dd class="mono">${t.rate}</dd><dt>Hardware</dt><dd>${t.hw}</dd><dt>Runs</dt><dd>${t.runs}</dd></dl>`;
+  }
+  $$('.tier-box').forEach(g => { g.addEventListener('click', () => showTier(g.dataset.tier)); g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showTier(g.dataset.tier); } }); });
+  showTier(2);
+
+  // time axis
+  (function () {
+    const g = $('#timeAxis'); const x0 = 60, x1 = 960, dec = (x1 - x0) / 6; const px = t => x0 + (Math.log10(t) + 5) * dec;
+    const ns = 'http://www.w3.org/2000/svg';
+    const el = (n, a, txt) => { const e = document.createElementNS(ns, n); for (const k in a) e.setAttribute(k, a[k]); if (txt) e.textContent = txt; g.appendChild(e); return e; };
+    el('line', { x1: x0, y1: 160, x2: x1, y2: 160, stroke: 'var(--muted)', 'stroke-width': 1.5 });
+    ['10 µs', '100 µs', '1 ms', '10 ms', '100 ms', '1 s', '10 s'].forEach((l, i) => { const x = x0 + i * dec; el('line', { x1: x, y1: 154, x2: x, y2: 166, stroke: 'var(--muted)' }); el('text', { x, y: 184, 'font-size': 13, fill: 'var(--muted)', 'text-anchor': 'middle' }, l); });
+    const bar = (a, b, y, fill, label, right) => { el('rect', { x: px(a), y, width: px(b) - px(a), height: 26, rx: 4, fill }); el('text', { x: right ? px(b) + 10 : px(a) - 10, y: y + 18, 'font-size': 14, fill: 'var(--ink)', 'text-anchor': right ? 'start' : 'end', 'font-weight': 600 }, label); };
+    bar(1e-5, 1e-4, 112, 'var(--t1-fill)', 'Tier 1 loop · 10 – 100 kHz', true);
+    bar(0.1, 0.3, 78, 'var(--t1-fill)', 'HTM dwell · 3 × 100 ms', false);
+    bar(0.1, 1, 44, 'var(--t2)', 'Tier 2 SLM · 100 ms – 1 s', false);
+    bar(1, 10, 10, 'var(--t3)', 'Tier 3 · multi-second', false);
+  })();
+
+  // guardrail sim
+  let mode = 'clamp';
+  const amps = $('#amps'), corrupt = $('#corrupt');
+  function renderGuard() {
+    const a = parseFloat(amps.value); $('#ampsOut').textContent = a.toFixed(1);
+    const bad = corrupt.checked;
+    $('#proposal').innerHTML = bad ? '{ "chargeCurrentLimitA": ' + a.toFixed(1) + ', "fan-duty-pc' : '{ "chargeCurrentLimitA": <span class="c1">' + a.toFixed(1) + '</span> }';
+    const v = $('#verdict');
+    if (bad) {
+      v.style.setProperty('--c', 'var(--red)');
+      v.innerHTML = '<b>4 · Dropped; fallback requested</b>Malformed syntax is dropped under either selected policy. Actual fallback latency and plant safety require measurement.';
+    } else if (a > 120 && mode === 'reject') {
+      v.style.setProperty('--c', 'var(--red)');
+      v.innerHTML = '<b>4 · Rejected under comparison policy</b>The optional reject policy drops this out-of-range proposal and requests fallback. This is an alternative experiment configuration.';
+    } else if (a > 120) {
+      v.style.setProperty('--c', 'var(--t1)');
+      v.innerHTML = '<b>4 · Clamped to 120.0 A; then committed</b>The paper policy bounds the valid numeric proposal before Tier 1 receives it. This checks one field, not closed-loop stability.';
+    } else {
+      v.style.setProperty('--c', 'var(--green)');
+      v.innerHTML = '<b>4 · Within the illustrated bound; committed</b>This proposal passes the one-field check. In-range parameter combinations can still be harmful to a plant.';
+    }
+  }
+  $('#modeReject').addEventListener('click', () => { mode = 'reject'; $('#modeReject').setAttribute('aria-pressed', 'true'); $('#modeClamp').setAttribute('aria-pressed', 'false'); renderGuard(); });
+  $('#modeClamp').addEventListener('click', () => { mode = 'clamp'; $('#modeClamp').setAttribute('aria-pressed', 'true'); $('#modeReject').setAttribute('aria-pressed', 'false'); renderGuard(); });
+  amps.addEventListener('input', renderGuard); corrupt.addEventListener('change', renderGuard); renderGuard();
+
+  // voltage
+  const volt = $('#volt');
+  function renderV() {
+    const v = parseFloat(volt.value); $('#vOut').textContent = v.toFixed(1) + ' V'; $('#vMark').style.left = (v / 600 * 100) + '%';
+    let tok, hex, cls;
+    if (v < 380) { tok = '[V-UNDER-SAG]'; hex = '0x4A1E'; cls = 't1'; } else if (v <= 480) { tok = '[V-NOM]'; hex = '0x4A1F'; cls = 'green'; } else { tok = '[V-OVER-SURGE]'; hex = '0x4A20'; cls = 'red'; }
+    const t = $('#vTok'); t.textContent = tok; t.className = 'tok ' + cls; $('#vHex').textContent = hex;
+  }
+  volt.addEventListener('input', renderV); renderV();
+
+  // hysteresis sim
+  const temp = $('#temp'); let target = 42, jitter = false, k = 0;
+  const N = 60; const hist = []; let state = 'NOM', dwell = 0, cHtm = 0, cNaive = 0, naive = 'NOM';
+  for (let i = 0; i < N; i++) hist.push({ t: 42, s: 'NOM' });
+  const svg = $('#hyChart'); const W = 560, H = 220, pad = 34;
+  const ty = t => H - 20 - (t - 38) / 12 * (H - 40);
+  function drawHy() {
+    const ns = 'http://www.w3.org/2000/svg'; svg.innerHTML = '';
+    const add = (n, a, txt) => { const e = document.createElementNS(ns, n); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; };
+    add('rect', { x: pad, y: ty(45), width: W - pad - 8, height: ty(43.5) - ty(45), fill: 'var(--t1-fill)', opacity: 0.25 });
+    add('line', { x1: pad, y1: ty(45), x2: W - 8, y2: ty(45), stroke: 'var(--red)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' });
+    add('line', { x1: pad, y1: ty(43.5), x2: W - 8, y2: ty(43.5), stroke: 'var(--green)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' });
+    add('text', { x: W - 10, y: ty(45) - 5, 'font-size': 11, fill: 'var(--red)', 'text-anchor': 'end', 'font-weight': 600 }, 'enter 45.0 °C');
+    add('text', { x: W - 10, y: ty(43.5) + 14, 'font-size': 11, fill: 'var(--green)', 'text-anchor': 'end', 'font-weight': 600 }, 'exit 43.5 °C');
+    [38, 40, 42, 44, 46, 48, 50].forEach(v => add('text', { x: pad - 6, y: ty(v) + 4, 'font-size': 10, fill: 'var(--muted)', 'text-anchor': 'end' }, v));
+    const dx = (W - pad - 8) / (N - 1);
+    hist.forEach((h, i) => { if (h.s === 'CRIT') add('rect', { x: pad + i * dx - dx / 2, y: H - 14, width: dx, height: 6, fill: 'var(--red)' }); else add('rect', { x: pad + i * dx - dx / 2, y: H - 14, width: dx, height: 6, fill: 'var(--green)', opacity: 0.6 }); });
+    const d = hist.map((h, i) => (i ? 'L' : 'M') + (pad + i * dx).toFixed(1) + ' ' + ty(h.t).toFixed(1)).join(' ');
+    add('path', { d, fill: 'none', stroke: 'var(--ink)', 'stroke-width': 2 });
+  }
+  function tick() {
+    k++;
+    const t = jitter ? (k % 2 ? 45.1 : 44.9) : target;
+    // naive threshold
+    const nn = t > 45 ? 'CRIT' : 'NOM'; if (nn !== naive) { naive = nn; cNaive++; }
+    // HTM rule
+    if (state === 'NOM') { dwell = t > 45 ? dwell + 1 : 0; if (dwell >= 3) { state = 'CRIT'; cHtm++; dwell = 0; } }
+    else { if (t < 43.5) { state = 'NOM'; cHtm++; } dwell = 0; }
+    hist.push({ t, s: state }); hist.shift();
+    const st = $('#hyState'); st.className = 'state ' + (state === 'CRIT' ? 'crit' : 'nom'); st.textContent = state === 'CRIT' ? '[TEMP-CRIT-HIGH] 0x5B14' : '[TEMP-NOM] 0x5B13';
+    $('#dwell').textContent = state === 'NOM' ? dwell : '–'; $('#cHtm').textContent = cHtm; $('#cNaive').textContent = cNaive;
+    drawHy();
+  }
+  temp.addEventListener('input', () => { target = parseFloat(temp.value); $('#tempOut').textContent = target.toFixed(1); });
+  $('#jitter').addEventListener('click', () => { jitter = !jitter; $('#jitter').setAttribute('aria-pressed', String(jitter)); $('#jitter').textContent = jitter ? 'Stop hovering (use the slider)' : 'Hover at the 45 °C boundary'; });
+  $('#resetHy').addEventListener('click', () => { cHtm = 0; cNaive = 0; $('#cHtm').textContent = 0; $('#cNaive').textContent = 0; });
+  drawHy(); setInterval(tick, 100);
+
+  // tilt band
+  $('#cloudTok').addEventListener('change', e => { const on = e.target.checked; const b = $('#band'); b.setAttribute('x', on ? 10 + 280 * 12 / 90 : 10); b.setAttribute('width', on ? 280 * 6 / 90 : 280); $('#bandLbl').textContent = on ? 'Search bounded to 12° – 18°' : 'Full 0° – 90° sweep'; });
+
+  // solar nodes
+  const NODES = [
+    { c: 'var(--t1)', t: 'Tracking and inverter SLM · L1', o: 'Maximize irradiance capture; minimize motor stress under localized wind gusts.', m: 'Anemometer voltage, motor amperage feedback, accelerometer tilt, panel Vmp and Imp, ambient temperature.', a: 'Spots gust-driven amperage draw and stows the array early, without waiting on central cloud logic. Under downstream battery saturation, slightly detunes the inverter off the true MPPT peak to shed excess generation.' },
+    { c: 'var(--t2)', t: 'Energy storage BMS SLM · L2', o: 'Smooth thermals, manage micro-cycles, avoid cell mismatch or thermal runaway.', m: 'Cell voltages via SPI, thermistor arrays, State of Charge, State of Health, coolant pump PWM.', a: 'Balances cells during fast charging to limit thermal degradation. When the SoS hub sees an impending cloud or load spike, runs preparatory micro-discharges without dropping bus voltage below stability limits.' },
+    { c: 'var(--green)', t: 'Appliance and end-user SLM · L3', o: 'Peak shaving, context-aware load shedding, non-intrusive load monitoring.', m: 'Smart-meter CT clamp currents, ambient humidity, thermostat setpoints, occupancy sensors.', a: 'Shifts heavy inductive loads (HVAC compressors, water heaters, EV chargers) into peak solar windows and modulates duty cycles on [GRID-STRAIN] tokens.' },
+  ];
+  function showNode(i) {
+    const n = NODES[i]; $$('.tab').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.node === String(i))));
+    $('#nodeDetail').innerHTML = `<div class="eyebrow" style="color:${n.c}">Local objective</div><h3>${n.t}</h3><p class="small">${n.o}</p><dl class="kv"><dt>Monitors</dt><dd>${n.m}</dd><dt>Acts</dt><dd>${n.a}</dd></dl>`;
+  }
+  $$('.tab').forEach(b => b.addEventListener('click', () => showNode(+b.dataset.node))); showNode(0);
+
+  // OSI
+  const OSI = [
+    { n: 7, name: 'Application', p: 'MQTT / HTTP', r: 'Contextual intent extraction', c: 'var(--t3)', tel: '[L7: APP-PAYLOAD: {"inverterTemp": "95C", "status": "OVERHEATING"}]', g: 'Upper stack (L6–L7): match Layer 7 intent to Layer 6 presentation; switch verbose JSON to binary CBOR in stable weather or on cellular fallback, cutting payloads by up to 80%.' },
+    { n: 6, name: 'Presentation', p: 'JSON / TLS / ASN', r: 'Serialization and crypto check', c: 'var(--t3)', tel: '[L6: ENCODING: RAW-JSON]', g: 'Upper stack (L6–L7): in the paper\'s example the SLM reformats the critical alert to CBOR.' },
+    { n: 5, name: 'Session', p: 'TCP sessions / RPC', r: 'State persistence and heartbeats', c: 'var(--t2)', tel: '[L5: SESSION-STATE: INTERMITTENT]', g: 'Mid stack (L4–L5): heartbeat intervals stretch with payload criticality to avoid re-handshake storms.' },
+    { n: 4, name: 'Transport', p: 'TCP / UDP', r: 'Dynamic windowing and congestion', c: 'var(--t2)', tel: '[L4: TCP-WINDOW-SIZE: 1460] [L4: RETRANSMIT-DETECTED]', g: 'Mid stack (L4–L5): when 50 battery nodes transmit at once, congestion windows follow Layer 7 criticality, putting thermal alerts ahead of routine logs. In the example the SLM shifts the alert to an unacknowledged UDP broadcast.' },
+    { n: 3, name: 'Network', p: 'IP / routing / ICMP', r: 'Swarm pathing and mesh routing', c: 'var(--t1)', tel: '[L3: ROUTE-COST-MIN] [L3: IP-SRC: 10.0.1.45]', g: 'Lower stack (L1–L3): correlating [PHY-EMI-SPIKE] with [L3-ROUTING-TABLE], packets are rerouted through an alternate node before the TCP window breaks. The example routes via 10.0.2.1.' },
+    { n: 2, name: 'Data link', p: 'MAC / Ethernet / CAN', r: 'Collision and frame arbitrator', c: 'var(--t1)', tel: '[L2: COLLISION-RATE: 4%] [L2: PROTOCOL: ETHERNET]', g: 'Lower stack (L1–L3): Layer 2 monitors frame collisions and CRC errors.' },
+    { n: 1, name: 'Physical', p: 'Volts / NRZ / RF', r: 'PHY tokenizer (noise, line attenuation)', c: 'var(--t1)', tel: '[L1: SNR-12dB] [L1: ATTN-HIGH]', g: 'Lower stack (L1–L3): Layer 1 reads transceiver voltages, RSSI, bit error rates and cable attenuation, e.g. [PHY-SIGNAL-DEGRADED] or [PHY-EMI-SPIKE].' },
+  ];
+  const list = $('#osiList');
+  OSI.forEach((l, i) => { const b = document.createElement('button'); b.className = 'layer'; b.type = 'button'; b.style.setProperty('--c', l.c); b.setAttribute('aria-pressed', 'false'); b.innerHTML = `<span class="ln">L${l.n} · ${l.name}</span><span class="lp">${l.p}</span>`; b.addEventListener('click', () => showOsi(i)); list.appendChild(b); });
+  function showOsi(i) {
+    const l = OSI[i]; $$('.layer').forEach((b, j) => b.setAttribute('aria-pressed', String(j === i)));
+    $('#osiDetail').innerHTML = `<div class="eyebrow" style="color:${l.c}">Layer ${l.n} · ${l.name}</div><h3>${l.r}</h3><p class="small muted">Protocols: <span class="mono">${l.p}</span></p><div><span class="small muted">In the paper's overheating example</span><div class="tok" style="color:${l.c};white-space:normal;margin-top:6px">${l.tel.replace(/</g, '&lt;')}</div></div><p class="small">${l.g}</p>`;
+  }
+  showOsi(6);
+
+  // bytes
+  const BYTES = [
+    { h: '01', g: 0 }, { h: '03', g: 1 }, { h: '00', g: 2 }, { h: '20', g: 2 }, { h: '00', g: 3 }, { h: '02', g: 3 }, { h: 'C5', g: 4 }, { h: 'C1', g: 4 },
+  ];
+  const GROUPS = [
+    { tok: '[SLAVE-01]', d: 'Byte 1, unit address 0x01.' },
+    { tok: '[MODBUS-READ]', d: 'Byte 2, function code 0x03 (read).' },
+    { tok: '[START-REG-32]', d: 'Bytes 3 to 4, starting register 0x0020 = 32.' },
+    { tok: '[LEN-2]', d: 'Bytes 5 to 6, quantity 0x0002 = 2 registers.' },
+    { tok: '[CRC-VALID]', d: 'Bytes 7 to 8: CRC-16/Modbus, low byte first. The calculated CRC for 01 03 00 20 00 02 is C5 C1.' },
+  ];
+  function modbusCrc16(bytes) {
+    let crc = 0xFFFF;
+    bytes.forEach(byte => {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xA001 : 0);
+    });
+    return crc;
+  }
+  const frameBytes = BYTES.map(byte => parseInt(byte.h, 16));
+  const crcValid = modbusCrc16(frameBytes.slice(0, -2)) === (frameBytes[6] | (frameBytes[7] << 8));
+  GROUPS[4].tok = crcValid ? '[CRC-VALID]' : '[CRC-INVALID]';
+  $('#frameCrc').textContent = GROUPS[4].tok;
+  $('#frameCrc').className = 'tok ' + (crcValid ? 't2' : 'red');
+  if (!crcValid) GROUPS[4].d = 'The trailing CRC does not match the calculated CRC-16/Modbus.';
+  const by = $('#bytes');
+  BYTES.forEach((b, i) => { const e = document.createElement('button'); e.type = 'button'; e.className = 'byte'; e.textContent = b.h; e.style.setProperty('--c', 'var(--t2)'); e.setAttribute('aria-label', 'Byte ' + (i + 1) + ', ' + b.h); const f = () => showByte(b.g); e.addEventListener('click', f); e.addEventListener('mouseenter', f); e.addEventListener('focus', f); by.appendChild(e); });
+  function showByte(g) { $$('.byte').forEach((e, i) => e.classList.toggle('hl', BYTES[i].g === g)); $('#byteInfo').innerHTML = `<span class="tok t2">${GROUPS[g].tok}</span> <span class="muted">${GROUPS[g].d}</span>`; }
+  showByte(1);
+})();
+</script>
+
+</body></html>
