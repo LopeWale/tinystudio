@@ -48,6 +48,10 @@ import { ControlLearning } from "./control-learning";
 import { NumericLearning } from "./numeric-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
+import {
+  StatisticsPlanning,
+  RetainedStatisticsPlanning,
+} from "./statistics-planning";
 import { DefinitionGraph } from "./graph";
 import { ReplayViews, type ReplayRecordSource } from "./replay";
 import { dataArtifacts } from "./evidence";
@@ -169,6 +173,7 @@ function LabWorkspace() {
         return next;
       }),
   );
+  const [statisticsPlanningValid, setStatisticsPlanningValid] = useState(false);
   const [pendingInputWork, setPendingInputWork] = useState(false);
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [baselineText, setBaselineText] = useState(draft);
@@ -346,6 +351,7 @@ function LabWorkspace() {
     !controlLearningValid ||
     !numericLearningValid ||
     !!parameterDrafts.size ||
+    (definition?.engine === "statistics.plan" && !statisticsPlanningValid) ||
     pendingInputWork;
   const dirty = !saved || hasAuthoringEdits;
   const structuredEngine = [
@@ -354,6 +360,7 @@ function LabWorkspace() {
     "learning.control_rl",
     "learning.timeseries",
     "learning.multimodal",
+    "statistics.plan",
   ].includes(definition?.engine ?? "");
   const authoringValid =
     !parameterDrafts.size &&
@@ -367,7 +374,9 @@ function LabWorkspace() {
                 definition?.engine ?? "",
               )
             ? numericLearningValid
-            : true);
+            : definition?.engine === "statistics.plan"
+              ? statisticsPlanningValid
+              : true);
   const draftParameterEngine = [
     "learning.pretrained",
     "learning.language_rl",
@@ -1481,6 +1490,14 @@ function LabWorkspace() {
                               onValidityChange={setNumericLearningValid}
                             />
                           )}
+                        {definition?.engine === "statistics.plan" && (
+                          <StatisticsPlanning
+                            key={`${authoringGeneration}:statistics`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setStatisticsPlanningValid}
+                          />
+                        )}
                         {definition?.engine === "data.pipeline" && (
                           <DataPreparation
                             key={`${authoringGeneration}:data`}
@@ -1979,6 +1996,9 @@ function RunEvidence({
   const [runView, setRunView] = useState("replay");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const retained = run ? dataArtifacts(run) : undefined;
+  const statisticsRun =
+    (run?.spec as any)?.definition?.engine === "statistics.plan" ||
+    retained?.all.some((item) => item.role === "statistical_plan");
   const recordArtifacts =
     retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? [];
   const artifact = recordArtifacts.some(
@@ -2343,7 +2363,7 @@ function RunEvidence({
           options={[
             {
               value: "replay",
-              label: "Replay",
+              label: statisticsRun ? "Planning" : "Replay",
               controls: "lab-run-view-replay",
             },
             {
@@ -2416,23 +2436,30 @@ function RunEvidence({
         <section
           id="lab-run-view-replay"
           role="tabpanel"
-          aria-label="Replay"
+          aria-label={statisticsRun ? "Planning" : "Replay"}
           hidden={runView !== "replay"}
         >
-          {run && (
-            <ReplayViews
-              records={chartRecords}
-              rawRecords={rawRecords}
-              recordSources={[processedSource, originalSource]}
-              onRetryRecords={() => {
-                if (processedSource.status === "error") processed.reload();
-                if (originalSource.status === "error") original.reload();
-              }}
-              events={events}
-              run={run}
-              active={active && runView === "replay"}
-            />
-          )}
+          {run &&
+            (statisticsRun ? (
+              <RetainedStatisticsPlanning
+                artifacts={retained?.all ?? []}
+                runId={id}
+                scopeKey={studio.scopeKey}
+              />
+            ) : (
+              <ReplayViews
+                records={chartRecords}
+                rawRecords={rawRecords}
+                recordSources={[processedSource, originalSource]}
+                onRetryRecords={() => {
+                  if (processedSource.status === "error") processed.reload();
+                  if (originalSource.status === "error") original.reload();
+                }}
+                events={events}
+                run={run}
+                active={active && runView === "replay"}
+              />
+            ))}
         </section>
         <section
           id="lab-run-view-records"

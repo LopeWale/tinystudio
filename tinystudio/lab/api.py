@@ -111,6 +111,12 @@ def catalog(project: ProjectDep):
     return svc.catalog()
 
 
+@project_routes.get("/statistics/methods")
+def statistics_methods(project: ProjectDep):
+    from .statistics_selection import method_catalog
+    return method_catalog()
+
+
 @project_routes.post("/preflight")
 def preflight(body: Preflight, db: DB, project: ProjectDep):
     return svc.preflight(db, project.id, body.definition, body.target_id)

@@ -47,6 +47,12 @@ def show(value):
     typer.echo(json.dumps(value, indent=2))
 
 
+@app.command("statistics-methods")
+def statistics_methods(project: str = typer.Option(..., "--project", "-p")):
+    """Inspect statistical methods, goals, assumptions and required planning inputs."""
+    show(call("GET", project, "/statistics/methods"))
+
+
 @app.command("define")
 def define(file: Path, project: str = typer.Option(..., "--project", "-p")):
     """Save a versioned definition; does not start execution."""

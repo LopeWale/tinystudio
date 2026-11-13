@@ -1,3 +1,9 @@
+## 2026-11-13 — Statistical planning
+
+- Added sample-size, fixed-sample power, detectable mean-difference and proportion-precision planning through the existing Laboratory definitions, preflight, runner and retained artifacts. Four initial methods expose their inputs, assumptions, equations and references; researcher-supplied source notes and sensitivity scenarios are frozen with the calculation.
+- Added catalog-driven Lab authoring and checksum-verified report reopening, CLI method discovery and shared assistant/MCP definition tools. Numerical calculations use SciPy on the selected target, with explicit approximation and representability errors. This increment adds no paper-derived experimental limits.
+- Verified numerical references, allocation/attrition rounding, invalid/extreme inputs, cancellation, project isolation, immutable native-child execution and export. Integrated frontend regressions, production build and authenticated Chromium save/run/reopen passed. PostgreSQL/RQ and physical qualification remain outside the disposable SQLite/local-artifact acceptance path. See [statistical planning](docs/statistical-planning.md) for methods, examples and remaining work.
+
 ## 2026-11-07 — D application learning authoring
 
 - Added grouped control-policy, forecasting and numeric/text fusion editors to the actual Laboratory Parameters workspace using existing BoardUI, SettingsSection, WorkspaceDisclosure and DraftField components. Exposed the existing methods, model dimensions, native/TorchRL selection, rewards, held-out seeds, forecast windows/features and fusion objectives/modalities. Immutable source/checkpoint attachment remains in Inputs; uncommon retained configuration stays in Definition JSON.

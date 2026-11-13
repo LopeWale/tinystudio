@@ -82,6 +82,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
         from .deployment import execute_deployment as run
     elif engine == "evaluation.compare":
         from .research import execute_evaluation as run
+    elif engine == "statistics.plan":
+        from .statistics import execute_statistics as run
     elif engine == "data.pipeline":
         from .data import execute_data as run
     elif engine == "simulation.openmodelica":

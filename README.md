@@ -27,6 +27,12 @@ PyTorch MPS) against the containerized stores.
 
 ## Install and run
 
+Statistical planning is available in Laboratory for sample size, power,
+detectable mean differences and proportion-interval precision, with retained
+calculations shared by the UI, CLI and assistant. Install the `statistics`
+extra on the calculation target; see [statistical planning](docs/statistical-planning.md)
+for methods, assumptions and the reproducible workflow.
+
 **Everything in containers** (Linux server, optionally with NVIDIA GPUs):
 
 ```bash

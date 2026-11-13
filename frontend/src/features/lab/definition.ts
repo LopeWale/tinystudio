@@ -89,6 +89,26 @@ const input = (
 ): InputExpectation => ({ role, description, required });
 export const templates: Template[] = [
   {
+    id: "statistics.plan",
+    name: "Statistical planning",
+    domain: "statistics",
+    parameters: {
+      method: "means.independent",
+      solve_for: "sample_size",
+      alpha: 0.05,
+      power: 0.8,
+      alternative: "two-sided",
+      delta: 0.5,
+      sd: 1,
+      unit: "unitless",
+      ratio: 1,
+      attrition: 0,
+      input_sources: {},
+      sensitivity: [],
+    },
+    hint: "New experiments start with illustrative values. Supply your own study assumptions. Counts are planning estimates, not guarantees of experimental success.",
+  },
+  {
     id: "synthetic.signal",
     name: "Synthetic signal",
     domain: "signals",
