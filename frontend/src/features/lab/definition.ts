@@ -89,6 +89,13 @@ const input = (
 ): InputExpectation => ({ role, description, required });
 export const templates: Template[] = [
   {
+    id: "runtime.qualify",
+    name: "Runtime qualification",
+    domain: "runtime",
+    parameters: {},
+    hint: "Choose the objective, target device, precision, fixture and execution policy. A completed measurement retains its verified, failed or unavailable outcome.",
+  },
+  {
     id: "statistics.plan",
     name: "Statistical planning",
     domain: "statistics",
@@ -779,7 +786,9 @@ export function makeDefinition(
     engine,
     seed: 42,
     mode: "offline",
-    operating_mode: engine === "recorded.replay" ? "replay" : "simulation",
+    operating_mode: ["recorded.replay", "runtime.qualify"].includes(engine)
+      ? "replay"
+      : "simulation",
     parameters: structuredClone(template?.parameters ?? {}),
     pipeline: [],
     inputs: [],

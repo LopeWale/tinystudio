@@ -3,7 +3,7 @@ name = "tinystudio"
 version = "0.1.0"
 description = "Local, account-free pipeline for training, evaluating, and serving tiny and domain-specific language models: datasets, snapshots, recommendations, experiments, rubric evaluations, OpenAI-compatible serving."
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
   "torch>=2.6",
@@ -39,6 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 statistics = ["scipy>=1.11"]
+qlora = ["bitsandbytes"]
 youtube = ["youtube-transcript-api>=1.0"]
 assistant = ["anthropic>=2.1", "openai>=3.36"]
 mlx = ["mlx-lm>=0.24"]

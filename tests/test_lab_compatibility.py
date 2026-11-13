@@ -299,11 +299,13 @@ def test_authored_model_path_cannot_bypass_artifact_binding(tmp_path, local_pret
         execute_pretrained(local_pretrained_spec, tmp_path / "out", lambda row: None, lambda: False)
 
 
-def test_cpu_qlora_is_rejected_before_artifact_access_on_cuda_host(tmp_path, monkeypatch):
+def test_cpu_qlora_missing_dependency_is_rejected_without_redirecting_to_cuda(tmp_path, monkeypatch):
+    import importlib.util
+    discover = importlib.util.find_spec
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr("tinystudio.training.quantization.cpu_pack_compatible", lambda: False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None if name == "bitsandbytes" else discover(name))
     experiment = {"definition": {"learning": {"update_strategy": "qlora", "device": "cpu", "dtype": "float32"}}}
-    with pytest.raises(ValueError, match="requires a CUDA target"):
+    with pytest.raises(ValueError, match="bitsandbytes"):
         execute_pretrained(experiment, tmp_path / "must-stay-absent", lambda row: None, lambda: False)
     assert not (tmp_path / "must-stay-absent").exists()
 
@@ -449,7 +451,6 @@ def test_real_pretrained_wrapper_honors_imported_snapshot_partitions(tmp_path, l
     ({"architecture": {"context": 16}}, {"max_length": 32}, "conflicting"),
     ({"architecture": []}, {}, "must be an object"),
     ({"device": "cuda"}, {}, "unavailable"),
-    ({"training_dtype": "bf16"}, {}, "unavailable"),
     ({"representation": "byte"}, {}, "immutable model tokenizer"),
     ({"family": "gru"}, {}, "immutable artifact"),
     ({"update_strategy": "lora"}, {"training_type": "full"}, "conflicting"),
@@ -460,6 +461,17 @@ def test_pretrained_rejects_incompatible_axes_before_artifact_access(tmp_path, m
     # No input refs or paths exist: the intended contract error must precede any resolution.
     experiment = {"definition": {"learning": learning, "parameters": parameters}}
     with pytest.raises(ValueError, match=match):
+        execute_pretrained(experiment, tmp_path / "must-stay-absent", lambda row: None, lambda: False)
+    assert not (tmp_path / "must-stay-absent").exists()
+
+
+def test_pretrained_cpu_bfloat16_selection_reaches_immutable_input_validation(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYSTUDIO_DEVICE", "cpu")
+    monkeypatch.setenv("TINYSTUDIO_DTYPE", "fp32")
+    # Selection is allowed. No model is supplied, so this establishes neither
+    # working BF16 kernels nor a successful training/reload qualification.
+    experiment = {"definition": {"learning": {"device": "cpu", "training_dtype": "bf16"}}}
+    with pytest.raises(ValueError, match="immutable 'pretrained_model' input artifact is required"):
         execute_pretrained(experiment, tmp_path / "must-stay-absent", lambda row: None, lambda: False)
     assert not (tmp_path / "must-stay-absent").exists()
 

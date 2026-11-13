@@ -12,7 +12,7 @@ import typer
 from tinystudio.config import ClientConfig
 
 from .runner import run as run_runner, validate_url
-from .client_paths import path_identifier
+from .client_paths import RuntimeApiPaths, path_identifier, runtime_definition
 
 app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evidence and execution targets.")
 
@@ -48,6 +48,29 @@ def call(method: str, project: str, suffix: str, body=None):
 
 def show(value):
     typer.echo(json.dumps(value, indent=2))
+
+
+@app.command("runtime-methods")
+def runtime_methods(project: str = typer.Option(..., "--project", "-p")):
+    """Inspect runtime qualification methods and required authored settings."""
+    show(call("GET", project, RuntimeApiPaths(base="").methods))
+
+
+@app.command("runtime-define")
+def runtime_define(file: Path, project: str = typer.Option(..., "--project", "-p")):
+    """Save JSON name/parameters/execution/optional inputs; does not start qualification.
+
+    Inspect runtime-methods for required choices. Use check, submit and inspect
+    to execute on a selected target and inspect retained evidence.
+    """
+    document = json.loads(file.read_text())
+    if not isinstance(document, dict):
+        raise typer.BadParameter("runtime definition file must contain an object")
+    try:
+        definition = runtime_definition(**document)
+    except TypeError as error:
+        raise typer.BadParameter(str(error)) from error
+    show(call("POST", project, RuntimeApiPaths(base="").definitions, {"definition": definition}))
 
 
 @app.command("statistics-methods")

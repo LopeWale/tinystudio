@@ -1,8 +1,8 @@
 import { withScientificJson, type ApiClient } from "../../api/client";
-import { scientificJson } from "../../api/scientific-json";
 import type { LabRun, SavedDefinition } from "./definition";
 import type { RetainedArtifact } from "./evidence";
 import { waitForOperation, type LabOperation } from "./operations";
+import { loadRetainedJson, retainedArtifactPath } from "./retained-json";
 
 const enc = encodeURIComponent;
 export const studyAnalysisPaths = {
@@ -15,7 +15,7 @@ export const studyAnalysisPaths = {
   run: (id: string) => `/api/lab/runs/${enc(id)}`,
   snapshot: (id: string) => `/api/lab/studies/${enc(id)}/analysis-inputs`,
   results: (id: string) => `/api/lab/studies/${enc(id)}/analysis-results`,
-  artifact: (id: string) => `/api/lab/artifacts/${enc(id)}`,
+  artifact: retainedArtifactPath,
 };
 export interface StudyAnalysisStudy {
   id: string;
@@ -345,24 +345,9 @@ export async function loadStudyAnalysisReport(
   artifact: RetainedArtifact,
   signal: AbortSignal,
 ): Promise<AnalysisReport> {
-  if (!hash(artifact.sha256) || !globalThis.crypto?.subtle)
-    throw new Error("Study analysis requires a verifiable SHA-256 checksum.");
-  const blob = await api.download(
-    studyAnalysisPaths.artifact(artifact.id),
-    signal,
-  );
-  const bytes = await blob.arrayBuffer();
-  if (signal.aborted)
-    throw new DOMException("Study analysis loading cancelled", "AbortError");
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const actual = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (actual !== artifact.sha256.toLowerCase())
-    throw new Error("Study analysis checksum mismatch.");
-  const report = scientificJson.parse(new TextDecoder().decode(bytes));
-  validateAnalysisReport(report);
-  if (signal.aborted)
-    throw new DOMException("Study analysis loading cancelled", "AbortError");
-  return report;
+  const retained = await loadRetainedJson(api, artifact, signal, {
+    label: "Study analysis",
+    validate: validateAnalysisReport,
+  });
+  return retained.value;
 }

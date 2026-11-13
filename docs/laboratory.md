@@ -471,28 +471,44 @@ remain readable.
 
 Device and dtype are selected independently. Explicit run fields override their
 respective machine defaults; an omitted dtype still inherits the configured
-dtype. For example, a CPU run on a machine configured for bf16 must explicitly
-select float32 rather than receiving a hidden precision fallback. The trainer
-checks actual policy/reference and prepared-batch placement and records observed
-dtypes. QLoRA requires compatible CUDA/bitsandbytes or the pinned Linux ARM64
-Python 3.12 CPU NF4 pack in `requirements/lab/qlora-linux-arm64-py312.txt`.
-Native Apple QLoRA remains unsupported. The CPU qualification covers float32 SFT,
-continued pretraining and DPO on the exact fixture image
-`tinystudio@sha256:2c8af1da323514b5fee5b56c724424b18fe0aeb11873de1dbc59ccd33c478443`.
-The operator must install the pack into the execution environment, using
-`python -m pip install --no-user -r requirements/lab/qlora-linux-arm64-py312.txt`;
-isolated runners disable user-site packages and replace HOME with an attempt-owned
-directory. Measure dependencies with those same settings before advertising the
-image/runtime evidence. A library's platform support or a metadata probe alone
-does not qualify training. CUDA targets require their own actual qualification.
+dtype. A CPU run that selects bf16 retains that choice. Actual kernel and trainer
+behavior is established by measurement. The trainer checks actual policy/reference
+and prepared-batch placement and records observed dtypes.
+The optional `qlora` package extra installs bitsandbytes into the chosen
+environment; installation leaves runtime compatibility unprobed.
+
+`runtime.qualify` measures NF4 training and retained reload on the selected Lab
+target/backend/profile. Inspect `tinystudio lab runtime-methods`, then author an
+explicit objective, device, dtype and fixture with `runtime-define`. Existing
+preflight, submit and inspect commands execute and retain the measurement. The
+deterministic local fixture records its model, tokenizer, data, seed and settings;
+`fixture=retained` uses supplied immutable model/snapshot artifacts. A completed
+probe may report unavailable prerequisites, failed measurements or verified
+compatibility. Verification applies only to its recorded selection.
+
+NF4 execution choices live in `NF4ExecutionPolicy`. The default preserves library
+behavior. An explicitly selected `nf4_execution.cpu_inference=portable` disables
+the discoverable bitsandbytes CPU packing optimization and records that setting.
+Frozen-base checks still apply. Reload comparisons default to identical dtype and
+bytes; an `allclose` policy requires explicit `rtol` and `atol` and retains measured
+errors. Runtime versions are provenance, and the optional baseline in
+`requirements/lab/qlora-linux-arm64-py312.txt` remains available for reproducing
+that environment. Native hosts and configured containers need their own actual
+probe evidence; a successful host probe does not qualify a container.
+Image Python commands resolve inside that image. The runner uses the shared
+`RuntimeTools.container_python` setting (`TINYSTUDIO_CONTAINER_PYTHON`) or an
+explicit profile `python` override, without substituting a host interpreter path.
 
 New QLoRA outputs use `tinystudio.pretrained.v2` / `quantized_adapter`: they retain
 the packed NF4 base, nested quantization state, adapter, tokenizer, checksums,
-observed precision and three live-policy prediction probes. Reload verifies the
-retained base/adapter and compatible OS, architecture, dependency and device
-contract, then checks bitwise probe equality. It never substitutes the original
-floating-point base. Legacy serving, merged export and refinement reject these
-new outputs until those consumers have a compatible quantized execution path;
+observed precision and three live-policy prediction probes. Reload verifies
+retained files, quantization state, precision and actual placement, then measures
+prediction agreement using the declared comparison policy. A retained policy
+follows the bundle into later serving; an explicit loader policy overrides it.
+Undeclared policies use bitwise equality. Different runtime metadata is recorded
+alongside actual verification. The original floating-point base is never
+substituted. Legacy job serving, merged export and refinement reject these
+outputs until those consumers have a compatible quantized execution path;
 durable configuration/status markers cover running and failed checkpoints too.
 Missing retained state is an error. Existing nonquantized v1 outputs remain
 readable. Training-time retrieval selections remain unsupported on this trainer
@@ -573,7 +589,7 @@ Generation parameters are `max_new_tokens` (1–512), explicit `device` (CPU by 
 
 The attempt-owned model session reuses existing scratch and Hugging Face/retained full/adapter loaders, verifies the outer artifact and retained manifests, loads locally, and releases tensors and extracted files on completion or failure. It records exact input/output token IDs, effective context capacity and output reservation. Unknown context capacity and prompt-plus-output overflow fail; evidence and questions are never silently truncated. Incompatible devices or retained quantization runtimes fail without fallback. A supported loader is not qualification of every model family or hardware target.
 
-The run publishes unchanged index bytes, query traces, prediction records and `generation-evaluation.json`. Known retrieval restrictions and overlaps with case source/episode identities remain visible and research-only. Missing lineage and overlap with the model's training corpus are explicitly not established; a frozen index is not a claim of leakage-free evaluation. Existing run records, artifacts and the baseline comparison evidence expose these results. QLoRA generation is qualified only for the pinned local Linux ARM64 CPU NF4 runtime exercised by `tests/test_lab_qlora_workflow.py`: retained SFT, continued-pretraining and DPO outputs enter the registered generation engine, preserve their packed base, and reproduce exact generated tokens after unload/reload. Context overflow and cancellation clean up owned session resources. This does not qualify another device/runtime or establish useful model accuracy. Broader text/policy metrics and complete D application acceptance remain separate gates.
+The run publishes unchanged index bytes, query traces, prediction records and `generation-evaluation.json`. Known retrieval restrictions and overlaps with case source/episode identities remain visible and research-only. Missing lineage and overlap with the model's training corpus are explicitly not established; a frozen index is not a claim of leakage-free evaluation. Existing run records, artifacts and the baseline comparison evidence expose these results. QLoRA generation qualification is scoped to actual selected-runtime receipts. `tests/test_lab_qlora.py` exercises native CPU SFT, continued-pretraining and DPO retention, live-logit replay and serving reload with the explicitly selected NF4 execution policy. `tests/test_lab_qlora_workflow.py` requires its separately configured container profile for the registered generation path. Each runtime and profile needs its own completed evidence. Context overflow and cancellation clean up owned session resources. This does not qualify another device/runtime or establish useful model accuracy. Broader text/policy metrics and complete D application acceptance remain separate gates.
 
 ## Numeric partitions and control environments
 

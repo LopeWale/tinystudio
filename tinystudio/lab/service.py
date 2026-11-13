@@ -76,6 +76,7 @@ def catalog() -> dict:
         ("evaluation.compare", "Independent validation and paired comparison", True),
         ("statistics.plan", "Statistical planning and power calculations", True),
         ("statistics.analyze", "Observed study analysis and custom methods", True),
+        ("runtime.qualify", "Measured runtime training and reload probes", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),
@@ -98,9 +99,11 @@ def catalog() -> dict:
             "qualification_reason": "Availability is not an execution receipt; method-specific selections have additional prerequisites."})
     method_rows = [{**row, "manifest": manifest_for(row)} for row in method_rows]
     from .statistics_selection import method_catalog
+    from .runtime_probe import method_catalog as runtime_methods
     return {"schema_version": 1, "enabled_increments": ["A", "B"], "adapters": items, "methods": method_rows,
             "qualification_matrix": qualification_matrix(items+method_rows),
             "statistics_methods": method_catalog(),
+            "runtime_methods": runtime_methods(),
             "contract_schemas": deepcopy(SCHEMAS),
             "domains": sorted({item["domain"] for item in items})}
 

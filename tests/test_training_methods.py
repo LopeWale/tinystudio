@@ -119,21 +119,23 @@ def test_device_and_dtype_defaults_are_independent(monkeypatch):
     from tinystudio.training.runtime import TrainingPlacement
     monkeypatch.setenv("TINYSTUDIO_DEVICE", "cuda:7")
     monkeypatch.setenv("TINYSTUDIO_DTYPE", "bf16")
-    # Omitting dtype retains the configured dtype; it must not silently fall back.
-    with pytest.raises(ValueError, match="dtype is unavailable on cpu"):
-        TrainingPlacement.resolve("cpu")
+    # An explicit CPU selection retains the configured precision; actual
+    # kernels/training are qualified separately rather than silently recast.
+    assert TrainingPlacement.resolve("cpu").dtype_name == "bfloat16"
     assert TrainingPlacement.resolve("cpu", "float32").device == "cpu"
     monkeypatch.setenv("TINYSTUDIO_DTYPE", "fp32")
     assert TrainingPlacement.resolve("cpu").dtype_name == "float32"
 
 
-def test_shared_trainer_rejects_cpu_qlora_on_a_cuda_capable_host(tmp_path, monkeypatch):
+def test_shared_trainer_reports_missing_cpu_qlora_dependency_on_cuda_host(tmp_path, monkeypatch):
+    import importlib.util
     import torch
     from tinystudio.training.train import train_experiment
+    discover = importlib.util.find_spec
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr("tinystudio.training.quantization.cpu_pack_compatible", lambda: False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None if name == "bitsandbytes" else discover(name))
     config = TrainConfig(base_model="must-not-open", update_strategy="qlora", device="cpu", dtype="float32")
-    with pytest.raises(ProjectError, match="requires a CUDA target"):
+    with pytest.raises(ProjectError, match="bitsandbytes"):
         train_experiment(tmp_path, config, [], [])
 
 

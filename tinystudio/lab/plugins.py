@@ -147,6 +147,7 @@ METHODS = {
     "evaluation.compare": (["evaluator"], "research.py", "evaluation"),
     "statistics.plan": (["evaluator"], "statistics.py", "statistics"),
     "statistics.analyze": (["evaluator"], "analysis.py", "analysis_integration"),
+    "runtime.qualify": (["evaluator"], "runtime_probe.py", "runtime_integration"),
     "deployment.benchmark": (["deployment"], "deployment.py", "deployment"),
 }
 
@@ -163,6 +164,9 @@ def manifest_for(row: dict) -> dict:
         if id_ == "statistics.analyze" and implemented:
             from .analysis_selection import implementation_sha256
             version = "sha256:" + implementation_sha256()
+        if id_ == "runtime.qualify" and implemented:
+            from .runtime_probe import implementation_sha256
+            version = "sha256:" + implementation_sha256()
     else:
         kinds = ["source"] if id_ in {"synthetic.signal", "recorded.replay"} or id_.startswith("acquisition.") else ["simulation"]
         fixture = ("engine" if id_ in {"synthetic.signal", "recorded.replay", "simulation.plant"} else
@@ -177,7 +181,7 @@ def manifest_for(row: dict) -> dict:
                          "network.mininet", "network.ns3", "robotics.gazebo", "simulation.matlab"}
     target_notes = ["Execution host must advertise the selected backend, profile and exact runtime."]
     if id_ == "learning.pretrained":
-        target_notes.append("Each objective/update strategy requires separate qualification; QLoRA requires compatible CUDA or the pinned Linux ARM64 Python 3.12 CPU NF4 pack.")
+        target_notes.append("Each objective/update strategy requires actual target-side qualification; use runtime.qualify for measured NF4 training and reload evidence on the selected runtime.")
     if row.get("requires_operator_binding") or executable:
         target_notes.append("Exact operator grants/bindings and provisioned dependencies are required; definitions cannot grant authority.")
     ports = input_contracts(id_)
@@ -235,7 +239,7 @@ def manifest_for(row: dict) -> dict:
             "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.pretrained":
         fixtures.append(FixtureRequirement(path="tests/test_lab_qlora.py", evidence_required=[
-            "Real SFT, raw causal LM and DPO adapter optimization on the pinned Linux ARM64 CPU NF4 stack.",
+            "Real SFT, raw causal LM and DPO adapter optimization on the explicitly selected CPU NF4 runtime and execution policy.",
             "Packed/nested quantization state, adapter precision, frozen reference and optimizer membership checks.",
             "Live-policy versus extracted-bundle reload equality and wrong-float-base/missing-state counterexamples.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
@@ -305,6 +309,9 @@ def input_contracts(id_: str) -> list[PortContract]:
             media=["text/plain", "text/x-python", "application/octet-stream"])
         add("analysis_auxiliary", maximum=128, when="method=custom.python", visibility=["model", "evaluation", "truth"],
             media=["*/*"])
+    elif id_ == "runtime.qualify":
+        add("pretrained_model", when="fixture=retained", media=["application/x-tar", "application/zip"])
+        add("snapshot", when="fixture=retained", media=["application/x-ndjson"])
     elif id_.startswith("acquisition."):
         add("telemetry", when="retained replay")
         add("shadow_model", when="operating_mode=shadow")

@@ -84,6 +84,7 @@ class RuntimeTools:
     """Executable selection; explicit overrides win over discovery on the selected PATH."""
 
     python: str = field(default_factory=lambda: sys.executable)
+    container_python: str = field(default="python", kw_only=True)
     cloudflared: str = "cloudflared"
     docker: str = "docker"
     kubectl: str = "kubectl"
@@ -96,6 +97,7 @@ class RuntimeTools:
         defaults = cls()
         return cls(**{name: _env(f"TINYSTUDIO_{name.upper()}") or getattr(defaults, name)
                       for name in cls.names},
+                   container_python=_env("TINYSTUDIO_CONTAINER_PYTHON") or defaults.container_python,
                    path=defaults.path)
 
     def command(self, name: str) -> str:

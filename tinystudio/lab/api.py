@@ -18,6 +18,7 @@ from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
 from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
+from .client_paths import RuntimeApiPaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
 
 router = APIRouter()
@@ -218,6 +219,12 @@ def statistics_methods(project: ProjectDep):
 @project_routes.get("/statistics/analysis-methods")
 def analysis_methods(project: ProjectDep):
     from .analysis import method_catalog
+    return method_catalog()
+
+
+@project_routes.get(RuntimeApiPaths(base="").methods)
+def runtime_methods(project: ProjectDep):
+    from .runtime_probe import method_catalog
     return method_catalog()
 
 

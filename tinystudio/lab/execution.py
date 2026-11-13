@@ -52,6 +52,12 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
     # Authored grants are never promoted to runner authority, including direct use.
     view["_runtime_grants"] = dict(context.get("_runtime_grants", {}))
     view["_runtime_secrets"] = dict(context.get("_runtime_secrets", {}))
+    # Keep public execution provenance distinct from authority and secret data.
+    profile = context.get("profile_manifest", {})
+    profile = profile if isinstance(profile, dict) else {}
+    view["_runtime_context"] = {"spec_digest": context.get("spec_digest"), "profile": {
+        key: profile[key] for key in ("backend", "execution_backend", "profile", "image", "target_os",
+            "limits", "qualification", "required_attestations", "network_default", "service_account_token") if key in profile}}
     engine = view["definition"]["engine"]
     if engine.startswith("learning."):
         visible = [ref for ref in view["definition"].get("inputs", []) if ref.get("visibility", "model") == "model"]
@@ -86,6 +92,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
         from .statistics import execute_statistics as run
     elif engine == "statistics.analyze":
         from .analysis import execute_analysis as run
+    elif engine == "runtime.qualify":
+        from .runtime_probe import execute_runtime_probe as run
     elif engine == "data.pipeline":
         from .data import execute_data as run
     elif engine == "simulation.openmodelica":

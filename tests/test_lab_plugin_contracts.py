@@ -72,7 +72,9 @@ def test_platform_and_selection_requirements_do_not_hide_catalog_options():
     assert "learning.pretrained" in rows
     requirement = rows["learning.pretrained"]["manifest"]
     assert requirement["selections_require_separate_qualification"] is True
-    assert any("QLoRA" in item for item in requirement["targets"]["additional_requirements"])
+    assert "runtime.qualify" in rows
+    assert any("runtime.qualify" in item and "NF4" in item and "selected runtime" in item
+               for item in requirement["targets"]["additional_requirements"])
     # A catalog entry's presence or an installed dependency is not qualification.
     assert all(item["qualification"] == "unqualified" for item in portfolio["qualification_matrix"])
 

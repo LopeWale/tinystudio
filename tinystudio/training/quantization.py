@@ -1,20 +1,82 @@
 """NF4 state, precision and persistence contracts shared by the existing trainer."""
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass
 import hashlib
-import importlib.metadata
 import json
+import math
+from numbers import Real
 from pathlib import Path
 import platform
-import sys
 from tinystudio.core.file_manifest import directory_manifest
 
-CPU_STACK = {
-    "torch": "2.15.0+cpu", "transformers": "5.21.0", "peft": "0.21.2", "trl": "1.16.0",
-    "accelerate": "1.15.0", "tokenizers": "0.23.3", "safetensors": "0.8.0",
-    "bitsandbytes": "0.50.2", "datasets": "5.1.0",
-}
 POLICY_FORMAT = "tinystudio.quantized-policy.v1"
+
+
+@dataclass(frozen=True)
+class ComparisonPolicy:
+    """An explicit researcher's choice, never a runtime-selected tolerance."""
+    mode: str = "bitwise"
+    rtol: float | None = None
+    atol: float | None = None
+
+    def __post_init__(self):
+        if self.mode not in ("bitwise", "allclose"):
+            raise ValueError("comparison policy mode must be bitwise or allclose")
+        if self.mode == "bitwise":
+            if self.rtol is not None or self.atol is not None:
+                raise ValueError("bitwise comparison policy does not accept tolerances")
+            return
+        for name in ("rtol", "atol"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(f"allclose comparison requires explicit finite nonnegative {name}")
+            try:
+                value = float(value)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError(f"comparison {name} must be finite and nonnegative") from exc
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"comparison {name} must be finite and nonnegative")
+            object.__setattr__(self, name, value)
+
+    @classmethod
+    def resolve(cls, value=None):
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise ValueError("comparison policy must be an explicit policy object")
+        if "mode" not in value:
+            raise ValueError("comparison policy requires an explicit mode")
+        try:
+            return cls(**value)
+        except TypeError as exc:
+            raise ValueError("comparison policy contains unsupported fields") from exc
+
+    def report(self):
+        return ({"mode": self.mode} if self.mode == "bitwise" else
+                {"mode": self.mode, "rtol": self.rtol, "atol": self.atol})
+
+
+class ReloadVerificationError(ValueError):
+    """A failed reload retains its measured evidence for the caller to inspect."""
+    def __init__(self, message, receipt):
+        super().__init__(message)
+        self.receipt = deepcopy(receipt)
+
+
+def verification_failure(message, receipt, *, code="verification_failed"):
+    receipt["status"] = "failed"
+    receipt.setdefault("diagnostics", []).append({"code": code, "message": str(message)})
+    return ReloadVerificationError(str(message), receipt)
+
+
+def runtime_provenance(device, dtype):
+    """Describe a runtime without treating its identity as admission evidence."""
+    return {"os": platform.system(), "machine": platform.machine(), "python": platform.python_version(),
+            "device": str(device), "dtype": str(dtype), "dependencies": dependency_versions()}
 
 
 def is_retained_quantized(config, status):
@@ -36,18 +98,8 @@ def has_quantized_marker(directory):
 
 
 def dependency_versions():
-    result = {}
-    for name in CPU_STACK:
-        try:
-            result[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            pass
-    return result
-
-
-def cpu_pack_compatible():
-    return (platform.system() == "Linux" and platform.machine() == "aarch64"
-            and sys.version_info[:2] == (3, 12) and dependency_versions() == CPU_STACK)
+    from .runtime_compatibility import RuntimeInventory
+    return {name: value for name, value in RuntimeInventory.capture().dependencies.items() if value is not None}
 
 
 def base_state(model):
@@ -70,6 +122,18 @@ def state_digest(model, *, base_only=False):
     tensors = base_state(model) if base_only else model.state_dict()
     digest = hashlib.sha256()
     for name, value in sorted(tensors.items()):
+        digest.update(json.dumps([name, list(value.shape), str(value.dtype)], separators=(",", ":")).encode())
+        digest.update(value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+def adapter_state_digest(model):
+    """Hash LoRA tensor identity/precision/bytes without hashing frozen weights."""
+    import torch
+    digest = hashlib.sha256()
+    for name, value in sorted(model.named_parameters()):
+        if "lora_" not in name:
+            continue
         digest.update(json.dumps([name, list(value.shape), str(value.dtype)], separators=(",", ":")).encode())
         digest.update(value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()
@@ -158,7 +222,7 @@ def capture_probes(model, tokenizer, directory: Path, device: str, context: int)
             raise ValueError("reload probe requires nonempty tokenized input")
         row = {name: value.tolist() for name, value in encoded.items() if name in {"input_ids", "attention_mask"}}
         batch = {name: torch.tensor(value, dtype=torch.long, device=device) for name, value in row.items()}
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type=batch["input_ids"].device.type, enabled=False):
             tensors[f"probe_{index}"] = model(**batch).logits[0, -1].detach().cpu().contiguous()
         inputs.append(row)
     path = directory / "reload-probes.safetensors"
@@ -167,23 +231,86 @@ def capture_probes(model, tokenizer, directory: Path, device: str, context: int)
             "comparison": "bitwise_equal_last_token_logits", "mode": "eval; no autocast; no sampling"}
 
 
-def verify_probes(model, root: Path, receipt, device):
+def _probe_comparison(expected, actual, index, policy):
+    import torch
+    actual_device = str(actual.device)
+    expected, actual = expected.detach().cpu().contiguous(), actual.detach().cpu().contiguous()
+    shape_equal, dtype_equal = expected.shape == actual.shape, expected.dtype == actual.dtype
+    finite = bool(torch.isfinite(expected).all() and torch.isfinite(actual).all())
+    bitwise = bool(shape_equal and dtype_equal and torch.equal(
+        expected.reshape(-1).view(torch.uint8), actual.reshape(-1).view(torch.uint8)))
+    row = {"index": index, "expected_shape": list(expected.shape), "actual_shape": list(actual.shape),
+           "expected_dtype": str(expected.dtype).replace("torch.", ""),
+           "actual_dtype": str(actual.dtype).replace("torch.", ""), "actual_device": actual_device,
+           "finite": finite, "bitwise_equal": bitwise, "max_abs_error": None,
+           "max_rel_error": None, "relative_error_unbounded": False, "error_measurement_overflow": False}
+    if shape_equal and finite and expected.numel():
+        expected64, actual64 = expected.double(), actual.double()
+        error = (actual64 - expected64).abs()
+        absolute = float(error.max())
+        row["max_abs_error"] = absolute if math.isfinite(absolute) else None
+        zero_reference_mismatch = bool(((expected64 == 0) & (error != 0)).any())
+        relative = torch.where(expected64 == 0, torch.zeros_like(error), error / expected64.abs())
+        relative_max = float(relative.max())
+        row["relative_error_unbounded"] = zero_reference_mismatch
+        row["max_rel_error"] = relative_max if math.isfinite(relative_max) and not zero_reference_mismatch else None
+        row["error_measurement_overflow"] = not (math.isfinite(absolute) and math.isfinite(relative_max))
+    if policy.mode == "allclose" and shape_equal and dtype_equal and finite:
+        close = torch.isclose(actual, expected, rtol=policy.rtol, atol=policy.atol, equal_nan=False)
+        row["mismatched_elements"] = int((~close).sum())
+        row["passed"] = bool(close.all())
+    else:
+        row["passed"] = finite and bitwise
+    return row
+
+
+def verify_probes(model, root: Path, receipt, device, *, comparison_policy=None):
+    """Verify retained logits and return measurements, including on failures.
+
+    The default requires equal shape, dtype and bytes, distinguishing signed
+    zero. allclose requires explicit tolerances, uses retained logits as its
+    reference, and retains the same shape/dtype/finite-value requirements.
+    Failures raise ReloadVerificationError carrying the measured receipt.
+    """
     import torch
     from safetensors.torch import load_file
-    path = checked_file(root, receipt.get("file"))
-    if hashlib.sha256(path.read_bytes()).hexdigest() != receipt.get("sha256"):
-        raise ValueError("reload probe checksum mismatch")
-    expected = load_file(str(path))
-    inputs = receipt.get("inputs")
-    if not isinstance(inputs, list) or len(inputs) != 3 or len(expected) != 3:
-        raise ValueError("reload probe contract requires three fixed sequences")
-    model.eval()
-    for index, row in enumerate(inputs):
-        batch = {name: torch.tensor(value, dtype=torch.long, device=device) for name, value in row.items()}
-        with torch.inference_mode():
-            actual = model(**batch).logits[0, -1].detach().cpu()
-        if not torch.equal(expected[f"probe_{index}"], actual):
+    verification = {"format": "tinystudio.quantized-probe-verification.v1", "status": "pending",
+                    "device": str(device), "comparison_policy": None, "probes": [], "diagnostics": []}
+    try:
+        policy = ComparisonPolicy.resolve(comparison_policy)
+        verification["comparison_policy"] = policy.report()
+        if not isinstance(receipt, dict):
+            raise ValueError("reload probe contract must be an object")
+        path = checked_file(root, receipt.get("file"))
+        if hashlib.sha256(path.read_bytes()).hexdigest() != receipt.get("sha256"):
+            raise ValueError("reload probe checksum mismatch")
+        expected = load_file(str(path))
+        inputs = receipt.get("inputs")
+        if (not isinstance(inputs, list) or len(inputs) != 3
+                or set(expected) != {f"probe_{index}" for index in range(3)}):
+            raise ValueError("reload probe contract requires three fixed sequences")
+        model.eval()
+        for index, row in enumerate(inputs):
+            if not isinstance(row, dict) or "input_ids" not in row or row.keys() - {"input_ids", "attention_mask"}:
+                raise ValueError("reload probe inputs must explicitly retain token IDs and optional attention mask")
+            batch = {name: torch.tensor(value, dtype=torch.long, device=device) for name, value in row.items()}
+            if batch["input_ids"].ndim != 2 or batch["input_ids"].shape[0] != 1 or not batch["input_ids"].numel():
+                raise ValueError("reload probe requires one nonempty token sequence")
+            with torch.inference_mode(), torch.autocast(device_type=batch["input_ids"].device.type, enabled=False):
+                actual = model(**batch).logits[0, -1].detach()
+            measured = _probe_comparison(expected[f"probe_{index}"], actual, index, policy)
+            measured["requested_device"] = str(batch["input_ids"].device)
+            measured["device_matches"] = actual.device == batch["input_ids"].device
+            measured["passed"] = measured["passed"] and measured["device_matches"]
+            verification["probes"].append(measured)
+        if not all(row["passed"] for row in verification["probes"]):
             raise ValueError("reloaded quantized policy differs from the live trained policy")
+        verification["status"] = "passed"
+        return verification
+    except ReloadVerificationError:
+        raise
+    except Exception as exc:
+        raise verification_failure(str(exc), verification, code="probe_verification_failed") from exc
 
 
 def checked_file(root: Path, relative):

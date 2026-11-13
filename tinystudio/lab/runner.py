@@ -393,6 +393,16 @@ class Runner:
         self._profile_config = json.loads(json.dumps(profile_config)) if profile_config is not None else None
         _backend_configs(self._profile_config)
 
+    @staticmethod
+    def _python_command(backend: str, config: dict) -> str:
+        if backend in {"native", "rq"}:
+            return sys.executable
+        from tinystudio.config import RuntimeTools
+        selected = config["python"] if "python" in config else RuntimeTools.from_environment().container_python
+        if not isinstance(selected, str) or not selected.strip() or "\x00" in selected:
+            raise ValueError("selected execution profile Python interpreter must be a nonempty command")
+        return selected
+
     def post(self, path: str, body: dict, lease: str | None = None):
         response = self.client.post(self.prefix + path, json=body, headers={"X-Lab-Lease": lease} if lease else {})
         response.raise_for_status()
@@ -570,7 +580,7 @@ class Runner:
             context = {"spec_digest": attempt["spec_digest"], "source_root": str(snapshot.root.resolve()), "input_paths": paths,
                        "_runtime_grants": operator.get("engine_grants", {}).get(engine, {}),
                        "_runtime_secrets": operator.get("engine_secrets", {}).get(engine, {})}
-            command = [sys.executable if policy["backend"] in {"native", "rq"} else config.get("python", "/usr/local/bin/python"), "-m", "tinystudio.lab.execution",str(root/"spec.json"),str(evidence),str(root/"context.json")]
+            command = [self._python_command(policy["backend"], config), "-m", "tinystudio.lab.execution",str(root/"spec.json"),str(evidence),str(root/"context.json")]
             # Build against an existing context path, then bind its public manifest.
             (root / "context.json").write_text("{}")
             plan = self._profile(spec,attempt,root,snapshot,config,command) if policy["profile"] == "isolated" else None

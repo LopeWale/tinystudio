@@ -1,9 +1,9 @@
-"""Fine-tuning: SFT (full or LoRA, 4-bit QLoRA on CUDA) and DPO with TRL and PEFT.
+"""Pretrained SFT, continued pretraining and DPO with TRL and PEFT.
 
 This module trains into an experiment directory and reports through callbacks; jobs, experiments, and their
-state live in PostgreSQL (see :mod:`tinystudio.services.jobs`). On Apple Silicon the run goes through PyTorch's
-MPS backend in fp32: bf16 is switched off, 4-bit QLoRA is unavailable because bitsandbytes has no Metal backend,
-and the fused AdamW is replaced by the plain one. On CUDA the run uses bf16 and the fused optimizer.
+state live in PostgreSQL (see :mod:`tinystudio.services.jobs`). Placement follows the selected device and
+precision. QLoRA prerequisite discovery leaves runtimes unprobed; actual NF4 loading, optimization,
+retention and reload establish evidence for the operations that execute.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ class TrainConfig:
     data_format: str | None = None
     device: str | None = None
     dtype: str | None = None
+    nf4_execution: dict = field(default_factory=dict)
     epochs: float = 3
     learning_rate: float = 2e-4
     batch_size: int = 8
@@ -64,6 +65,9 @@ class TrainConfig:
         self.objective, self.update_strategy, self.data_format = method.objective, method.update_strategy, method.data_format
         if self.data_format == "raw_text" and self.assistant_only_loss:
             raise ProjectError("assistant_only_loss is incompatible with raw_text causal LM training")
+        from .nf4_execution import NF4ExecutionPolicy
+        if self.update_strategy == "qlora":
+            self.nf4_execution = NF4ExecutionPolicy.resolve(self.nf4_execution).to_dict()
         if not self.lora_targets:
             entry = catalog_entry(self.base_model)
             self.lora_targets = LORA_TARGETS.get(entry.family, []) if entry else []
@@ -75,6 +79,9 @@ class TrainConfig:
 
     def as_dict(self) -> dict[str, Any]:
         result = asdict(self)
+        # A matched control can retain its authored settings while making their
+        # applicability explicit. Only QLoRA executes an NF4 policy.
+        result["nf4_execution_applicable"] = self.update_strategy == "qlora"
         if self.update_strategy == "qlora":
             from .quantization import POLICY_FORMAT
             result["quantization_format"] = POLICY_FORMAT
@@ -153,25 +160,13 @@ def _checkpoint_args(config: "TrainConfig") -> dict[str, Any]:
 
 
 def qlora_support(device: str | None = None) -> tuple[bool, str]:
-    """Eligibility is target-specific; a successful fixture establishes qualification."""
-    import importlib.util
+    """Device prerequisites only; an eligible candidate is explicitly unprobed."""
+    from .runtime_compatibility import RuntimeCompatibility
 
-    import torch
-
-    try:
-        from tinystudio.serving.runner import pick_device
-        selected = torch.device(device or pick_device()).type
-    except (RuntimeError, TypeError, ValueError):
-        return False, f"Invalid training device {device!r}; select cpu, mps or cuda[:index] on a compatible target"
-    if selected == "cpu":
-        from .quantization import cpu_pack_compatible
-        if cpu_pack_compatible():
-            return True, "pinned Linux ARM64 CPU NF4 pack"
-    if selected != "cuda" or not torch.cuda.is_available():
-        return False, "QLoRA requires a CUDA target with bitsandbytes, or the pinned Linux ARM64 Python 3.12 CPU NF4 pack. Native Apple execution remains unqualified; select lora/full or a compatible execution target."
-    if importlib.util.find_spec("bitsandbytes") is None:
-        return False, "QLoRA needs the bitsandbytes package: pip install bitsandbytes"
-    return True, "ok"
+    # Existing callers resolve their actual precision separately. This device-only
+    # wrapper must not override that selection by re-reading a machine dtype default.
+    result = RuntimeCompatibility.inspect(device=device, dtype="float32")
+    return result.eligible, result.reason
 
 
 def _load_4bit(source: str, device: str, progress: Any, dtype=None) -> Any:
@@ -230,8 +225,9 @@ def _parameter_digest(model, *, base_only=False):
 def _quantized_trainer_setup(trainer, retained, runtime, progress):
     if retained is None:
         return
-    from .quantization import prepare_adapter_precision, state_digest
+    from .quantization import adapter_state_digest, prepare_adapter_precision, state_digest
     retained["precision"] = prepare_adapter_precision(trainer, runtime)
+    retained["optimization"] = {"adapter_before_sha256": adapter_state_digest(trainer.model)}
     if state_digest(trainer.model, base_only=True) != retained["state_sha256"]:
         raise ProjectError("trainer setup changed the retained quantized starting base")
     progress(f"NF4 compute and adapter precision: {runtime.dtype_name}; retained base verified")
@@ -240,12 +236,27 @@ def _quantized_trainer_setup(trainer, retained, runtime, progress):
 def _quantized_training_result(trainer, retained, tokenizer, directory, runtime, context):
     if retained is None:
         return {}
-    from .quantization import assert_adapter_optimizer, state_digest, capture_probes
+    from .quantization import adapter_state_digest, assert_adapter_optimizer, state_digest, capture_probes
     assert_adapter_optimizer(trainer)
     if state_digest(trainer.model, base_only=True) != retained["state_sha256"]:
         raise ProjectError("QLoRA changed frozen base or quantization state")
+    after = adapter_state_digest(trainer.model)
+    retained["optimization"].update(adapter_after_sha256=after,
+        adapter_changed=after != retained["optimization"]["adapter_before_sha256"],
+        optimizer_parameters_verified=True, frozen_base_verified=True)
     return {"quantization": retained,
             "reload_probes": capture_probes(trainer.model, tokenizer, directory, runtime.device, context)}
+
+
+def _retain_quantized_model(model, directory, runtime, config, check_cancel):
+    from .nf4_execution import NF4ExecutionPolicy
+    from .quantization import retain_base
+
+    policy = NF4ExecutionPolicy.resolve(config.nf4_execution)
+    execution = policy.apply(model, runtime.device)
+    receipt = retain_base(model, directory, runtime, check_cancel)
+    receipt.update(execution_policy=policy.to_dict(), execution_configuration=execution)
+    return receipt
 
 
 def raw_sequence_rows(rows, tokenizer, max_length):
@@ -306,8 +317,7 @@ def _train_dpo(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, An
              AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device))
     quantized = None
     if config.update_strategy == "qlora":
-        from .quantization import retain_base
-        quantized = retain_base(model, exp_dir, runtime, check_cancel)
+        quantized = _retain_quantized_model(model, exp_dir, runtime, config, check_cancel)
     reference = None
     if config.update_strategy == "full":
         reference = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
@@ -430,8 +440,7 @@ def _train(exp_dir: Path, config: TrainConfig, train_rows: list[dict[str, Any]],
         model = AutoModelForCausalLM.from_pretrained(source, dtype=dtype).to(device)
     quantized = None
     if config.update_strategy == "qlora":
-        from .quantization import retain_base
-        quantized = retain_base(model, exp_dir, runtime, check_cancel)
+        quantized = _retain_quantized_model(model, exp_dir, runtime, config, check_cancel)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 

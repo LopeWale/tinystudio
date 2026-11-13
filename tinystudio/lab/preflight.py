@@ -49,6 +49,15 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("statistics_selection", True,
                   "Planning inputs and goal are compatible; the result is conditional on the declared assumptions.")
+    if engine == "runtime.qualify":
+        from .runtime_probe import validate_selection
+        try:
+            validate_selection(definition.model_dump())
+        except (ValueError, KeyError, TypeError) as error:
+            check("runtime_probe_selection", False, str(error))
+        else:
+            check("runtime_probe_selection", True,
+                  "Probe settings are authored; actual target-side execution will retain unavailable, failed or verified evidence. This check does not establish kernel or training support.")
     if engine == "statistics.analyze":
         from .analysis_selection import CUSTOM_METHOD, validate_analysis_selection
         try:
