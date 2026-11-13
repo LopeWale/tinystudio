@@ -1,5 +1,5 @@
 """MCP and assistant methods are thin clients of laboratory HTTP services."""
-from .client_paths import RuntimeApiPaths, path_identifier, runtime_definition
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, path_identifier, runtime_definition
 from .study_import_paths import StudyImportPaths
 
 def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
@@ -20,6 +20,15 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
     def lab_runtime_methods() -> dict:
         """Inspect runtime qualification methods, required settings and evidence limits. No qualification runs."""
         return call("GET", RuntimeApiPaths().methods)
+
+    def lab_hardware_discovery_methods() -> dict:
+        """Inspect implemented discovery schemas; this does not enumerate or contact devices.
+
+        Author hardware.discover with an explicit method/binding and acquisition
+        mode using lab_define. The selected host must separately grant that
+        exact source. Discovery establishes structure, not physical validation.
+        """
+        return call('GET', HardwareApiPaths().discovery_methods)
 
     def lab_runtime_define(name: str, parameters: dict, execution: dict, inputs: list[dict] | None = None) -> dict:
         """Save a runtime qualification definition from authored settings; no run starts.
@@ -250,14 +259,14 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Queue an immutable, optimistically validated capture of an existing RAG repository; does not train."""
         return call("POST", "/api/lab/inputs/from-repository", json={"repository": repository, "idempotency_key": idempotency_key})
 
-    methods = [lab_catalog, lab_definitions, lab_runtime_methods, lab_runtime_define, lab_statistics_methods, lab_statistics_define,
+    methods = [lab_catalog, lab_definitions, lab_runtime_methods, lab_runtime_define, lab_hardware_discovery_methods, lab_statistics_methods, lab_statistics_define,
                lab_analysis_methods, lab_study_analysis_input, lab_analysis_define, lab_study_analysis_result,
                lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
                lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest,
                lab_study_import_preview, lab_study_import]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
-    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_runtime_methods, lab_statistics_methods, lab_analysis_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
+    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_runtime_methods, lab_hardware_discovery_methods, lab_statistics_methods, lab_analysis_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
                                                           lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest, lab_study_import_preview},
                      long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input, lab_study_analysis_input})
             for f in methods]

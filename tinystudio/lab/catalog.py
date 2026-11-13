@@ -102,7 +102,8 @@ def catalog() -> list[dict]:
                                             "max_output_bytes": 256*1024**2 if adapter_id == "simulation.openmodelica" else 16777216,
                                             "requires_implementation": not implemented}})
     for adapter_id, name, dependency in (("acquisition.serial", "Serial telemetry", "serial"),
-            ("acquisition.modbus", "Modbus telemetry", "pymodbus"), ("acquisition.mqtt", "MQTT telemetry", "paho")):
+            ("acquisition.modbus", "Modbus telemetry", "pymodbus"), ("acquisition.mqtt", "MQTT telemetry", "paho"),
+            ("acquisition.can", "CAN frame and measurement acquisition", "can")):
         installed = parquet_available and importlib.util.find_spec(dependency) is not None
         result.append({"id": adapter_id, "name": name, "domain": "acquisition", "implemented": True,
             "available": installed, "status": "implemented" if installed else "dependency_missing",
@@ -111,7 +112,9 @@ def catalog() -> list[dict]:
             "qualification": "unqualified", "qualification_reason": "No live source execution receipt is attached.",
             "live_device_access": True, "requires_operator_binding": True,
             "execution_scope": "read-only telemetry; exact trusted binding required; serial opening may toggle control lines",
-            "version": "sha256:"+hashlib.sha256(Path(__file__).with_name("acquisition.py").read_bytes()).hexdigest(),
+            "version": "sha256:"+hashlib.sha256(b''.join(Path(__file__).with_name(name).read_bytes()
+                for name in ('acquisition.py', 'acquisition_paths.py', 'hardware_transports.py', 'hardware_bindings.py',
+                             'device_discovery.py', 'experiment_resources.py', 'modbus_trace.py', 'serial_framing.py'))).hexdigest(),
             "representations": ["numeric", "raw_payload"]})
     from .plugins import manifest_for
     return [{**row, "manifest": manifest_for(row)} for row in result]

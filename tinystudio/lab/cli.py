@@ -12,7 +12,7 @@ import typer
 from tinystudio.config import ClientConfig
 
 from .runner import run as run_runner, validate_url
-from .client_paths import RuntimeApiPaths, path_identifier, runtime_definition
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, path_identifier, runtime_definition
 from .study_import_paths import StudyImportPaths
 
 app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evidence and execution targets.")
@@ -55,6 +55,12 @@ def show(value):
 def runtime_methods(project: str = typer.Option(..., "--project", "-p")):
     """Inspect runtime qualification methods and required authored settings."""
     show(call("GET", project, RuntimeApiPaths(base="").methods))
+
+
+@app.command('hardware-methods')
+def hardware_discovery_methods(project: str = typer.Option(..., '--project', '-p')):
+    """Inspect discovery schemas without contacting instruments; use define/preflight/run explicitly."""
+    show(call('GET', project, HardwareApiPaths(base='').discovery_methods))
 
 
 @app.command("runtime-define")

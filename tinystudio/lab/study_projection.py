@@ -10,10 +10,9 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-import re
-from types import MappingProxyType
 
 from .contracts import canonical
+from .json_selection import JsonSelector, _freeze, _plain
 from .study_contracts import StudyRecordRequest
 
 
@@ -25,75 +24,13 @@ NUMBER_ENCODINGS = ('json', 'decimal_strings')
 
 def implementation_sha256():
     digest = hashlib.sha256()
-    for name in ('study_projection.py', 'study_contracts.py', 'contracts.py'):
+    for name in ('study_projection.py', 'json_selection.py', 'study_contracts.py', 'contracts.py'):
         digest.update(name.encode() + b'\0' + Path(__file__).with_name(name).read_bytes())
     return digest.hexdigest()
 
 
 def method_descriptor():
     return {'id': METHOD_ID, 'version': VERSION, 'implementation_sha256': implementation_sha256()}
-
-
-def _plain(value):
-    if isinstance(value, Mapping):
-        return {key: _plain(child) for key, child in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(child) for child in value]
-    return value
-
-
-def _freeze(value):
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze(child) for key, child in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(child) for child in value)
-    return value
-
-
-def _pointer_tokens(pointer):
-    if not isinstance(pointer, str) or (pointer and not pointer.startswith('/')) or re.search(r'~(?![01])', pointer):
-        raise ValueError('pointer must be an RFC 6901 JSON Pointer with ~0 and ~1 escapes')
-    return () if pointer == '' else tuple(token.replace('~1', '/').replace('~0', '~') for token in pointer[1:].split('/'))
-
-
-@dataclass(frozen=True)
-class _Selector:
-    kind: str
-    value: object
-
-    @classmethod
-    def from_dict(cls, value, name):
-        if not isinstance(value, Mapping) or set(value) not in ({'pointer'}, {'literal'}):
-            raise ValueError(f'{name} requires exactly one pointer or literal selector')
-        kind = next(iter(value))
-        selected = _plain(value[kind])
-        if kind == 'pointer':
-            _pointer_tokens(selected)
-        else:
-            try:
-                canonical(selected)
-            except (ValueError, TypeError, UnicodeError) as exc:
-                raise ValueError(f'{name} literal must be finite JSON data') from exc
-        return cls(kind, _freeze(selected))
-
-    def to_dict(self):
-        return {self.kind: _plain(self.value)}
-
-    def resolve(self, row):
-        if self.kind == 'literal':
-            return _plain(self.value)
-        current = row
-        for token in _pointer_tokens(self.value):
-            if isinstance(current, dict) and token in current:
-                current = current[token]
-            elif isinstance(current, list) and re.fullmatch(r'0|[1-9][0-9]*', token):
-                index = int(token)
-                if index >= len(current):
-                    raise ValueError(f'pointer {self.value!r} does not resolve in this source row')
-                current = current[index]
-            else:
-                raise ValueError(f'pointer {self.value!r} does not resolve in this source row')
-        return current
 
 
 @dataclass(frozen=True)
@@ -131,12 +68,12 @@ def _constant(value):
 @dataclass(frozen=True)
 class StudyProjection:
     selection: object
-    unit_id: _Selector
-    condition: _Selector
+    unit_id: JsonSelector
+    condition: JsonSelector
     data: object
     number_encoding: str
     kind: str = 'observation'
-    observed_at: _Selector | None = None
+    observed_at: JsonSelector | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'selection', _freeze(self.selection))
@@ -175,11 +112,11 @@ class StudyProjection:
         kind = mapping.get('kind', 'observation')
         if not isinstance(kind, str):
             raise ValueError('kind must be a study record string')
-        return cls(selection=selection, unit_id=_Selector.from_dict(mapping['unit_id'], 'unit_id'),
-            condition=_Selector.from_dict(mapping['condition'], 'condition'),
-            data={key: _Selector.from_dict(value, 'data.' + key) for key, value in supplied_data.items()},
+        return cls(selection=selection, unit_id=JsonSelector.from_dict(mapping['unit_id'], 'unit_id'),
+            condition=JsonSelector.from_dict(mapping['condition'], 'condition'),
+            data={key: JsonSelector.from_dict(value, 'data.' + key) for key, value in supplied_data.items()},
             number_encoding=encoding, kind=kind,
-            observed_at=_Selector.from_dict(mapping['observed_at'], 'observed_at') if 'observed_at' in mapping else None)
+            observed_at=JsonSelector.from_dict(mapping['observed_at'], 'observed_at') if 'observed_at' in mapping else None)
 
     def to_dict(self):
         return {'selection': _plain(self.selection), 'unit_id': self.unit_id.to_dict(), 'condition': self.condition.to_dict(),

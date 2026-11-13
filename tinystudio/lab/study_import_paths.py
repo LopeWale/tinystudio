@@ -3,13 +3,13 @@ from dataclasses import dataclass
 import hashlib
 from typing import ClassVar
 
-from .client_paths import path_identifier
+from .client_paths import LabApiPaths, path_identifier
 
 
 @dataclass(frozen=True)
 class StudyImportPaths:
     study_id: str
-    base: str = '/api/lab'
+    base: str = LabApiPaths().base
 
     preview_route: ClassVar[str] = '/studies/{id_}/observation-imports/preview'
     apply_route: ClassVar[str] = '/studies/{id_}/observation-imports'

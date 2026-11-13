@@ -28,6 +28,7 @@ def test_shared_lab_catalog_uses_authenticated_project_transport():
         assert {name for name in specs if name.startswith("lab_")} == {
             "lab_catalog", "lab_definitions", "lab_define", "lab_preflight", "lab_submit",
             "lab_runtime_methods", "lab_runtime_define",
+            "lab_hardware_discovery_methods",
             "lab_statistics_methods", "lab_statistics_define",
             "lab_analysis_methods", "lab_study_analysis_input", "lab_analysis_define", "lab_study_analysis_result",
             "lab_studies", "lab_study", "lab_study_save", "lab_study_revisions",

@@ -44,7 +44,7 @@ def secret_hash(value: str) -> str:
 def runtime_versions() -> dict[str, str]:
     result = {"python": platform.python_version(), "os": platform.system(), "machine": platform.machine()}
     for name in ("numpy", "torch", "transformers", "pyarrow", "tokenizers", "peft", "trl", "accelerate", "bitsandbytes", "safetensors", "datasets",
-                 "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt"):
+                 "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt", "python-can", "pvlib"):
         try:
             result[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -77,6 +77,7 @@ def catalog() -> dict:
         ("statistics.plan", "Statistical planning and power calculations", True),
         ("statistics.analyze", "Observed study analysis and custom methods", True),
         ("runtime.qualify", "Measured runtime training and reload probes", True),
+        ("hardware.discover", "Operator-bound device and SunSpec discovery", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),
@@ -100,10 +101,12 @@ def catalog() -> dict:
     method_rows = [{**row, "manifest": manifest_for(row)} for row in method_rows]
     from .statistics_selection import method_catalog
     from .runtime_probe import method_catalog as runtime_methods
+    from .hardware_discovery_engine import method_catalog as discovery_methods
     return {"schema_version": 1, "enabled_increments": ["A", "B"], "adapters": items, "methods": method_rows,
             "qualification_matrix": qualification_matrix(items+method_rows),
             "statistics_methods": method_catalog(),
             "runtime_methods": runtime_methods(),
+            "hardware_discovery_methods": discovery_methods(),
             "contract_schemas": deepcopy(SCHEMAS),
             "domains": sorted({item["domain"] for item in items})}
 

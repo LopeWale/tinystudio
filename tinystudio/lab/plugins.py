@@ -148,6 +148,7 @@ METHODS = {
     "statistics.plan": (["evaluator"], "statistics.py", "statistics"),
     "statistics.analyze": (["evaluator"], "analysis.py", "analysis_integration"),
     "runtime.qualify": (["evaluator"], "runtime_probe.py", "runtime_integration"),
+    "hardware.discover": (["source", "evaluator"], "hardware_discovery_engine.py", "hardware_discovery_engine"),
     "deployment.benchmark": (["deployment"], "deployment.py", "deployment"),
 }
 
@@ -166,6 +167,9 @@ def manifest_for(row: dict) -> dict:
             version = "sha256:" + implementation_sha256()
         if id_ == "runtime.qualify" and implemented:
             from .runtime_probe import implementation_sha256
+            version = "sha256:" + implementation_sha256()
+        if id_ == "hardware.discover" and implemented:
+            from .hardware_discovery_engine import implementation_sha256
             version = "sha256:" + implementation_sha256()
     else:
         kinds = ["source"] if id_ in {"synthetic.signal", "recorded.replay"} or id_.startswith("acquisition.") else ["simulation"]

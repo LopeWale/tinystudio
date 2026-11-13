@@ -18,7 +18,7 @@ from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
 from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
-from .client_paths import RuntimeApiPaths
+from .client_paths import RuntimeApiPaths, HardwareApiPaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
 from .study_import_paths import StudyImportPaths
 from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
@@ -243,6 +243,12 @@ def analysis_methods(project: ProjectDep):
 @project_routes.get(RuntimeApiPaths(base="").methods)
 def runtime_methods(project: ProjectDep):
     from .runtime_probe import method_catalog
+    return method_catalog()
+
+
+@project_routes.get(HardwareApiPaths(base="").discovery_methods)
+def hardware_discovery_methods(project: ProjectDep):
+    from .hardware_discovery_engine import method_catalog
     return method_catalog()
 
 
@@ -595,7 +601,10 @@ def operation_retry(id_: str, db: DB, project: ProjectDep):
 
 @runner_routes.post("/claim")
 def claim(body: Claim, db: DB, target: TargetDep):
-    return {"attempt": svc.claim(db, target, body.capabilities, run_id=body.run_id)}
+    result = {"attempt": svc.claim(db, target, body.capabilities, run_id=body.run_id)}
+    # The response conveys execution authority. Commit before transmitting it.
+    db.commit()
+    return result
 
 
 @runner_routes.post("/advertise")
@@ -604,12 +613,15 @@ def advertise(body: Claim, db: DB, target: TargetDep):
     if len(svc.canonical(body.capabilities)) > 65536:
         raise svc.LabError("capability manifest too large")
     target.capabilities, target.last_seen = body.capabilities, svc.now()
+    db.commit()
     return {"accepted": True, "target_id": target.id}
 
 
 @runner_routes.post("/attempts/{id_}/heartbeat")
 def heartbeat(id_: str, body: Heartbeat, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
-    return svc.heartbeat(db, target, id_, x_lab_lease, body.events)
+    result = svc.heartbeat(db, target, id_, x_lab_lease, body.events)
+    db.commit()
+    return result
 
 
 @runner_routes.post("/attempts/{id_}/finish")
@@ -617,7 +629,9 @@ def finish(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: s
     # Credential authentication takes a target lock. Release it before storage
     # readback; the service reacquires attempt authority to publish completion.
     db.commit()
-    return svc.finish(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    result = svc.finish(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    db.commit()
+    return result
 
 
 @runner_routes.post("/attempts/{id_}/artifacts", status_code=201)
@@ -647,13 +661,17 @@ def upload_output(id_: str, db: DB, target: TargetDep, file: UploadFile = File(.
         existing = db.scalar(select(LabArtifact).where(LabArtifact.attempt_id == id_, LabArtifact.name == name))
         if existing:
             if (existing.sha256, existing.role, existing.visibility, existing.size) == (sha256, role, visibility, path.stat().st_size):
-                return svc.artifact_dict(existing)
+                result = svc.artifact_dict(existing)
+                db.commit()
+                return result
             raise svc.LabError("artifact name already published with different content or role", 409)
         prior = sum(db.scalars(select(LabArtifact.size).where(LabArtifact.attempt_id == attempt.id)))
         if prior + path.stat().st_size > maximum:
             raise svc.LabError("attempt output budget exceeded", 413)
-        return svc.artifact_dict(svc.store_artifact(db, target.project_id, path, name,
+        result = svc.artifact_dict(svc.store_artifact(db, target.project_id, path, name,
                    file.content_type or "application/octet-stream", role, id_, verified=verified, visibility=visibility))
+        db.commit()
+        return result
 
 
 @runner_routes.get("/attempts/{id_}/inputs/{artifact_id}")

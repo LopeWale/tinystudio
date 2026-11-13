@@ -39,6 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 statistics = ["scipy>=1.11"]
+hardware = ["pyserial>=3.5", "pymodbus>=3.16.2", "python-can>=4.6.1", "paho-mqtt>=2.2.0"]
 qlora = ["bitsandbytes"]
 youtube = ["youtube-transcript-api>=1.0"]
 assistant = ["anthropic>=2.1", "openai>=3.36"]

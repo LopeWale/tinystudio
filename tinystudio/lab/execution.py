@@ -94,11 +94,13 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
         from .analysis import execute_analysis as run
     elif engine == "runtime.qualify":
         from .runtime_probe import execute_runtime_probe as run
+    elif engine == "hardware.discover":
+        from .hardware_discovery_engine import execute_hardware_discovery as run
     elif engine == "data.pipeline":
         from .data import execute_data as run
     elif engine == "simulation.openmodelica":
         from .modelica import execute_modelica as run
-    elif engine in {"acquisition.serial", "acquisition.modbus", "acquisition.mqtt"}:
+    elif engine in {"acquisition.serial", "acquisition.modbus", "acquisition.mqtt", "acquisition.can"}:
         from .acquisition import execute_acquisition as run
     else:
         from .domain_adapters import CLI_TARGETS, PYTHON_TARGETS
@@ -156,12 +158,41 @@ def main():
         with (output.parent / "events.jsonl").open("a") as stream:
             stream.write(serialized + "\n")
 
-    result = execute(spec, output, emit, lambda: (output.parent / "cancel").exists(), context=context)
+    evidence_exit = None
+    try:
+        result = execute(spec, output, emit, lambda: (output.parent / "cancel").exists(), context=context)
+    except Exception as exc:
+        # Keep successful execution compatible with minimal source fixtures that
+        # have no cancellation class. Only the engine's explicit exception can
+        # opt into this separate audit outcome; arbitrary partial files cannot.
+        from . import engine
+        if not isinstance(getattr(exc, "evidence_result", None), dict):
+            raise
+        from .execution_outcome import (CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT,
+                                        RetainedExecutionError, cancelled_evidence_outcome,
+                                        failed_evidence_outcome)
+        if isinstance(exc, getattr(engine, "ExecutionCancelled", ())):
+            outcome = cancelled_evidence_outcome()
+            evidence_exit = CANCELLED_EVIDENCE_EXIT
+        elif isinstance(exc, RetainedExecutionError):
+            outcome = failed_evidence_outcome()
+            evidence_exit = FAILED_EVIDENCE_EXIT
+        else:
+            raise
+        result = json.loads(json.dumps(exc.evidence_result, allow_nan=False))
+        result["execution_outcome"] = outcome
+        if evidence_exit == FAILED_EVIDENCE_EXIT:
+            result["execution_error"] = f"{type(exc).__name__}: {exc}"[:8192]
     final_receipt = verify_runtime(spec, package)
     if any(receipt[key] != final_receipt[key] for key in final_receipt):
         raise ValueError("runtime identity changed during execution")
+    if evidence_exit is not None:
+        receipt["outcome"] = outcome
+        receipt["result_digest"] = checksum(result)
     (output.parent / "runtime-receipt.json").write_text(json.dumps(receipt, allow_nan=False))
     (output.parent / "result.json").write_text(json.dumps(result, allow_nan=False))
+    if evidence_exit is not None:
+        raise SystemExit(evidence_exit)
 
 
 if __name__ == "__main__":

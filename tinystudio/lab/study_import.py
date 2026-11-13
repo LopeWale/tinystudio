@@ -56,7 +56,7 @@ def _validate(model, body):
 
 def _implementation_sha256():
     root, digest = Path(__file__).resolve().parent, hashlib.sha256()
-    for name in ('study_import.py', 'study_import_paths.py', 'study_projection.py',
+    for name in ('study_import.py', 'study_import_paths.py', 'study_projection.py', 'json_selection.py',
                  'studies.py', 'study_contracts.py', 'contracts.py'):
         digest.update(name.encode() + b'\0' + (root / name).read_bytes())
     return digest.hexdigest()

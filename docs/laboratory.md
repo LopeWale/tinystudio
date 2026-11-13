@@ -169,6 +169,108 @@ Example definition:
 
 Uploads become immutable `{artifact_id, sha256, role}` references. Replay inputs use `source`; pretrained runs use `pretrained_model` and `snapshot`; retrieval uses `embedding_model` for a dense backend; checkpoints use `resume`, `teacher`, `model` or `checkpoint` according to the selected executor. Model directories are transported as bounded tar/zip artifacts with verified inner file manifests. Authored host paths and credentials are rejected.
 
+## Hardware discovery and acquisition
+
+Install `tinystudio[hardware]` on the execution host for the optional pySerial,
+PyModbus, python-can and Paho clients. The origin API and Cloudflare transport do
+not need device access. Configure endpoints and device authority in the enrolled
+runner's `profile_config.engine_grants`, using a `bindings` object keyed by the
+operator's binding IDs. Definitions select `parameters.binding_id`; copying a
+definition cannot grant device access or replace that host configuration.
+
+`hardware.discover` runs an explicitly selected `serial.enumerate`,
+`can.enumerate` or `sunspec.scan` method in operating mode `acquisition`. The
+definition editor exposes these choices and a retained report view. Inspect the
+parameter schemas through `tinystudio lab hardware-methods --project PROJECT`,
+the assistant's read-only `lab_hardware_discovery_methods`, or
+`GET /api/p/{slug}/lab/hardware/discovery-methods`. Reading this catalog performs
+no device discovery. Submit an authored definition through the ordinary Lab
+workflow to execute discovery on the chosen host.
+
+Serial enumeration reads port metadata without opening a port. CAN detection
+queries only the chosen, operator-authorized providers; some providers send
+discovery traffic and provider threads can finish after a detection timeout.
+SunSpec scanning requires explicit candidate base addresses, register kind and
+TCP unit identifier. It follows the actual ID/length chain and end marker,
+preserving unknown and repeated models. No fixed paper register address, model
+schema, scale factor or writable-point assumption is supplied. The report keeps
+complete, partial, not-found, unavailable, failed and cancelled outcomes distinct
+from whether Lab execution itself ended successfully.
+
+The discovery report retains requested and effective settings, dependency/source
+identities, clocks and model addresses. Its trace sidecar records each SDK
+callback buffer's direction, length, SHA256 and selected byte prefix. Receive
+buffers can overlap as the SDK accumulates a fragmented response; they are not
+disjoint socket receive chunks, physical wire packets, or proof of successful
+sends. No transport stream is reconstructed from them. A truncated or zero-byte
+prefix is disclosed. Neither a checksum nor structural discovery establishes
+physical device identity, electrical suitability, safety or control stability.
+
+Read-only acquisition engines are `acquisition.serial`, `acquisition.modbus`,
+`acquisition.mqtt` and `acquisition.can`. Each requires an exact host binding with
+matching `engine` and `read_only: true`. Serial opening additionally requires
+`serial_open: true`; opening and closing a port can toggle control lines. Native
+serial names and explicit `socket://`, `rfc2217://` and `loop://` endpoints are
+supported. CAN requires an explicit interface and channel, including a native
+SocketCAN interface when configured externally. MQTT requires an exact topic
+and explicit TLS choice. No acquisition client issues actuator commands.
+
+Serial bindings optionally select `framing: {"kind": "delimiter",
+"delimiter_hex": "0a"}` (the newline default) or
+`framing: {"kind": "fixed_bytes", "frame_bytes": 32}`. The size is authored,
+rather than a platform frame-size rule. Prefix retention consumes the logical
+frame boundary independently of its byte budget. Native timeouts can split a
+frame into segments, retaining frame identity, offsets, byte hashes and explicit
+continuation flags. A partial frame's tail cannot become a valid new measurement.
+
+Modbus bindings select `tcp` or `rtu_over_tcp` framing. A direct `read` declares
+`kind`, `device_id`, `address` and `count`. Alternatively it declares `kind`,
+`device_id` and `sunspec: {scan: {...}, point: {...}}`. The scan explicitly supplies
+`base_addresses` and `device_id`; the point supplies `model_id`, zero-based
+`instance`, payload-relative `offset` and `count`. The scan's register kind and
+device must match the read binding. A complete, unambiguous observed chain
+resolves the measurement address at transport opening. The retained
+`source-binding.json` records that resolution and discovery evidence. It does
+not infer engineering units, scaling, writability or stability. A trace prefix
+budget does not modify protocol traffic or replace decoded register values.
+Measurement trace budgets apply across SDK callback receipts per direction for
+each observation operation; discovery reports disclose their per-callback
+prefix budget separately. These scopes count retained callback bytes, including
+overlapping buffer content, rather than unique bytes on a socket.
+
+Acquisition retains separate raw and processed JSONL and Parquet artifacts.
+Raw rows preserve available wire bytes, scope, source identities and transport
+metadata; processed rows distinguish numeric observations, frame-only captures,
+missing data and decoding errors. `decode: "json_object"` retains structured
+payloads for later field mapping without inventing a scalar. CAN defaults to
+frame-only capture; numeric decoding requires an explicit payload mapping.
+MQTT evidence is an application payload, and CAN evidence is a received frame's
+payload and metadata, rather than a physical wire/CRC measurement.
+
+Explicitly failed or cancelled acquisition can retain raw JSONL, a source-binding
+report and an acquisition audit through the runner's verified audit-outcome path.
+Raw observations are written before optional shadow inference. A receive result
+that fails clock validation before normalization remains separately retained as
+unprocessed evidence. The audit distinguishes raw and processed record counts
+and reports native close errors; it does not establish complete collection or a
+physical stop. Forced termination, lease loss and host failure require separate
+recovery and can prevent publication; arbitrary partial outputs never establish
+a successful experiment.
+
+Collection choices `samples`, `duration`, `timeout`, `interval`, `stale_after`,
+`max_frame_bytes` and `max_queue_frames` are authored parameters. A null sample
+count or duration removes that stopping bound; zero samples or duration produces
+empty evidence without opening a transport. Host `limits` can impose explicit
+resource budgets. Requests exceeding those budgets fail before opening a device;
+they are never silently cropped or treated as a statistical sample-size rule.
+The run retains the selected plan and operator budgets separately.
+
+These adapters support local protocol and emulator verification. Wokwi RFC2217
+and Renode SocketCAN still require the simulator's own bridge/session setup;
+their cloud/runtime availability is separate from a successful local transport
+test. A Lab session coordinating telemetry, model decisions, gateway ownership,
+commands and recovery remains additional implementation work.
+
 ## Data preparation contracts
 
 The actual Lab parameter view uses shared application templates and controls for
@@ -179,6 +281,23 @@ remain editable but block saving, compatibility checks and submission. Advanced
 settings share the visual definition; unknown fields and custom options survive.
 
 `data.pipeline` accepts retained JSON/JSONL, CSV and optional Parquet evidence through `source`, `recorded` or `dataset` bindings. Original files remain separate from normalized and transformed records. Preparation alone does not request a training dataset. An explicit `parameters.partition_policy` requests one; a complete existing train/validation/test assignment is validated and preserved. Partially declared, conflicting or unknown labels fail. Source-level evaluation/truth restrictions cannot be promoted by cleaning, alias changes or the existing training serializer. Training-only fitted transforms require a validated training partition.
+
+Field mappings accept existing flat source-column names or explicit selectors:
+`{"pointer": "/decoded_payload/temperature"}` follows RFC 6901, and
+`{"literal": "researcher-selected label"}` supplies a constant without stringifying
+its value. Missing pointer targets fail unless the mapping explicitly chooses
+`"missing": "null"`. The source editor preserves structured selectors and
+advanced mapping fields.
+
+`parameters.resources` selects optional `max_rows`, `source_bytes`,
+`per_source_bytes`, `pipeline_stages` and `window_records` budgets. Omitted choices
+inherit the execution host's explicit limits, or remain unbounded when the host
+has selected none. Explicit null cannot bypass a finite host budget. A budget
+failure is an execution/resource error, rather than scientific validation, and
+does not silently discard source rows. The resource receipt records selected
+limits, operator limits and actual usage. Decoding, sorting, grouping, lineage
+and transformations currently use memory; removing fixed dataset ceilings does
+not establish out-of-core execution.
 
 Partition strategy `temporal` (the default) orders whole connected groups and checks event/availability boundaries in one comparable clock, with explicitly selected purge controls. Strategy `grouped` allocates connected groups with the frozen seed, allowing independent episode clocks that restart. It reports no temporal-isolation guarantee, rejects temporal purge controls and retains per-clock bounds. In both strategies, any shared configured episode/device/scenario field connects records into one group; declared assignments cannot split it. The overlap report also exposes repeated dimensions outside the selected grouping policy.
 

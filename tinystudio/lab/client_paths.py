@@ -5,9 +5,12 @@ import re
 
 
 @dataclass(frozen=True)
-class RuntimeApiPaths:
+class LabApiPaths:
     base: str = "/api/lab"
 
+
+@dataclass(frozen=True)
+class RuntimeApiPaths(LabApiPaths):
     @property
     def methods(self) -> str:
         return self.base + "/runtime/methods"
@@ -15,6 +18,13 @@ class RuntimeApiPaths:
     @property
     def definitions(self) -> str:
         return self.base + "/definitions"
+
+
+@dataclass(frozen=True)
+class HardwareApiPaths(LabApiPaths):
+    @property
+    def discovery_methods(self) -> str:
+        return self.base + "/hardware/discovery-methods"
 
 
 def runtime_definition(name: str, parameters: dict, execution: dict, inputs: list[dict] | None = None) -> dict:

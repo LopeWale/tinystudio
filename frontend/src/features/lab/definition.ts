@@ -89,6 +89,13 @@ const input = (
 ): InputExpectation => ({ role, description, required });
 export const templates: Template[] = [
   {
+    id: "hardware.discover",
+    name: "Hardware discovery",
+    domain: "hardware",
+    parameters: {},
+    hint: "Author a discovery method and exact operator binding. Serial and CAN enumeration or SunSpec structural reads retain evidence without actuator writes or physical qualification.",
+  },
+  {
     id: "runtime.qualify",
     name: "Runtime qualification",
     domain: "runtime",
@@ -786,9 +793,12 @@ export function makeDefinition(
     engine,
     seed: 42,
     mode: "offline",
-    operating_mode: ["recorded.replay", "runtime.qualify"].includes(engine)
-      ? "replay"
-      : "simulation",
+    operating_mode:
+      engine === "hardware.discover"
+        ? "acquisition"
+        : ["recorded.replay", "runtime.qualify"].includes(engine)
+          ? "replay"
+          : "simulation",
     parameters: structuredClone(template?.parameters ?? {}),
     pipeline: [],
     inputs: [],

@@ -38,6 +38,20 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
           "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
+    if engine == 'hardware.discover':
+        from .hardware_discovery_engine import validate_selection
+        try:
+            selected = validate_selection(definition.model_dump())
+        except (ValueError, TypeError) as error:
+            check('hardware_selection', False, str(error))
+        else:
+            check('hardware_selection', True, 'Discovery choices are authored; device access requires the selected host binding.')
+            bindings = capabilities.get('hardware_discovery_bindings', [])
+            permitted = any(isinstance(binding, dict) and binding.get('binding_id') == selected.binding_id
+                            and binding.get('read_only') is True and selected.method in binding.get('methods', [])
+                            for binding in bindings)
+            check('hardware_binding', permitted,
+                  'Configure the exact binding and discovery method on the selected execution host; this declaration does not qualify a device.')
     if engine == "statistics.plan":
         from .statistics_selection import validate_statistics_selection
         try:
@@ -133,8 +147,8 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
             check("data_pipeline", True,
                   "Observation-triggered availability replay; source clocks and recorded availability are validated at execution.")
     if definition.operating_mode in {"acquisition", "shadow"}:
-        check("acquisition_adapter", engine.startswith("acquisition."),
-              "Acquisition and shadow modes require an acquisition adapter with an explicit operator binding.")
+        check("acquisition_adapter", engine.startswith("acquisition.") or engine == "hardware.discover",
+              "Acquisition and shadow modes require an acquisition adapter or discovery method with an explicit operator binding.")
     if execution.requirements:
         try:
             limits = capabilities.get("resource_limits_by_backend", {}).get(backend)

@@ -21,6 +21,8 @@ import httpx
 
 from .contracts import checksum
 from .engine import digest
+from .execution_outcome import (CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT,
+                                cancelled_evidence_outcome, failed_evidence_outcome)
 from .service import catalog, implementation_digest, runtime_versions
 
 TRANSFER_LIMIT = 512 * 1024**2
@@ -66,6 +68,9 @@ def capabilities(profile_config: dict | None = None) -> dict:
               "runtime_by_backend": {"native": runtime}, "profiles_by_backend": {"native": ["trusted_native"]},
               "engines_by_backend": {"native": list(engines)}, "backend_qualification": {"native": "trusted_native_not_isolated"}}
     result["custom_analysis_python"] = (profile_config or {}).get("engine_grants", {}).get("statistics.analyze", {}).get("native_execution") is True
+    from .hardware_bindings import HardwareBindingRegistry
+    discovery_grants = (profile_config or {}).get('engine_grants', {}).get('hardware.discover', {})
+    result['hardware_discovery_bindings'] = HardwareBindingRegistry.from_grants(discovery_grants, 'discovery').discovery_capabilities()
     for backend, config in _backend_configs(profile_config).items():
         if backend == "rq" and isinstance(config, dict) and config.get("enabled") is True and config.get("profiles") == ["trusted_native"]:
             result["backends"].append("rq")
@@ -331,12 +336,12 @@ class LeaseHeartbeat:
             except Exception:
                 return
 
-    def check(self):
+    def check(self, *, ignore_cancel=False):
         if self.error:
             if self.connectivity_lost:
                 raise RuntimeError("runner lost lease connectivity") from self.error
             raise self.error
-        if self.cancelled.is_set():
+        if self.cancelled.is_set() and not ignore_cancel:
             raise AttemptCancelled("server requested cancellation")
         if time.monotonic() > self.deadline:
             raise TimeoutError("experiment exceeded selected wall-time budget")
@@ -351,12 +356,13 @@ class LeaseHeartbeat:
 
 class GuardedUpload:
     """Make multipart reads cancellation-aware and enforce their exact size bound."""
-    def __init__(self, stream, heartbeat: LeaseHeartbeat, maximum: int):
+    def __init__(self, stream, heartbeat: LeaseHeartbeat, maximum: int, *, audit_only=False):
         self.stream, self.heartbeat, self.maximum = stream, heartbeat, maximum
+        self.audit_only = audit_only
         self.read_bytes = 0
 
     def read(self, size=-1):
-        self.heartbeat.check()
+        self.heartbeat.check(ignore_cancel=self.audit_only)
         block = self.stream.read(size)
         self.read_bytes += len(block)
         if self.read_bytes > self.maximum:
@@ -563,6 +569,7 @@ class Runner:
                                    deadline=time.monotonic() + policy["max_seconds"])
         group = None
         state, result, error = "failed", None, None
+        verified_audit_result = False
         try:
             heartbeat.start()
             heartbeat.check()
@@ -600,19 +607,37 @@ class Runner:
                     group.start(stdout=stdout,stderr=stderr)
                     poll = group.poll
                 returncode = poll()
+                cancellation_deadline = None
                 while returncode is None:
-                    heartbeat.check()
+                    try:
+                        heartbeat.check()
+                    except AttemptCancelled:
+                        # The cancel file is already visible to the child. Give
+                        # cooperative engines a bounded opportunity to write an
+                        # explicit audit outcome, while lease/time checks remain
+                        # active. Uncooperative children follow normal teardown.
+                        heartbeat.check(ignore_cancel=True)
+                        if cancellation_deadline is None:
+                            cancellation_deadline = time.monotonic() + max(0, self.process_grace)
+                        if time.monotonic() >= cancellation_deadline:
+                            raise
                     if self._output_size(root) > policy["max_output_bytes"]:
                         raise ValueError("experiment exceeded selected output budget")
-                    time.sleep(.05)
+                    pause = .05 if cancellation_deadline is None else min(.05, max(0, cancellation_deadline - time.monotonic()))
+                    time.sleep(pause)
                     returncode = poll()
                 if plan is not None and policy["backend"] != "native":
                     captured_out,captured_err = group.logs()
                     stdout.write(captured_out.encode());stderr.write(captured_err.encode())
                     stdout.flush();stderr.flush()
                 group.close()  # Descendants must stop before reading/hashing any final output.
-                heartbeat.check()
-                if returncode != 0:
+                audit_only = returncode in {CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}
+                expected_outcome = (cancelled_evidence_outcome() if returncode == CANCELLED_EVIDENCE_EXIT
+                                    else failed_evidence_outcome() if returncode == FAILED_EVIDENCE_EXIT else None)
+                def publication_guard():
+                    heartbeat.check(ignore_cancel=audit_only)
+                publication_guard()
+                if returncode not in {0, CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}:
                     with (work / "stderr.log").open("rb") as stream:
                         stream.seek(max(0, stream.seek(0, 2) - 8192))
                         error = stream.read().decode(errors="replace")
@@ -625,18 +650,28 @@ class Runner:
                             raise ValueError("executor changed a frozen input artifact")
                     if checksum(json.loads((root / "spec.json").read_text())) != attempt["spec_digest"] or checksum(json.loads((root / "context.json").read_text())) != checksum(context):
                         raise ValueError("execution changed its frozen specification or context")
+                    if (work / "result.json").stat().st_size > 16 * 1024**2:
+                        raise ValueError("executor result exceeds 16 MiB")
+                    result = json.loads((work / "result.json").read_text())
+                    if not isinstance(result, dict):
+                        raise ValueError("executor result must be an object")
                     receipt = json.loads((work / "runtime-receipt.json").read_text())
                     expected_receipt = {"format": "tinystudio.execution-receipt.v1", "spec_digest": attempt["spec_digest"],
                                         "implementation_digest": checksum(spec["implementation"]), "runtime": spec["runtime"],
                                         "source_root": str(snapshot.root.resolve()), "context_digest": checksum(context), "profile_manifest": context["profile_manifest"]}
+                    if audit_only:
+                        if result.get("execution_outcome") != expected_outcome:
+                            raise ValueError("executor lacks its explicit audit outcome")
+                        if returncode == FAILED_EVIDENCE_EXIT and not isinstance(result.get("execution_error"), str):
+                            raise ValueError("failed audit outcome requires an explicit error")
+                        expected_receipt.update(outcome=expected_outcome, result_digest=checksum(result))
+                    elif "execution_outcome" in result:
+                        raise ValueError("successful executor cannot publish an audit outcome")
                     if receipt != expected_receipt or _backend_runtime(policy["backend"], config) != spec["runtime"]:
                         raise ValueError("executor runtime identity receipt mismatch")
-                    if (work / "result.json").stat().st_size > 16 * 1024**2:
-                        raise ValueError("executor result exceeds 16 MiB")
-                    result = json.loads((work / "result.json").read_text())
                     artifacts, total = [], 0
                     for item in result.get("artifacts", []):
-                        heartbeat.check()
+                        publication_guard()
                         path = Path(item["path"])
                         if path.is_symlink() or not path.resolve().is_relative_to(evidence.resolve()) or not path.is_file():
                             raise ValueError("executor artifact escapes its output directory")
@@ -648,17 +683,19 @@ class Runner:
                             raise ValueError("executor artifact checksum mismatch")
                         with path.open("rb") as stream:
                             response = self.client.post(self.prefix + prefix + "/artifacts", params={"role": item.get("role", "evidence"), "sha256": item["sha256"], "visibility": item.get("visibility", "model")},
-                                files={"file": (item["name"], GuardedUpload(stream, heartbeat, size), item.get("media_type", "application/octet-stream"))}, headers={"X-Lab-Lease": lease})
+                                files={"file": (item["name"], GuardedUpload(stream, heartbeat, size, audit_only=audit_only), item.get("media_type", "application/octet-stream"))}, headers={"X-Lab-Lease": lease})
                         response.raise_for_status()
-                        heartbeat.check()
+                        publication_guard()
                         if digest(path) != item["sha256"]:
                             raise ValueError("executor artifact changed during publication")
                         artifacts.append(response.json())
                     heartbeat.renew()
-                    heartbeat.check()
+                    publication_guard()
                     result["artifacts"] = artifacts
                     result["execution_receipt"] = receipt
-                    state = "succeeded"
+                    state = expected_outcome["state"] if audit_only else "succeeded"
+                    error = result.get("execution_error") if returncode == FAILED_EVIDENCE_EXIT else None
+                    verified_audit_result = audit_only
         except AttemptCancelled:
             state, result, error = "cancelled", None, None
         except Exception as cause:
@@ -674,7 +711,10 @@ class Runner:
                 raise RuntimeError("runner lost lease connectivity; local execution stopped, server must recover the attempt") from heartbeat.error
             if heartbeat.cancelled.is_set() and state == "succeeded":
                 state, result = "cancelled", None
-            self.post(prefix + "/finish", {"state": state, "result": result if state == "succeeded" else None, "error": error}, lease)
+            elif heartbeat.cancelled.is_set() and state == "failed" and verified_audit_result and result is not None:
+                state = "cancelled"
+            retained = result if state == "succeeded" or (state in {"cancelled", "failed"} and verified_audit_result) else None
+            self.post(prefix + "/finish", {"state": state, "result": retained, "error": error}, lease)
         finally:
             heartbeat.stop()
 

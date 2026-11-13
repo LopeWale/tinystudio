@@ -53,6 +53,10 @@ import { StudyAnalysisResult } from "./study-analysis";
 import { RuntimeProbeResult } from "./runtime-probe";
 import { RuntimeProbeFields } from "./runtime-probe-fields";
 import {
+  HardwareDiscoveryFields,
+  HardwareDiscoveryResult,
+} from "./hardware-discovery";
+import {
   StatisticsPlanning,
   RetainedStatisticsPlanning,
 } from "./statistics-planning";
@@ -164,6 +168,7 @@ function LabWorkspace() {
   const [languageLearningValid, setLanguageLearningValid] = useState(true);
   const [controlLearningValid, setControlLearningValid] = useState(true);
   const [numericLearningValid, setNumericLearningValid] = useState(true);
+  const [hardwareDiscoveryValid, setHardwareDiscoveryValid] = useState(true);
   const [parameterDrafts, setParameterDrafts] = useState<Set<string>>(
     () => new Set(),
   );
@@ -357,6 +362,7 @@ function LabWorkspace() {
     !numericLearningValid ||
     !!parameterDrafts.size ||
     (definition?.engine === "statistics.plan" && !statisticsPlanningValid) ||
+    (definition?.engine === "hardware.discover" && !hardwareDiscoveryValid) ||
     pendingInputWork;
   const dirty = !saved || hasAuthoringEdits;
   const structuredEngine = [
@@ -367,6 +373,7 @@ function LabWorkspace() {
     "learning.multimodal",
     "statistics.plan",
     "runtime.qualify",
+    "hardware.discover",
   ].includes(definition?.engine ?? "");
   const authoringValid =
     !parameterDrafts.size &&
@@ -382,7 +389,9 @@ function LabWorkspace() {
             ? numericLearningValid
             : definition?.engine === "statistics.plan"
               ? statisticsPlanningValid
-              : true);
+              : definition?.engine === "hardware.discover"
+                ? hardwareDiscoveryValid
+                : true);
   const draftParameterEngine = [
     "learning.pretrained",
     "learning.language_rl",
@@ -1517,6 +1526,17 @@ function LabWorkspace() {
                             methods={catalog.data?.runtime_methods?.methods}
                           />
                         )}
+                        {definition?.engine === "hardware.discover" && (
+                          <HardwareDiscoveryFields
+                            key={`${authoringGeneration}:hardware-discovery`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setHardwareDiscoveryValid}
+                            methods={
+                              catalog.data?.hardware_discovery_methods?.methods
+                            }
+                          />
+                        )}
                         {definition?.engine === "data.pipeline" && (
                           <DataPreparation
                             key={`${authoringGeneration}:data`}
@@ -2032,8 +2052,11 @@ function RunEvidence({
   const runtimeProbeRun =
     (run?.spec as any)?.definition?.engine === "runtime.qualify" ||
     retained?.all.some((item) => item.role === "runtime_probe");
+  const hardwareDiscoveryRun =
+    (run?.spec as any)?.definition?.engine === "hardware.discover" ||
+    retained?.all.some((item) => item.role === "device_discovery");
   const recordArtifacts =
-    analysisRun || runtimeProbeRun
+    analysisRun || runtimeProbeRun || hardwareDiscoveryRun
       ? []
       : (retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? []);
   const artifact = recordArtifacts.some(
@@ -2131,7 +2154,11 @@ function RunEvidence({
   // Each artifact owns its retrieval state: a missing counterpart must not
   // erase successfully retained observations or independent run evidence.
   const recordsAvailable =
-    !!run && !analysisRun && !runtimeProbeRun && isTerminal(run.state);
+    !!run &&
+    !analysisRun &&
+    !runtimeProbeRun &&
+    !hardwareDiscoveryRun &&
+    isTerminal(run.state);
   const recordPath = (name: string, start: number, limit: number) =>
     recordsAvailable
       ? `/api/lab/runs/${enc(id)}/records?offset=${start}&limit=${limit}&artifact=${enc(name)}`
@@ -2405,7 +2432,9 @@ function RunEvidence({
                   ? "Analysis"
                   : runtimeProbeRun
                     ? "Runtime probe"
-                    : "Replay",
+                    : hardwareDiscoveryRun
+                      ? "Discovery"
+                      : "Replay",
               controls: "lab-run-view-replay",
             },
             {
@@ -2485,7 +2514,9 @@ function RunEvidence({
                 ? "Analysis"
                 : runtimeProbeRun
                   ? "Runtime probe"
-                  : "Replay"
+                  : hardwareDiscoveryRun
+                    ? "Discovery"
+                    : "Replay"
           }
           hidden={runView !== "replay"}
         >
@@ -2500,6 +2531,8 @@ function RunEvidence({
               <StudyAnalysisResult run={run} />
             ) : runtimeProbeRun ? (
               <RuntimeProbeResult run={run} />
+            ) : hardwareDiscoveryRun ? (
+              <HardwareDiscoveryResult run={run} />
             ) : (
               <ReplayViews
                 records={chartRecords}
@@ -2521,7 +2554,7 @@ function RunEvidence({
           aria-label="Records"
           hidden={runView !== "records"}
         >
-          {analysisRun || runtimeProbeRun ? (
+          {analysisRun || runtimeProbeRun || hardwareDiscoveryRun ? (
             <>
               <EmptyState
                 heading="Results use reports and supporting artifacts"
@@ -2529,14 +2562,18 @@ function RunEvidence({
                   <Button onClick={() => setRunView("replay")}>
                     {runtimeProbeRun
                       ? "Open runtime probe report"
-                      : "Open analysis report"}
+                      : hardwareDiscoveryRun
+                        ? "Open discovery report"
+                        : "Open analysis report"}
                   </Button>
                 }
               >
                 <p>
                   {runtimeProbeRun
                     ? "Runtime qualification retains a compatibility report, measurement stages and diagnostic artifacts. Inspect the report in Runtime probe."
-                    : "Study analysis retains its statistical report, selected observations and inference-unit artifacts. Inspect estimates, diagnostics and provenance in Analysis."}
+                    : hardwareDiscoveryRun
+                      ? "Hardware discovery retains structural metadata, model-address chains and wire trace artifacts. Inspect the retained status and source identity in Discovery. These artifacts are not numeric observation records."
+                      : "Study analysis retains its statistical report, selected observations and inference-unit artifacts. Inspect estimates, diagnostics and provenance in Analysis."}
                 </p>
                 <p>Use Run actions to export the retained manifest bundle.</p>
               </EmptyState>
