@@ -54,34 +54,40 @@ def _deployment() -> Any:
     return config()
 
 
+def _preferences() -> Any:
+    from tinystudio.config import Preferences
+
+    return Preferences.from_environment()
+
+
 @dataclass(frozen=True)
 class Settings:
-    """Effective configuration, read from the environment after .env loading."""
+    """Compatibility/display view of deployment configuration and current team preferences."""
 
     project: str | None = field(default_factory=lambda: os.environ.get("TINYSTUDIO_PROJECT"))
-    database_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_DATABASE_URL", "postgresql+psycopg://tinystudio:tinystudio@127.0.0.1:5432/tinystudio"))
-    redis_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_REDIS_URL", "redis://127.0.0.1:6379/0"))
-    qdrant_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_QDRANT_URL", "http://127.0.0.1:6333"))
+    database_url: str = field(default_factory=lambda: _deployment().database_url)
+    redis_url: str = field(default_factory=lambda: _deployment().redis_url)
+    qdrant_url: str = field(default_factory=lambda: _deployment().qdrant_url)
     data_dir: str = field(default_factory=lambda: str(_deployment().data_dir))
     storage_backend: str = field(default_factory=lambda: _deployment().storage_backend)
     artifact_location: str = field(default_factory=lambda: _deployment().artifact_location)
-    inference_url: str | None = field(default_factory=lambda: os.environ.get("TINYSTUDIO_INFERENCE_URL") or None)
-    host: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.environ.get("TINYSTUDIO_PORT", "8000")))
-    device: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_DEVICE", "auto"))
-    dtype: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_DTYPE", "auto"))
-    llm_base_url: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_LLM_BASE_URL", "http://127.0.0.1:8080/v1"))
-    llm_model: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_LLM_MODEL", ""))
-    llm_api_key: str | None = field(default_factory=lambda: os.environ.get("TINYSTUDIO_LLM_API_KEY"))
-    embedding_model: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
-    anthropic_model: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_ANTHROPIC_MODEL", "claude-opus-5-5"))
-    anthropic_workspace_id: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_ANTHROPIC_WORKSPACE_ID", ""))
-    assistant_effort: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_ASSISTANT_EFFORT", "medium"))
-    openai_model: str = field(default_factory=lambda: os.environ.get("TINYSTUDIO_OPENAI_MODEL", ""))
-    anthropic_key_set: bool = field(default_factory=lambda: bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")))
-    openai_key_set: bool = field(default_factory=lambda: bool(os.environ.get("OPENAI_API_KEY")))
-    hf_token_set: bool = field(default_factory=lambda: bool(os.environ.get("HF_TOKEN")))
-    mps_fallback: str = field(default_factory=lambda: os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "1"))
+    inference_url: str | None = field(default_factory=lambda: _deployment().inference_url)
+    host: str = field(default_factory=lambda: _deployment().host)
+    port: int = field(default_factory=lambda: _deployment().port)
+    device: str = field(default_factory=lambda: _deployment().device)
+    dtype: str = field(default_factory=lambda: _deployment().dtype)
+    llm_base_url: str = field(default_factory=lambda: _preferences().llm_base_url)
+    llm_model: str = field(default_factory=lambda: _preferences().llm_model)
+    llm_api_key: str | None = field(default_factory=lambda: _preferences().llm_api_key, repr=False)
+    embedding_model: str = field(default_factory=lambda: _preferences().embedding_model)
+    anthropic_model: str = field(default_factory=lambda: _preferences().anthropic_model)
+    anthropic_workspace_id: str = field(default_factory=lambda: _preferences().anthropic_workspace_id)
+    assistant_effort: str = field(default_factory=lambda: _preferences().assistant_effort)
+    openai_model: str = field(default_factory=lambda: _preferences().openai_model)
+    anthropic_key_set: bool = field(default_factory=lambda: _preferences().anthropic_key_set)
+    openai_key_set: bool = field(default_factory=lambda: _preferences().openai_key_set)
+    hf_token_set: bool = field(default_factory=lambda: _preferences().hf_token_set)
+    mps_fallback: str = field(default_factory=lambda: _preferences().mps_fallback)
 
     def as_dict(self) -> dict[str, Any]:
         """Settings for display; secrets are reported only as set/unset."""

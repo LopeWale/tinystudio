@@ -254,7 +254,9 @@ def snapshot_frontend(source: Path, data_directory: Path) -> FrontendRelease:
     _verify_graph(files)
     hashes = _hashes(files)
     digest = _digest(hashes)
-    cache = data_directory / "frontend-releases"
+    from tinystudio.config import RuntimePaths
+
+    cache = RuntimePaths(data_directory).frontend_releases
     if cache.is_symlink():
         raise FrontendReleaseError("Frontend release cache must not be a symlink")
     cache.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,8 @@ from pathlib import Path
 import httpx
 import typer
 
+from tinystudio.config import ClientConfig
+
 from .runner import run as run_runner, validate_url
 from .client_paths import path_identifier
 
@@ -16,8 +18,9 @@ app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evi
 
 
 def client():
-    server = validate_url(os.environ.get("TINYSTUDIO_URL", "http://127.0.0.1:8000"))
-    token = os.environ.get("TINYSTUDIO_API_KEY", "")
+    settings = ClientConfig.from_environment()
+    server = validate_url(settings.url)
+    token = settings.api_key
     if not token:
         raise typer.BadParameter("set TINYSTUDIO_API_KEY to a user API key")
     from tinystudio.integrations.tools import Studio
@@ -328,7 +331,7 @@ def enroll(name: str, credential_file: Path = typer.Option(...), project: str = 
     try:
         with os.fdopen(fd, "w") as stream:
             response = call("POST", project, "/targets", {"name": name})
-            json.dump({"server": os.environ.get("TINYSTUDIO_URL", "http://127.0.0.1:8000"),
+            json.dump({"server": ClientConfig.from_environment().url,
                        "target_id": response["id"], "token": response["token"]}, stream)
     except BaseException:
         credential_file.unlink(missing_ok=True)

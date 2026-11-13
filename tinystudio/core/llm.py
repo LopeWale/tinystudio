@@ -10,12 +10,13 @@ your server wants one.
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+from tinystudio.config import Preferences
 
 
 class LLMError(RuntimeError):
@@ -31,9 +32,8 @@ class LLMClient:
 
     @classmethod
     def from_env(cls, base_url: str | None = None, model: str | None = None) -> "LLMClient":
-        base = base_url or os.environ.get("TINYSTUDIO_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
-        name = model or os.environ.get("TINYSTUDIO_LLM_MODEL", "")
-        return cls(base.rstrip("/"), name, os.environ.get("TINYSTUDIO_LLM_API_KEY"))
+        preferences = Preferences.from_environment()
+        return cls((base_url or preferences.llm_base_url).rstrip("/"), model or preferences.llm_model, preferences.llm_api_key)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

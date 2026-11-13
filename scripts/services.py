@@ -6,25 +6,34 @@ import argparse
 import os
 from pathlib import Path
 import plistlib
-import shutil
 import subprocess
 import sys
 
 ROOT = Path(__file__).absolute().parents[1]
-LABEL_PREFIX = "dev.joatlabs.tinystudio"
 COMPONENTS = ("tunnel", "api", "worker")
 
 
-def run(component: str) -> None:
+def configuration():
     # Load values without importing the application or putting secrets in plist/argv.
     sys.path.insert(0, str(ROOT))
     from tinystudio.settings import load_dotenv
-    load_dotenv([ROOT / ".env"])
+    from tinystudio.config import LaunchdConfig
+
+    selected = LaunchdConfig.from_environment(ROOT)
+    load_dotenv([selected.env_file])
+    return LaunchdConfig.from_environment(ROOT)
+
+
+def run(component: str) -> None:
+    selected = configuration()
     if component == "tunnel":
-        binary = shutil.which("cloudflared", path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        try:
+            binary = selected.tools.resolve("cloudflared")
+        except FileNotFoundError as cause:
+            raise SystemExit(str(cause)) from None
         token = os.environ.get("TUNNEL_TOKEN")
-        if not binary or not token:
-            raise SystemExit("cloudflared and TUNNEL_TOKEN are required")
+        if not token:
+            raise SystemExit("TUNNEL_TOKEN is required")
         env = {k: os.environ[k] for k in ("HOME", "PATH", "TMPDIR") if k in os.environ}
         env["TUNNEL_TOKEN"] = token
         os.execve(binary, [binary, "tunnel", "--no-autoupdate", "run"], env)
@@ -32,33 +41,42 @@ def run(component: str) -> None:
     for name in ("TUNNEL_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "TINYSTUDIO_API_KEY"):
         os.environ[name] = ""
     command = "serve" if component == "api" else "worker"
-    os.execv(sys.executable, [sys.executable, "-m", "tinystudio.cli", command])
+    interpreter = selected.tools.resolve("python")
+    os.execv(interpreter, [interpreter, "-m", "tinystudio.cli", command])
 
 
 def manage(action: str, components: list[str]) -> None:
+    if sys.platform != "darwin":
+        raise SystemExit("launchd service management requires macOS")
+    selected = configuration()
     domain = f"gui/{os.getuid()}"
-    directory = Path.home() / "Library/LaunchAgents"
-    logs = Path.home() / "Library/Logs/TinyStudio"
+    directory = selected.agents_directory
+    logs = selected.logs_directory
     for component in components:
-        label = f"{LABEL_PREFIX}.{component}"
+        label = f"{selected.label_prefix}.{component}"
         path = directory / f"{label}.plist"
         if action == "install":
-            if (ROOT / ".env").stat().st_mode & 0o077:
-                raise SystemExit("Set .env permissions to 0600 before installing services")
+            if selected.env_file.stat().st_mode & 0o077:
+                raise SystemExit("Set the selected environment file permissions to 0600 before installing services")
             directory.mkdir(parents=True, exist_ok=True)
             logs.mkdir(parents=True, exist_ok=True, mode=0o700)
             spec = {
                 "Label": label,
-                "ProgramArguments": [str(ROOT / ".venv/bin/python"), str(Path(__file__).absolute()), "run", component],
+                "ProgramArguments": [selected.tools.resolve("python"), str(Path(__file__).absolute()), "run", component],
                 "WorkingDirectory": str(ROOT), "RunAtLoad": True, "KeepAlive": True,
                 "ThrottleInterval": 10, "Umask": 0o077,
-                "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "TINYSTUDIO_ENV_FILE": str(ROOT / ".env")},
+                "EnvironmentVariables": {"PATH": selected.tools.path, "TINYSTUDIO_ENV_FILE": str(selected.env_file)},
                 "StandardOutPath": str(logs / f"{component}.log"),
                 "StandardErrorPath": str(logs / f"{component}.log"),
             }
+            if component == "tunnel":
+                spec["EnvironmentVariables"]["TINYSTUDIO_CLOUDFLARED"] = selected.tools.resolve("cloudflared")
             if path.exists():
                 existing = plistlib.loads(path.read_bytes())
-                if existing.get("ProgramArguments") != spec["ProgramArguments"]:
+                arguments = existing.get("ProgramArguments")
+                if (not isinstance(arguments, list) or len(arguments) != len(spec["ProgramArguments"])
+                        or arguments[1:] != spec["ProgramArguments"][1:]
+                        or existing.get("WorkingDirectory") != spec["WorkingDirectory"]):
                     raise SystemExit(f"Refusing to replace another checkout's service: {label}")
             subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
             path.write_bytes(plistlib.dumps(spec))

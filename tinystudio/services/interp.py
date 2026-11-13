@@ -42,7 +42,7 @@ class ProjectStore:
 
     def __init__(self, project_id: str) -> None:
         self.project_id = project_id
-        root = config().project_dir(project_id) / "interp"
+        root = config().paths.interpretability(project_id)
         self.captures_dir = root / "captures"
         self.diffs_dir = root / "diffs"
 
@@ -54,7 +54,7 @@ class ProjectStore:
 
     def _artifact_lock(self, kind: str, name: str) -> FileLock:
         self._directory(kind, name)
-        directory = config().project_dir(self.project_id) / "interp" / ".locks"
+        directory = config().paths.interpretability_locks(self.project_id)
         directory.mkdir(parents=True, exist_ok=True)
         identity = hashlib.sha256(f"{kind}/{name}".encode()).hexdigest()
         # Lock files live outside hydrated/deleted artifact directories and must

@@ -33,7 +33,9 @@ def wait_task(studio, task):
 
 
 async def mcp_import(studio, path):
-    params = StdioServerParameters(command=str(ROOT / '.venv/bin/tinystudio'), args=['mcp','--url',studio.base_url,'--project',studio.project], env=dict(os.environ), cwd=str(ROOT))
+    from tinystudio.config import RuntimeTools
+
+    params = StdioServerParameters(command=RuntimeTools.from_environment().resolve('python'), args=['-m', 'tinystudio.cli', 'mcp','--url',studio.base_url,'--project',studio.project], env=dict(os.environ), cwd=str(ROOT))
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as client:
             await client.initialize()
@@ -51,7 +53,7 @@ def main():
     assert httpx.get(public+'/api/auth/me',timeout=30).status_code in (302,401,403)
     assert httpx.get(public+'/api/auth/me',headers={**edge,'CF-Access-Client-Secret':'invalid'},timeout=30).status_code in (302,401,403)
     assert httpx.get(public+'/api/auth/me',headers=edge,timeout=30).status_code == 401
-    assert httpx.get('http://127.0.0.1:8000/api/auth/me',timeout=10).status_code == 401
+    assert httpx.get(config().local_url+'/api/auth/me',timeout=10).status_code == 401
     assert studio.call('GET','/api/auth/me')['via']=='api_key'
     print('PASS edge rejection, origin assertion enforcement, app API key enforcement',flush=True)
     project = studio.call('POST','/api/projects',json={'name':'Cloudflare Proof '+uuid.uuid4().hex[:8]})

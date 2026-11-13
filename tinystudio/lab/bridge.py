@@ -91,7 +91,7 @@ def _snapshot_preflight(db, snapshot, budget):
     expected = snapshot.training_count + snapshot.validation_count
     if prefix:
         import pyarrow.parquet as pq
-        directory = config().project_dir(snapshot.project_id) / "snapshots" / snapshot.id
+        directory = config().paths.snapshot(snapshot.project_id, snapshot.id)
         storage().hydrate_directory(prefix, directory)
         logical_bytes = records = 0
         for path in sorted([*directory.glob("train-*.parquet"), *directory.glob("val-*.parquet")]):

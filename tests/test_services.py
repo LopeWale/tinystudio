@@ -164,6 +164,8 @@ def test_traces_score_promote_stats(db, project):
 
 def test_settings_store_env_fallback_and_apply(db, monkeypatch: pytest.MonkeyPatch):
     import os
+    from tinystudio.core.llm import LLMClient
+    from tinystudio.settings import settings
 
     monkeypatch.setenv("TINYSTUDIO_LLM_MODEL", "from-env")
     monkeypatch.delenv("TINYSTUDIO_EMBEDDING_MODEL", raising=False)
@@ -171,10 +173,12 @@ def test_settings_store_env_fallback_and_apply(db, monkeypatch: pytest.MonkeyPat
     assert rows["TINYSTUDIO_LLM_MODEL"] == {**rows["TINYSTUDIO_LLM_MODEL"], "source": "environment", "value": "from-env"} and rows["TINYSTUDIO_EMBEDDING_MODEL"]["source"] == "default"
     settings_svc.save(db, {"TINYSTUDIO_LLM_MODEL": "stored", "HF_TOKEN": "hf_secret", "TINYSTUDIO_EMBEDDING_MODEL": ""})
     assert os.environ["TINYSTUDIO_LLM_MODEL"] == "stored" and os.environ["HF_TOKEN"] == "hf_secret"
+    assert settings().llm_model == LLMClient.from_env().model == "stored"
     rows = {r["key"]: r for r in settings_svc.describe(db)}
     assert rows["TINYSTUDIO_LLM_MODEL"]["source"] == "settings" and rows["HF_TOKEN"]["set"] is True and rows["HF_TOKEN"]["value"] is None
     settings_svc.save(db, {"TINYSTUDIO_LLM_MODEL": None})
     assert os.environ["TINYSTUDIO_LLM_MODEL"] == "from-env"  # cleared keys fall back to the seed
+    assert settings().llm_model == LLMClient.from_env().model == "from-env"
     with pytest.raises(ValueError, match="unknown setting"):
         settings_svc.save(db, {"NOPE": "x"})
     assert settings_svc.get(db, "HF_TOKEN") == "hf_secret"

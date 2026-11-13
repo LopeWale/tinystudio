@@ -95,7 +95,7 @@ def create_app(run_migrations: bool = True, base_models: list[str] | None = None
                 log.error("Frontend release unavailable: %s", error)
                 release = None
             frontend = release.directory if release else None
-            retained = retained_frontends(config().data_dir / "frontend-releases")
+            retained = retained_frontends(config().paths.frontend_releases)
             ui_files = FrontendReleaseFiles(release, retained)
 
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)

@@ -29,10 +29,8 @@ from typing import Any
 
 from tinystudio.integrations.tools import Studio, StudioError, ToolSpec, tool_specs
 from tinystudio.services.settings import environment_value
+from tinystudio.config import Preferences
 
-ANTHROPIC_MODEL = os.environ.get("TINYSTUDIO_ANTHROPIC_MODEL", "claude-opus-5-5")
-ANTHROPIC_EFFORT = os.environ.get("TINYSTUDIO_ASSISTANT_EFFORT", "medium")
-OPENAI_MODEL = os.environ.get("TINYSTUDIO_OPENAI_MODEL", "")
 MAX_RESULT_CHARS = 12000
 UI_TIMEOUT_SECONDS = 90.0
 MODEL_CACHE_SECONDS = 600.0
@@ -57,15 +55,15 @@ def openai_available() -> bool:
 
 
 def anthropic_default() -> str:
-    return os.environ.get("TINYSTUDIO_ANTHROPIC_MODEL", ANTHROPIC_MODEL)
+    return Preferences.from_environment().anthropic_model
 
 
 def anthropic_effort() -> str:
-    return os.environ.get("TINYSTUDIO_ASSISTANT_EFFORT", ANTHROPIC_EFFORT)
+    return Preferences.from_environment().assistant_effort
 
 
 def openai_default() -> str:
-    return os.environ.get("TINYSTUDIO_OPENAI_MODEL", OPENAI_MODEL)
+    return Preferences.from_environment().openai_model
 
 
 def status() -> dict[str, Any]:
@@ -91,7 +89,7 @@ def anthropic_client() -> Any:
     """An Anthropic client; organization-level keys need the anthropic-workspace-id header (TINYSTUDIO_ANTHROPIC_WORKSPACE_ID)."""
     import anthropic
 
-    workspace = os.environ.get("TINYSTUDIO_ANTHROPIC_WORKSPACE_ID", "").strip()
+    workspace = Preferences.from_environment().anthropic_workspace_id.strip()
     api_key = environment_value("ANTHROPIC_API_KEY")
     auth_token = environment_value("ANTHROPIC_AUTH_TOKEN")
     credentials = {"api_key": api_key} if api_key else {"auth_token": auth_token}

@@ -1,12 +1,13 @@
 """Real legacy dataset COPY and snapshot storage behind durable lab operations."""
 import json
-from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import func, select
 
 from test_lab_operations import database, setup  # isolated PostgreSQL fixtures
 from tinystudio.db.models import Dataset, Project, Snapshot
+from tinystudio.config import config
 from tinystudio.lab import bridge, operations as ops, service as svc
 from tinystudio.services import datasets, snapshots
 
@@ -15,7 +16,8 @@ from tinystudio.services import datasets, snapshots
 def evidence(setup, tmp_path, monkeypatch):
     factory, project, other, run_id, store = setup
     monkeypatch.setattr(snapshots, "storage", lambda: store)
-    monkeypatch.setattr(snapshots, "config", lambda: SimpleNamespace(project_dir=lambda _: tmp_path / "cache"))
+    selected = replace(config(), data_dir=tmp_path / "cache")
+    monkeypatch.setattr(snapshots, "config", lambda: selected)
     rows = []
     for partition, count in (("train", 10), ("validation", 2), ("final_test", 1), ("truth", 1)):
         for index in range(count):
