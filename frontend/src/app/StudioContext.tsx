@@ -30,7 +30,9 @@ export interface StudioRuntime {
   scopeKey: string;
   projects: any[];
   selectProject(project: string): void;
-  refreshProjects(): Promise<void>;
+  refreshProjects(options?: { preserveSelection?: boolean }): Promise<void>;
+  firstProjectPrompt?: boolean;
+  dismissFirstProjectPrompt?(): void;
   signOut(): Promise<void>;
   onSessionExpired(): void;
 }
@@ -107,6 +109,7 @@ export function StudioProvider({
   const [user, setUser] = useState<any>(null),
     [project, setProject] = useState(""),
     [projects, setProjects] = useState<any[]>([]),
+    [firstProjectPrompt, setFirstProjectPrompt] = useState(false),
     [overview, setOverview] = useState<any>(null),
     [phase, setPhase] = useState("loading"),
     [authError, setAuthError] = useState(""),
@@ -159,6 +162,7 @@ export function StudioProvider({
     setUser(null);
     setProject("");
     setProjects([]);
+    setFirstProjectPrompt(false);
     setOverview(null);
     setTasks([]);
     setPhase("login");
@@ -197,7 +201,7 @@ export function StudioProvider({
     [scope, evidence, settleConfirmation],
   );
   const refreshProjects = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, preserveSelection = false) => {
       const request = ++projectsGeneration.current,
         session = sessionGeneration.current,
         owner = latest.current.user?.id;
@@ -214,7 +218,10 @@ export function StudioProvider({
           "AbortError",
         );
       setProjects(rows);
-      if (!rows.some((p) => p.slug === latest.current.project)) {
+      if (
+        !preserveSelection &&
+        !rows.some((p) => p.slug === latest.current.project)
+      ) {
         let wanted = "";
         try {
           wanted = localStorage.getItem("tinystudio.project") ?? "";
@@ -270,7 +277,10 @@ export function StudioProvider({
     setAuthError("");
     refreshProjects(controller.signal)
       .then(() => {
-        if (active && session === sessionGeneration.current) setPhase("ready");
+        if (active && session === sessionGeneration.current) {
+          setFirstProjectPrompt(!latest.current.project);
+          setPhase("ready");
+        }
       })
       .catch((error) => {
         if (
@@ -341,7 +351,10 @@ export function StudioProvider({
     scopeKey,
     projects,
     selectProject,
-    refreshProjects,
+    refreshProjects: (options) =>
+      refreshProjects(undefined, options?.preserveSelection),
+    firstProjectPrompt,
+    dismissFirstProjectPrompt: () => setFirstProjectPrompt(false),
     refreshOverview,
     navigate: (hash) => {
       settleConfirmation(false);
@@ -376,22 +389,7 @@ export function StudioProvider({
   return (
     <StudioContext.Provider value={runtime}>
       {phase === "ready"
-        ? project
-          ? children
-          : authView({
-              phase: "project",
-              error: authError,
-              onSubmit: async (body: unknown) => {
-                try {
-                  const pr = await api.post<any>("/api/projects", body);
-                  await refreshProjects();
-                  selectProject(pr.slug);
-                } catch (e: any) {
-                  setAuthError(e.message);
-                }
-              },
-              onRetry: () => void refreshProjects(),
-            })
+        ? children
         : authView({
             phase:
               phase === "projects"

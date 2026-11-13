@@ -133,71 +133,46 @@ function AuthView({ phase, error, onSubmit, onRetry }: any) {
         ) : (
           <>
             <h1>
-              {phase === "setup"
-                ? "Create the admin account"
-                : phase === "project"
-                  ? "Create your first project"
-                  : "Sign in"}
+              {phase === "setup" ? "Create the admin account" : "Sign in"}
             </h1>
-            <p className="muted">
-              {phase === "project"
-                ? "A project keeps your datasets, jobs, evaluations and conversations together."
-                : "Continue to your model workspace."}
-            </p>
+            <p className="muted">Continue to your model workspace.</p>
             <form onSubmit={submit}>
-              {(phase === "setup" || phase === "project") && (
+              {phase === "setup" && (
                 <Field label="Name">
-                  <input
-                    name="name"
-                    required={phase === "project"}
-                    autoComplete="name"
-                  />
+                  <input name="name" autoComplete="name" />
                 </Field>
               )}
-              {phase === "project" ? (
-                <Field label="Goal">
-                  <textarea name="goal" />
-                </Field>
-              ) : (
-                <>
-                  <Field label="Email">
-                    <input
-                      type="email"
-                      name="email"
-                      autoComplete="username"
-                      required
-                    />
-                  </Field>
-                  <Field
-                    label={
-                      phase === "setup"
-                        ? "Password (8+ characters)"
-                        : "Password"
-                    }
-                  >
-                    <input
-                      type="password"
-                      name="password"
-                      minLength={phase === "setup" ? 8 : undefined}
-                      autoComplete={
-                        phase === "setup" ? "new-password" : "current-password"
-                      }
-                      required
-                    />
-                  </Field>
-                </>
-              )}
+              <Field label="Email">
+                <input
+                  type="email"
+                  name="email"
+                  autoComplete="username"
+                  required
+                />
+              </Field>
+              <Field
+                label={
+                  phase === "setup" ? "Password (8+ characters)" : "Password"
+                }
+              >
+                <input
+                  type="password"
+                  name="password"
+                  minLength={phase === "setup" ? 8 : undefined}
+                  autoComplete={
+                    phase === "setup" ? "new-password" : "current-password"
+                  }
+                  required
+                />
+              </Field>
+
               {error && (
                 <p role="alert" className="error">
                   {error}
                 </p>
               )}
               <Button variant="primary" type="submit" loading={pending}>
-                {phase === "setup"
-                  ? "Create admin and continue"
-                  : phase === "project"
-                    ? "Create project"
-                    : "Sign in"}
+                {phase === "setup" ? "Create admin and continue" : "Sign in"}
               </Button>
             </form>
           </>
@@ -342,45 +317,54 @@ export function Shell() {
               </Page>
             }
           >
-            <Routes key={studio.scopeKey}>
-              <Route path="/" element={<Navigate to="/datasets" replace />} />
-              <Route path="/datasets" element={<DatasetsPage />} />
-              <Route path="/lab" element={<LabPage />} />
-              <Route path="/datasets/:name" element={<DatasetPage />} />
-              <Route path="/repositories" element={<RepositoriesPage />} />
-              <Route path="/finetuning" element={<FinetuningPage />} />
-              <Route path="/finetuning/:job" element={<JobPage />} />
-              <Route path="/evaluations" element={<EvaluationsPage />} />
-              <Route path="/evaluations/:name" element={<EvaluationPage />} />
-              <Route path="/metrics" element={<MetricsPage />} />
-              <Route path="/assistant" element={<AssistantPage />} />
-              <Route path="/interp" element={<InterpretabilityPage />} />
-              <Route path="/interp/c/:capture" element={<CapturePage />} />
-              <Route
-                path="/interp/d/:comparison"
-                element={<ComparisonPage />}
-              />
-              <Route path="/models" element={<ModelsPage />} />
-              <Route path="/playground" element={<PlaygroundPage />} />
-              <Route path="/traces" element={<TracesPage />} />
-              <Route path="/projects" element={<ProjectsPage />} />
-              <Route path="/api-keys" element={<KeysPage />} />
-              <Route path="/stats" element={<StatsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/users" element={<UsersPage />} />
-              <Route
-                path="*"
-                element={
-                  <Page title="Page not found">
-                    <NavLink to="/datasets">Open datasets</NavLink>
-                  </Page>
-                }
-              />
-            </Routes>
+            {!studio.project &&
+            (studio.firstProjectPrompt ||
+              !["/projects", "/settings", "/api-keys", "/users"].includes(
+                location.pathname,
+              )) &&
+            location.pathname !== "/projects" ? (
+              <Navigate to="/projects" replace />
+            ) : (
+              <Routes key={studio.scopeKey}>
+                <Route path="/" element={<Navigate to="/datasets" replace />} />
+                <Route path="/datasets" element={<DatasetsPage />} />
+                <Route path="/lab" element={<LabPage />} />
+                <Route path="/datasets/:name" element={<DatasetPage />} />
+                <Route path="/repositories" element={<RepositoriesPage />} />
+                <Route path="/finetuning" element={<FinetuningPage />} />
+                <Route path="/finetuning/:job" element={<JobPage />} />
+                <Route path="/evaluations" element={<EvaluationsPage />} />
+                <Route path="/evaluations/:name" element={<EvaluationPage />} />
+                <Route path="/metrics" element={<MetricsPage />} />
+                <Route path="/assistant" element={<AssistantPage />} />
+                <Route path="/interp" element={<InterpretabilityPage />} />
+                <Route path="/interp/c/:capture" element={<CapturePage />} />
+                <Route
+                  path="/interp/d/:comparison"
+                  element={<ComparisonPage />}
+                />
+                <Route path="/models" element={<ModelsPage />} />
+                <Route path="/playground" element={<PlaygroundPage />} />
+                <Route path="/traces" element={<TracesPage />} />
+                <Route path="/projects" element={<ProjectsPage />} />
+                <Route path="/api-keys" element={<KeysPage />} />
+                <Route path="/stats" element={<StatsPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/users" element={<UsersPage />} />
+                <Route
+                  path="*"
+                  element={
+                    <Page title="Page not found">
+                      <NavLink to="/datasets">Open datasets</NavLink>
+                    </Page>
+                  }
+                />
+              </Routes>
+            )}
           </Suspense>
         </RouteErrorBoundary>
       </main>
-      <AssistantWidget />
+      {studio.project && <AssistantWidget />}
     </div>
   );
 }

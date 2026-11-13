@@ -134,7 +134,9 @@ export function WorkspaceBar({
   const project = (
     <Select
       aria-label="Current project"
-      selectedKey={studio.project}
+      selectedKey={studio.project || null}
+      placeholder="No project selected"
+      isDisabled={!studio.projects.length}
       onSelectionChange={(key) => {
         if (key) studio.selectProject(String(key));
       }}

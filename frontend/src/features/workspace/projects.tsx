@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStudio } from "../../app/StudioContext";
 import { DataTable } from "../../components/studio/data-table";
 import { CollectionToolbar } from "../../components/studio/collection-toolbar";
@@ -36,7 +36,7 @@ export function ProjectsPage() {
 function ProjectDirectory() {
   const s = useStudio(),
     r = useRetainedResource<any[]>("/api/projects");
-  const [open, setOpen] = useState(false),
+  const [open, setOpen] = useState(() => !!s.firstProjectPrompt),
     [name, setName] = useState(""),
     [goal, setGoal] = useState("");
   const [query, setQuery] = useState(""),
@@ -44,14 +44,30 @@ function ProjectDirectory() {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [dialogError, setDialogError] = useState("");
+  const [refreshNeeded, setRefreshNeeded] = useState(false);
   const mounted = useRef(true),
     pending = useRef(false),
     generation = useRef(0),
     draftRevision = useRef(0);
+  const newProjectAction = useRef<HTMLSpanElement>(null),
+    previousOpen = useRef(open),
+    restoreInitialFocus = useRef(open);
+  useEffect(() => {
+    const wasOpen = previousOpen.current;
+    previousOpen.current = open;
+    // The initial dialog has no opener. Restore after Modal releases its stack.
+    if (wasOpen && !open && restoreInitialFocus.current) {
+      restoreInitialFocus.current = false;
+      newProjectAction.current
+        ?.querySelector<HTMLButtonElement>("button")
+        ?.focus();
+    }
+  }, [open]);
   const search = useRef<HTMLInputElement>(null),
     returnFocus = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     mounted.current = true;
+    s.dismissFirstProjectPrompt?.();
     return () => {
       mounted.current = false;
     };
@@ -110,19 +126,42 @@ function ProjectDirectory() {
         setGoal("");
       }
       r.reload();
-      await s.refreshProjects();
+      await s.refreshProjects({ preserveSelection: true });
       if (!mounted.current) return;
       if (shouldEnter && generation.current === owner + 1) enter(project.slug);
       else s.toast("Project created");
     } catch (failure: any) {
       if (!mounted.current) return;
       const message = failure.message || String(failure);
-      if (created)
+      if (created) {
+        setRefreshNeeded(true);
         setError(
           `Project created, but the directory could not refresh. ${message}`,
         );
-      else if (generation.current === owner) setDialogError(message);
+      } else if (generation.current === owner) setDialogError(message);
       else setError(message);
+    } finally {
+      if (mounted.current) {
+        pending.current = false;
+        setBusy(false);
+      }
+    }
+  }
+  async function retryProjects() {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    r.reload();
+    try {
+      await s.refreshProjects({ preserveSelection: true });
+      if (!mounted.current) return;
+      setRefreshNeeded(false);
+      setError("");
+    } catch (failure: any) {
+      if (mounted.current) {
+        setRefreshNeeded(true);
+        setError(failure.message || String(failure));
+      }
     } finally {
       if (mounted.current) {
         pending.current = false;
@@ -168,12 +207,19 @@ function ProjectDirectory() {
       title="Projects"
       description="Keep each model goal together with its datasets, experiments, and results."
       actions={
-        <Button variant="primary" onClick={showDialog}>
-          New project
-        </Button>
+        <span ref={newProjectAction}>
+          <Button variant="primary" onClick={showDialog}>
+            New project
+          </Button>
+        </span>
       }
     >
       <ErrorNotice error={error} />
+      {refreshNeeded && !r.error && (
+        <Button loading={busy} onClick={retryProjects}>
+          Retry projects
+        </Button>
+      )}
       <CollectionTemplate
         className="data-template"
         label="Project directory workspace"
@@ -188,7 +234,9 @@ function ProjectDirectory() {
             {r.error && (
               <div className="projects-load-error">
                 <ErrorNotice error={r.error} />
-                <Button onClick={r.reload}>Retry projects</Button>
+                <Button loading={busy} onClick={retryProjects}>
+                  Retry projects
+                </Button>
               </div>
             )}
             <DataTable
@@ -363,9 +411,12 @@ function ProjectDirectory() {
         className="projects-create-dialog"
         onClose={closeDialog}
         footer={
-          <Button variant="primary" loading={busy} onClick={create}>
-            Create project
-          </Button>
+          <>
+            <Button onClick={closeDialog}>Cancel</Button>
+            <Button variant="primary" loading={busy} onClick={create}>
+              Create project
+            </Button>
+          </>
         }
       >
         <ErrorNotice error={dialogError} />

@@ -118,7 +118,7 @@ describe("project lookup during authenticated startup", () => {
     expect(await screen.findByTestId("project")).toHaveTextContent(/^b$/);
     expect(view.phases).not.toContain("project");
   });
-  it("shows first-project onboarding only after a successful empty list", async () => {
+  it("renders the authenticated workspace only after a successful empty list", async () => {
     const pending = deferred();
     const fetcher = transport(() => pending.promise);
     const view = mount();
@@ -129,7 +129,9 @@ describe("project lookup during authenticated startup", () => {
     );
     expect(view.phases).not.toContain("project");
     await act(async () => pending.resolve(json([])));
-    expect(await screen.findByText("project")).toBeInTheDocument();
+    expect(await screen.findByTestId("project")).toBeEmptyDOMElement();
+    expect(view.runtime().firstProjectPrompt).toBe(true);
+    expect(view.phases).not.toContain("project");
   });
   it("reports lookup failure and retries projects while keeping loading until retry succeeds", async () => {
     const pending = deferred();
