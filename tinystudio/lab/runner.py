@@ -177,7 +177,17 @@ class ProcessGroup:
     def __init__(self, command: list[str], *, grace: float = 3, **kwargs):
         if os.name != "posix":
             raise ValueError("native execution requires POSIX process-group lifecycle support")
-        self.process = subprocess.Popen(command, start_new_session=True, **kwargs)
+        self._supervisor = None
+        from tinystudio.config import NativeProcessSettings
+
+        self._process_settings = NativeProcessSettings.from_environment()
+        if sys.platform == "linux":
+            from .native_process import NativeSupervisor
+
+            self._supervisor = NativeSupervisor(command, grace=grace, settings=self._process_settings, **kwargs)
+            self.process = self._supervisor
+        else:
+            self.process = subprocess.Popen(command, start_new_session=True, **kwargs)
         self.pgid, self.grace = self.process.pid, grace
         self.closed = False
 
@@ -203,25 +213,53 @@ class ProcessGroup:
     def close(self):
         if self.closed:
             return
+        failure = None
+        try:
+            self._close_group()
+        except BaseException as error:
+            failure = error
+        finally:
+            if self._supervisor is not None:
+                try:
+                    self._supervisor.close()
+                except BaseException as error:
+                    if failure is None:
+                        failure = error
+                    else:
+                        failure.add_note(f"Supervisor cleanup also reported: {error}")
+        if failure is not None:
+            raise failure
+        self.closed = True
+
+    def _close_group(self):
+        status_error = None
         # Do this even when poll() has reaped the original leader.
         if self._exists():
             self._signal(signal.SIGTERM)
         deadline = time.monotonic() + self.grace
         while self._exists() and time.monotonic() < deadline:
-            self.process.poll()
-            time.sleep(.02)
+            try:
+                self.process.poll()
+            except Exception as error:
+                # Losing status must not prevent escalation of an owned
+                # workload that ignores SIGTERM.
+                status_error = error
+            time.sleep(self._process_settings.poll_seconds)
         if self._exists():
             self._signal(signal.SIGKILL)
         try:
             self.process.wait(timeout=max(self.grace, .1))
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("cannot confirm execution group leader cleanup") from exc
+        except Exception as error:
+            status_error = error
         deadline = time.monotonic() + max(self.grace, .1)
         while self._exists() and time.monotonic() < deadline:
-            time.sleep(.02)
+            time.sleep(self._process_settings.poll_seconds)
         if self._exists():
             raise RuntimeError("cannot confirm execution descendant cleanup")
-        self.closed = True
+        if status_error is not None:
+            raise RuntimeError("cannot confirm execution exit status") from status_error
 
 
 class AttemptCancelled(Exception):

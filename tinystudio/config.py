@@ -12,6 +12,7 @@ import hashlib
 import tempfile
 import shutil
 import sys
+import math
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,24 @@ DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+@dataclass(frozen=True)
+class NativeProcessSettings:
+    """Host-side lifecycle timing, separate from an experiment's wall-time budget."""
+
+    poll_seconds: float = .02
+    startup_seconds: float = 30
+
+    def __post_init__(self):
+        if any(not math.isfinite(value) or value <= 0 for value in (self.poll_seconds, self.startup_seconds)):
+            raise ValueError("native process timing values must be finite and positive")
+
+    @classmethod
+    def from_environment(cls) -> NativeProcessSettings:
+        defaults = cls()
+        return cls(float(_env("TINYSTUDIO_PROCESS_POLL_SECONDS", str(defaults.poll_seconds))),
+                   float(_env("TINYSTUDIO_PROCESS_STARTUP_SECONDS", str(defaults.startup_seconds))))
 
 
 @dataclass(frozen=True)
