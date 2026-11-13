@@ -49,6 +49,7 @@ import { NumericLearning } from "./numeric-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
 import { Studies } from "./studies";
+import { StudyAnalysisResult } from "./study-analysis";
 import {
   StatisticsPlanning,
   RetainedStatisticsPlanning,
@@ -2015,8 +2016,12 @@ function RunEvidence({
   const statisticsRun =
     (run?.spec as any)?.definition?.engine === "statistics.plan" ||
     retained?.all.some((item) => item.role === "statistical_plan");
-  const recordArtifacts =
-    retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? [];
+  const analysisRun =
+    (run?.spec as any)?.definition?.engine === "statistics.analyze" ||
+    retained?.all.some((item) => item.role === "statistical_analysis");
+  const recordArtifacts = analysisRun
+    ? []
+    : (retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? []);
   const artifact = recordArtifacts.some(
     (item) => item.name === requestedArtifact,
   )
@@ -2111,7 +2116,7 @@ function RunEvidence({
   }, [studio.api, id, refresh, onChanged]);
   // Each artifact owns its retrieval state: a missing counterpart must not
   // erase successfully retained observations or independent run evidence.
-  const recordsAvailable = !!run && isTerminal(run.state);
+  const recordsAvailable = !!run && !analysisRun && isTerminal(run.state);
   const recordPath = (name: string, start: number, limit: number) =>
     recordsAvailable
       ? `/api/lab/runs/${enc(id)}/records?offset=${start}&limit=${limit}&artifact=${enc(name)}`
@@ -2379,7 +2384,11 @@ function RunEvidence({
           options={[
             {
               value: "replay",
-              label: statisticsRun ? "Planning" : "Replay",
+              label: statisticsRun
+                ? "Planning"
+                : analysisRun
+                  ? "Analysis"
+                  : "Replay",
               controls: "lab-run-view-replay",
             },
             {
@@ -2452,7 +2461,9 @@ function RunEvidence({
         <section
           id="lab-run-view-replay"
           role="tabpanel"
-          aria-label={statisticsRun ? "Planning" : "Replay"}
+          aria-label={
+            statisticsRun ? "Planning" : analysisRun ? "Analysis" : "Replay"
+          }
           hidden={runView !== "replay"}
         >
           {run &&
@@ -2462,6 +2473,8 @@ function RunEvidence({
                 runId={id}
                 scopeKey={studio.scopeKey}
               />
+            ) : analysisRun ? (
+              <StudyAnalysisResult run={run} />
             ) : (
               <ReplayViews
                 records={chartRecords}

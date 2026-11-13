@@ -251,7 +251,9 @@ def tracking_manifest(db: Session, project: str, id_: str, *, revision=None, thr
             'export_path': f'/api/lab/studies/{id_}/export?'+urlencode({'revision': revision, 'through_seq': through_seq})}
 
 
-def export_tracking(db: Session, project: str, id_: str, directory: Path, *, revision=None, through_seq=None):
+def export_tracking(db: Session, project: str, id_: str, directory: Path, *, revision=None, through_seq=None,
+                    check_authority=lambda: None):
+    check_authority()
     header = tracking_manifest(db, project, id_, revision=revision, through_seq=through_seq)
     study = _study(db, project, id_)
     directory = Path(directory)
@@ -259,6 +261,7 @@ def export_tracking(db: Session, project: str, id_: str, directory: Path, *, rev
     path = directory/f'study-{study.id}-r{header["revision"]}-s{header["through_seq"]}.jsonl'
     sha = hashlib.sha256()
     def write(stream, document):
+        check_authority()
         line = canonical(document)+b'\n'
         stream.write(line); sha.update(line)
     # Open outside cleanup: failure must not unlink a caller's existing file.
@@ -280,6 +283,7 @@ def export_tracking(db: Session, project: str, id_: str, directory: Path, *, rev
                 raise svc.LabError('study tracking history is incomplete', 409)
             stream.write(canonical({'kind': 'export_summary', 'sha256': sha.hexdigest(),
                          'protocol_revisions': revision_count, 'records': record_count})+b'\n')
+        check_authority()
         return path
     except BaseException:
         path.unlink(missing_ok=True)

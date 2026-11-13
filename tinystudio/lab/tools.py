@@ -32,6 +32,54 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         return call("POST", "/api/lab/definitions", json={"definition": {
             "name": name, "engine": "statistics.plan", "parameters": parameters, "execution": execution}})
 
+    def lab_analysis_methods() -> dict:
+        """Inspect observed-data analysis methods, explicit selection policies, assumptions and custom-code requirements. No analysis is run."""
+        return call("GET", "/api/lab/statistics/analysis-methods")
+
+    def lab_study_analysis_input(study_id: str, idempotency_key: str, revision: int | None = None,
+                                 through_seq: int | None = None) -> dict:
+        """Queue a retained study snapshot for analysis at an authored or current history boundary.
+
+        This captures evidence only. Inspect the returned durable operation with
+        lab_operation and reuse its retained snapshot artifact. Repeating the
+        same key replays the original boundary even after more records arrive.
+        """
+        body = {"idempotency_key": idempotency_key}
+        if revision is not None:
+            body["revision"] = revision
+        if through_seq is not None:
+            body["through_seq"] = through_seq
+        return call("POST", f"/api/lab/studies/{path_identifier(study_id)}/analysis-inputs", json=body)
+
+    def lab_analysis_define(name: str, snapshot_artifact_id: str, parameters: dict, execution: dict,
+                             custom_code_artifact_id: str | None = None,
+                             extra_artifact_ids: list[str] | None = None) -> dict:
+        """Save an observed-data analysis definition bound to retained evidence; no run starts.
+
+        Inspect lab_analysis_methods and retain the researcher's record selection,
+        outcome/condition/unit mapping, missingness and repeated-measurement
+        policies, confidence and assumptions. Ask for missing choices. Custom
+        Python requires retained code and an authored method name/version; extra
+        inputs are explicit artifact references. Use existing lab_preflight,
+        lab_submit and lab_run for execution and evidence inspection.
+        """
+        body = {"name": name, "snapshot_artifact_id": path_identifier(snapshot_artifact_id),
+                "parameters": parameters, "execution": execution}
+        if custom_code_artifact_id is not None:
+            body["custom_code_artifact_id"] = path_identifier(custom_code_artifact_id)
+        if extra_artifact_ids is not None:
+            body["extra_artifact_ids"] = [path_identifier(value) for value in extra_artifact_ids]
+        return call("POST", "/api/lab/statistics/analyses", json=body)
+
+    def lab_study_analysis_result(study_id: str, run_id: str, idempotency_key: str, notes: str = "") -> dict:
+        """Append a verified completed analysis link at its retained historical study revision.
+
+        This records provenance and researcher notes. It does not execute the
+        analysis, infer statistical n from ledger counts or replace corrections.
+        """
+        return call("POST", f"/api/lab/studies/{path_identifier(study_id)}/analysis-results",
+                    json={"run_id": path_identifier(run_id), "idempotency_key": idempotency_key, "notes": notes})
+
     def lab_define(definition: dict) -> dict:
         """Save a new versioned laboratory definition without executing it."""
         return call("POST", "/api/lab/definitions", json={"definition": definition})
@@ -159,11 +207,13 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Queue an immutable, optimistically validated capture of an existing RAG repository; does not train."""
         return call("POST", "/api/lab/inputs/from-repository", json={"repository": repository, "idempotency_key": idempotency_key})
 
-    methods = [lab_catalog, lab_definitions, lab_statistics_methods, lab_statistics_define, lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
+    methods = [lab_catalog, lab_definitions, lab_statistics_methods, lab_statistics_define,
+               lab_analysis_methods, lab_study_analysis_input, lab_analysis_define, lab_study_analysis_result,
+               lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
                lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
-    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_statistics_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
+    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_statistics_methods, lab_analysis_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
                                                           lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest},
-                     long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input})
+                     long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input, lab_study_analysis_input})
             for f in methods]

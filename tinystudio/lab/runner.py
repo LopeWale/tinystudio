@@ -65,6 +65,7 @@ def capabilities(profile_config: dict | None = None) -> dict:
               "profiles": ["trusted_native"], "backends": ["native"], "engines": engines,
               "runtime_by_backend": {"native": runtime}, "profiles_by_backend": {"native": ["trusted_native"]},
               "engines_by_backend": {"native": list(engines)}, "backend_qualification": {"native": "trusted_native_not_isolated"}}
+    result["custom_analysis_python"] = (profile_config or {}).get("engine_grants", {}).get("statistics.analyze", {}).get("native_execution") is True
     for backend, config in _backend_configs(profile_config).items():
         if backend == "rq" and isinstance(config, dict) and config.get("enabled") is True and config.get("profiles") == ["trusted_native"]:
             result["backends"].append("rq")

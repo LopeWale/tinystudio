@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
@@ -60,6 +60,30 @@ class TargetEnrollment(BaseModel):
 class Preflight(BaseModel):
     definition: dict
     target_id: str = "local"
+
+
+class CaptureAnalysisInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt | None = Field(default=None, ge=1, le=2**53-1)
+    through_seq: StrictInt | None = Field(default=None, ge=0, le=2**53-1)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class SaveAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    snapshot_artifact_id: str
+    parameters: dict
+    execution: dict
+    custom_code_artifact_id: str | None = None
+    extra_artifact_ids: list[str] = Field(default_factory=list)
+
+
+class RecordAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    notes: str = ""
 
 
 class SnapshotInput(BaseModel):
@@ -189,6 +213,32 @@ def catalog(project: ProjectDep):
 def statistics_methods(project: ProjectDep):
     from .statistics_selection import method_catalog
     return method_catalog()
+
+
+@project_routes.get("/statistics/analysis-methods")
+def analysis_methods(project: ProjectDep):
+    from .analysis import method_catalog
+    return method_catalog()
+
+
+@project_routes.post('/studies/{id_}/analysis-inputs', status_code=202)
+def capture_analysis_input(id_: str, body: CaptureAnalysisInput, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import request_input
+    from .operations import operation_dict
+    return operation_dict(request_input(db, project.id, id_, body.idempotency_key,
+                                       revision=body.revision, through_seq=body.through_seq))
+
+
+@project_routes.post('/statistics/analyses', status_code=201)
+def save_analysis(body: SaveAnalysis, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import save_analysis_definition
+    return save_analysis_definition(db, project.id, body.model_dump())
+
+
+@project_routes.post('/studies/{id_}/analysis-results', status_code=201)
+def record_analysis_result(id_: str, body: RecordAnalysis, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import record_result
+    return record_result(db, project.id, id_, body.run_id, author.user.id, body.idempotency_key, notes=body.notes)
 
 
 @project_routes.post("/preflight")

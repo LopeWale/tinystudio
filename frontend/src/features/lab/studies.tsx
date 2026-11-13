@@ -13,6 +13,7 @@ import {
 import { SettingsSection } from "../../components/studio/settings-section";
 import { SimpleTable } from "../../components/studio/data-table";
 import { DraftField } from "./data-preparation";
+import { StudyAnalysisPanel } from "./study-analysis";
 
 type JsonObject = Record<string, unknown>;
 type StudyDocument = JsonObject & {
@@ -701,6 +702,24 @@ function StudyEditor({
               onChanged();
             }}
             onDirty={setRecordDirty}
+          />
+          <StudyAnalysisPanel
+            key={base.id}
+            study={base}
+            currentHead={{
+              revision:
+                header.data?.id === base.id
+                  ? header.data.head_revision
+                  : base.head_revision,
+              last_sequence:
+                header.data?.id === base.id
+                  ? header.data.last_sequence
+                  : base.last_sequence,
+            }}
+            onResultLinked={() => {
+              header.reload();
+              onChanged();
+            }}
           />
           <SettingsSection
             title="Tracking export"

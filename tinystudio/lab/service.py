@@ -75,6 +75,7 @@ def catalog() -> dict:
         ("data.pipeline", "Scientific data preparation and grouped partitions", True),
         ("evaluation.compare", "Independent validation and paired comparison", True),
         ("statistics.plan", "Statistical planning and power calculations", True),
+        ("statistics.analyze", "Observed study analysis and custom methods", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),

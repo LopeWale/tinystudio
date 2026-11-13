@@ -146,6 +146,7 @@ METHODS = {
     "data.pipeline": (["transformation", "representation"], "data.py", "data"),
     "evaluation.compare": (["evaluator"], "research.py", "evaluation"),
     "statistics.plan": (["evaluator"], "statistics.py", "statistics"),
+    "statistics.analyze": (["evaluator"], "analysis.py", "analysis_integration"),
     "deployment.benchmark": (["deployment"], "deployment.py", "deployment"),
 }
 
@@ -159,6 +160,9 @@ def manifest_for(row: dict) -> dict:
         if id_ == "statistics.plan" and implemented:
             version = "sha256:" + hashlib.sha256(b"".join(Path(__file__).with_name(name).read_bytes()
                 for name in ("statistics_selection.py", "statistics.py"))).hexdigest()
+        if id_ == "statistics.analyze" and implemented:
+            from .analysis_selection import implementation_sha256
+            version = "sha256:" + implementation_sha256()
     else:
         kinds = ["source"] if id_ in {"synthetic.signal", "recorded.replay"} or id_.startswith("acquisition.") else ["simulation"]
         fixture = ("engine" if id_ in {"synthetic.signal", "recorded.replay", "simulation.plant"} else
@@ -295,6 +299,12 @@ def input_contracts(id_: str) -> list[PortContract]:
         for role in ("source", "dataset", "recorded"):
             add(role, maximum=128, visibility=["model", "evaluation", "truth"],
                 media=["application/json", "application/x-ndjson", "text/csv", "application/vnd.apache.parquet"])
+    elif id_ == "statistics.analyze":
+        add("study_snapshot", required=True, visibility=["model", "evaluation", "truth"], media=["application/x-ndjson"])
+        add("analysis_code", when="method=custom.python", visibility=["model", "evaluation", "truth"],
+            media=["text/plain", "text/x-python", "application/octet-stream"])
+        add("analysis_auxiliary", maximum=128, when="method=custom.python", visibility=["model", "evaluation", "truth"],
+            media=["*/*"])
     elif id_.startswith("acquisition."):
         add("telemetry", when="retained replay")
         add("shadow_model", when="operating_mode=shadow")

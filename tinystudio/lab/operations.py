@@ -253,6 +253,9 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
                     if payload.get("intent", {}).get("action") == "capture_repository":
                         from .repository_capture import execute_capture
                         result = execute_capture(db, project, payload, directory, check_authority=lease.check)
+                    elif payload.get("intent", {}).get("action") == "capture_study":
+                        from .study_analysis import execute_capture
+                        result = execute_capture(db, project, payload, directory, check_authority=lease.check)
                     else:
                         from .data_bridge_operations import execute
                         result = execute(db, project, payload, directory)

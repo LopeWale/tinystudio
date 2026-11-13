@@ -49,6 +49,19 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("statistics_selection", True,
                   "Planning inputs and goal are compatible; the result is conditional on the declared assumptions.")
+    if engine == "statistics.analyze":
+        from .analysis_selection import CUSTOM_METHOD, validate_analysis_selection
+        try:
+            selected = validate_analysis_selection(definition.model_dump())
+            if selected["method"] == CUSTOM_METHOD:
+                if capabilities.get("custom_analysis_python") is not True:
+                    raise ValueError("custom analysis requires the selected runner operator's native_execution grant for statistics.analyze")
+            elif not (runtime or {}).get("scipy"):
+                raise ValueError("observed-data inference requires SciPy on the selected target; install tinystudio[statistics]")
+        except (ValueError, KeyError, TypeError) as error:
+            check("analysis_selection", False, str(error))
+        else:
+            check("analysis_selection", True, "Frozen observations and method are compatible; data selection and declared inference units are checked at execution.")
     if engine == "retrieval.index":
         from .retrieval_selection import validate_retrieval_selection
         try:

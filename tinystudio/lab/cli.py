@@ -56,6 +56,43 @@ def statistics_methods(project: str = typer.Option(..., "--project", "-p")):
     show(call("GET", project, "/statistics/methods"))
 
 
+@app.command("analysis-methods")
+def analysis_methods(project: str = typer.Option(..., "--project", "-p")):
+    """Inspect observed-data analysis methods and required researcher choices."""
+    show(call("GET", project, "/statistics/analysis-methods"))
+
+
+@app.command("analysis-define")
+def analysis_define(file: Path, project: str = typer.Option(..., "--project", "-p")):
+    """Save authored analysis JSON with retained snapshot/optional code inputs; does not execute.
+
+    Inspect analysis-methods for explicit settings. Use check, submit and inspect
+    for the existing execution workflow.
+    """
+    show(call("POST", project, "/statistics/analyses", json.loads(file.read_text())))
+
+
+@app.command("study-analysis-input")
+def study_analysis_input(study_id: str, project: str = typer.Option(..., "--project", "-p"),
+                         idempotency_key: str = typer.Option(...), revision: int | None = None,
+                         through_seq: int | None = None):
+    """Queue a retained study snapshot; inspect its durable operation for the input artifact."""
+    body = {"idempotency_key": idempotency_key}
+    if revision is not None:
+        body["revision"] = revision
+    if through_seq is not None:
+        body["through_seq"] = through_seq
+    show(call("POST", project, f"/studies/{identifier(study_id)}/analysis-inputs", body))
+
+
+@app.command("study-analysis-result")
+def study_analysis_result(study_id: str, run_id: str, project: str = typer.Option(..., "--project", "-p"),
+                          idempotency_key: str = typer.Option(...), notes: str = ""):
+    """Append a verified completed analysis link and notes at its historical study revision."""
+    show(call("POST", project, f"/studies/{identifier(study_id)}/analysis-results",
+              {"run_id": identifier(run_id), "idempotency_key": idempotency_key, "notes": notes}))
+
+
 @app.command('studies')
 def studies(project: str = typer.Option(..., '--project', '-p'), offset: int = 0, limit: int = 100):
     """List project studies; ledger counts do not infer independent samples."""
