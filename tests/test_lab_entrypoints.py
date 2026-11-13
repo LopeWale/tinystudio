@@ -28,6 +28,8 @@ def test_shared_lab_catalog_uses_authenticated_project_transport():
         assert {name for name in specs if name.startswith("lab_")} == {
             "lab_catalog", "lab_definitions", "lab_define", "lab_preflight", "lab_submit",
             "lab_statistics_methods", "lab_statistics_define",
+            "lab_studies", "lab_study", "lab_study_save", "lab_study_revisions",
+            "lab_study_records", "lab_study_record", "lab_study_manifest",
             "lab_run", "lab_events", "lab_cancel", "lab_retry", "lab_targets",
             "lab_export", "lab_operation", "lab_import", "lab_recover",
             "lab_operations", "lab_operation_cancel", "lab_operation_retry",
@@ -52,7 +54,7 @@ def test_data_bridge_tools_require_explicit_opt_in():
 
     default = {item.name for item in lab_specs(None, ToolSpec)}
     opt_in = {item.name for item in lab_specs(None, ToolSpec, include_data_bridges=True)}
-    assert len(default) == 21
+    assert len(default) == 28
     assert opt_in - default == {"lab_snapshot_input", "lab_model_input"}
 
 

@@ -5,6 +5,7 @@ import { Button } from "../../components/studio/primitives";
 import { WorkspaceDisclosure } from "../../components/studio/workspace";
 import { LabChoice } from "./inputs";
 import type { ExperimentDefinition } from "./definition";
+import type { JsonCodec } from "../../api/scientific-json";
 
 type Options = Record<string, unknown>;
 const stageDefaults: Options = {
@@ -53,6 +54,7 @@ export function DraftField({
   optional = false,
   minimum,
   integer = false,
+  jsonCodec,
 }: {
   label: string;
   value: unknown;
@@ -63,13 +65,16 @@ export function DraftField({
   optional?: boolean;
   minimum?: number;
   integer?: boolean;
+  jsonCodec?: JsonCodec;
 }) {
+  const formatJson = (value: unknown) =>
+    jsonCodec ? jsonCodec.stringify(value, 2) : JSON.stringify(value, null, 2);
   const serialized =
     kind === "number"
       ? String(value ?? "")
       : kind === "list"
         ? (Array.isArray(value) ? value : [value]).join(", ")
-        : JSON.stringify(value ?? (kind === "array" ? [] : {}), null, 2);
+        : formatJson(value ?? (kind === "array" ? [] : {}));
   const [draft, setDraft] = useState(serialized);
   const [error, setError] = useState("");
   const committed = useRef(serialized);
@@ -108,7 +113,7 @@ export function DraftField({
           .map((field) => field.trim())
           .filter(Boolean);
       } else {
-        parsed = JSON.parse(text);
+        parsed = jsonCodec ? jsonCodec.parse(text) : JSON.parse(text);
         if (
           kind === "array"
             ? !Array.isArray(parsed)
@@ -123,7 +128,7 @@ export function DraftField({
           ? String(parsed ?? "")
           : kind === "list"
             ? (parsed as string[]).join(", ")
-            : JSON.stringify(parsed, null, 2);
+            : formatJson(parsed);
       onChange(parsed);
     } catch (e) {
       setError((e as Error).message);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
-import { Input } from "../../components/boardui/base/input/input";
+import { Input } from "@/components/boardui/base/input/input";
 import {
   Button,
   EmptyState,

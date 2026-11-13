@@ -53,6 +53,79 @@ def statistics_methods(project: str = typer.Option(..., "--project", "-p")):
     show(call("GET", project, "/statistics/methods"))
 
 
+@app.command('studies')
+def studies(project: str = typer.Option(..., '--project', '-p'), offset: int = 0, limit: int = 100):
+    """List project studies; ledger counts do not infer independent samples."""
+    show(call('GET', project, f'/studies?offset={offset}&limit={limit}'))
+
+
+@app.command('study-save')
+def study_save(file: Path, project: str = typer.Option(..., '--project', '-p'),
+               study_id: str | None = None, expected_revision: int | None = None, idempotency_key: str | None = None):
+    """Create a study or save a new protocol revision with optimistic conflict detection."""
+    document = json.loads(file.read_text())
+    if study_id is None:
+        show(call('POST', project, '/studies', {'study': document, 'idempotency_key': idempotency_key or uuid.uuid4().hex}))
+    else:
+        show(call('PUT', project, '/studies/'+identifier(study_id), {'study': document, 'expected_revision': expected_revision}))
+
+
+@app.command('study-inspect')
+def study_inspect(study_id: str, project: str = typer.Option(..., '--project', '-p'), revision: int | None = None):
+    """Reopen a current or historical study protocol and its digest."""
+    suffix = f'?revision={revision}' if revision is not None else ''
+    show(call('GET', project, '/studies/'+identifier(study_id)+suffix))
+
+
+@app.command('study-revisions')
+def study_revisions(study_id: str, project: str = typer.Option(..., '--project', '-p')):
+    """Inspect retained protocol revision history."""
+    show(call('GET', project, '/studies/'+identifier(study_id)+'/revisions'))
+
+
+@app.command('study-record')
+def study_record(study_id: str, file: Path, project: str = typer.Option(..., '--project', '-p'), idempotency_key: str | None = None):
+    """Append structured collection data/notes/evidence against an explicit protocol revision."""
+    body = json.loads(file.read_text())
+    if idempotency_key is not None:
+        body['idempotency_key'] = idempotency_key
+    body.setdefault('idempotency_key', uuid.uuid4().hex)
+    show(call('POST', project, '/studies/'+identifier(study_id)+'/records', body))
+
+
+@app.command('study-records')
+def study_records(study_id: str, project: str = typer.Option(..., '--project', '-p'), after: int = 0, limit: int = 100):
+    """Read collection records with durable sequence pagination."""
+    show(call('GET', project, f'/studies/{identifier(study_id)}/records?after={after}&limit={limit}'))
+
+
+@app.command('study-export')
+def study_export(study_id: str, output: Path, project: str = typer.Option(..., '--project', '-p')):
+    """Download checksum-verified tracking JSONL; referenced artifact bytes stay external."""
+    import hashlib
+    import re
+    temporary = output_paths(output)
+    owned = False
+    digest = hashlib.sha256()
+    try:
+        with client() as http, http.stream('GET', path(project, f'/studies/{identifier(study_id)}/export')) as response:
+            response.raise_for_status()
+            expected = response.headers.get('x-content-sha256', '')
+            if not re.fullmatch(r'[0-9a-f]{64}', expected):
+                raise typer.BadParameter('study export has no verifiable checksum')
+            with temporary.open('xb') as stream:
+                owned = True
+                for block in response.iter_bytes():
+                    stream.write(block); digest.update(block)
+        if digest.hexdigest() != expected:
+            raise typer.BadParameter('study export checksum mismatch')
+        os.link(temporary, output)
+    finally:
+        if owned:
+            temporary.unlink(missing_ok=True)
+    typer.echo(str(output.resolve()))
+
+
 @app.command("define")
 def define(file: Path, project: str = typer.Option(..., "--project", "-p")):
     """Save a versioned definition; does not start execution."""

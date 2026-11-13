@@ -48,6 +48,7 @@ import { ControlLearning } from "./control-learning";
 import { NumericLearning } from "./numeric-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
+import { Studies } from "./studies";
 import {
   StatisticsPlanning,
   RetainedStatisticsPlanning,
@@ -178,6 +179,7 @@ function LabWorkspace() {
   const [saved, setSaved] = useState<SavedDefinition | null>(null);
   const [baselineText, setBaselineText] = useState(draft);
   const [area, setArea] = useState("runs");
+  const [studiesOpened, setStudiesOpened] = useState(false);
   const [experimentOpen, setExperimentOpen] = useState(false);
   const [creatingExperiment, setCreatingExperiment] = useState(false);
   const [pendingDefinition, setPendingDefinition] = useState<
@@ -844,6 +846,7 @@ function LabWorkspace() {
             aria-label="Laboratory work area"
             value={area}
             onChange={(next) => {
+              if (next === "studies") setStudiesOpened(true);
               if (
                 next === "experiment" &&
                 creatingExperiment &&
@@ -862,6 +865,11 @@ function LabWorkspace() {
                 controls: "lab-area-experiment",
               },
               { value: "runs", label: "Runs", controls: "lab-area-runs" },
+              {
+                value: "studies",
+                label: "Studies",
+                controls: "lab-area-studies",
+              },
               {
                 value: "capabilities",
                 label: "Capabilities",
@@ -1874,6 +1882,14 @@ function LabWorkspace() {
                 )}
               </div>
             </div>
+          </section>
+          <section
+            id="lab-area-studies"
+            role="tabpanel"
+            aria-label="Studies"
+            hidden={area !== "studies"}
+          >
+            {studiesOpened && <Studies />}
           </section>
           <section
             id="lab-area-capabilities"

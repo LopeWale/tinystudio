@@ -58,7 +58,7 @@ def database():
         upgrade("head", engine.url.render_as_string(hide_password=False))
         with engine.begin() as conn:
             assert conn.execute(select(Project.name).where(Project.id == "migration-sentinel")).scalar() == "Preserved"
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "h1d3e7f65a49"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == "i2e4f8067b50"
         assert legacy_schema() == before
         assert {table.name for table in TABLES} <= set(inspect(engine).get_table_names())
         downgrade("e8a0b4c32d16", engine.url.render_as_string(hide_password=False))

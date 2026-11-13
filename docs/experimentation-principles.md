@@ -24,4 +24,4 @@ Subsequent analysis should support researcher-selected estimates, intervals, dia
 
 ## Scope of this change
 
-These principles guide the product beyond the [document corrections](research/supervisory-slm/README.md). The first [statistical-planning increment](statistical-planning.md) implements sample-size, power, detectable-effect and proportion-precision calculations through the existing Laboratory workflow. Broader post-collection analysis, study tracking, new adapters and unrestricted cross-engine composition remain development work.
+These principles guide the product beyond the [document corrections](research/supervisory-slm/README.md). [Statistical planning](statistical-planning.md) implements sample-size, power, detectable-effect and proportion-precision calculations through the existing Laboratory workflow. [Study tracking](study-tracking.md) adds versioned protocols, append-only collection records and frozen evidence associations. Broader post-collection analysis, new adapters and unrestricted cross-engine composition remain development work.

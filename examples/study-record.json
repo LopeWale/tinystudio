@@ -1,0 +1,12 @@
+{
+  "revision": 1,
+  "idempotency_key": "replace-with-a-stable-collection-request-key",
+  "kind": "note",
+  "unit_id": "",
+  "condition": "",
+  "observed_at": null,
+  "data": {"note": "Illustrative collection request. Replace with actual observations or source notes; do not treat this example as measured data."},
+  "run_ids": [],
+  "artifact_ids": [],
+  "supersedes": null
+}

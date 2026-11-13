@@ -14,7 +14,8 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-from tinystudio.api.deps import get_db, project_dep, require_admin
+from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
+from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
@@ -25,6 +26,7 @@ runner_routes = APIRouter(prefix="/api/lab/runner/{target_id}", tags=["laborator
 data_bridge_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory data bridges"])
 DB = Annotated[Session, Depends(get_db)]
 ProjectDep = Annotated[Project, Depends(project_dep)]
+AuthorDep = Annotated[Principal, Depends(current_user)]
 
 
 def target_auth(target_id: str, db: DB, authorization: str = Header(default="")) -> LabTarget:
@@ -104,6 +106,78 @@ class Completion(BaseModel):
     state: str
     result: dict | None = None
     error: str | None = None
+
+
+class SaveStudy(BaseModel):
+    study: dict
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+@project_routes.get('/studies')
+def studies(db: DB, project: ProjectDep, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+    from .studies import list_studies
+    return list_studies(db, project.id, offset=offset, limit=limit)
+
+
+@project_routes.post('/studies', status_code=201)
+def create_study(body: SaveStudy, db: DB, project: ProjectDep, author: AuthorDep):
+    from .studies import save_study
+    return save_study(db, project.id, body.study, author.user.id, key=body.idempotency_key)
+
+
+@project_routes.get('/studies/{id_}')
+def study(id_: str, db: DB, project: ProjectDep, revision: int | None = Query(None, ge=1, le=2**53-1)):
+    from .studies import get_study
+    return get_study(db, project.id, id_, revision=revision)
+
+
+@project_routes.put('/studies/{id_}')
+def update_study(id_: str, body: SaveStudy, db: DB, project: ProjectDep, author: AuthorDep):
+    from .studies import save_study
+    return save_study(db, project.id, body.study, author.user.id, id_=id_, expected=body.expected_revision)
+
+
+@project_routes.get('/studies/{id_}/revisions')
+def study_revisions(id_: str, db: DB, project: ProjectDep):
+    from .studies import revisions
+    return revisions(db, project.id, id_)
+
+
+@project_routes.get('/studies/{id_}/records')
+def study_records(id_: str, db: DB, project: ProjectDep, after: int = Query(0, ge=0, le=2**53-1),
+                  limit: int = Query(100, ge=1, le=500)):
+    from .studies import records
+    return records(db, project.id, id_, after=after, limit=limit)
+
+
+@project_routes.post('/studies/{id_}/records', status_code=201)
+def create_study_record(id_: str, body: dict, db: DB, project: ProjectDep, author: AuthorDep):
+    from .studies import append_record
+    return append_record(db, project.id, id_, body, author.user.id)
+
+
+@project_routes.get('/studies/{id_}/manifest')
+def study_manifest(id_: str, db: DB, project: ProjectDep):
+    from .studies import tracking_manifest
+    return tracking_manifest(db, project.id, id_)
+
+
+@project_routes.get('/studies/{id_}/export')
+def export_study(id_: str, db: DB, project: ProjectDep,
+                 revision: int | None = Query(None, ge=1, le=2**53-1),
+                 through_seq: int | None = Query(None, ge=0, le=2**53-1)):
+    from .studies import export_tracking
+    from .engine import digest
+    directory = Path(tempfile.mkdtemp(prefix='ts-study-export-'))
+    try:
+        path = export_tracking(db, project.id, id_, directory, revision=revision, through_seq=through_seq)
+        return FileResponse(path, filename=path.name, media_type='application/x-ndjson',
+                            headers={'X-Content-SHA256': digest(path)},
+                            background=BackgroundTask(shutil.rmtree, directory))
+    except BaseException:
+        shutil.rmtree(directory)
+        raise
 
 
 @project_routes.get("/catalog")
