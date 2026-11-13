@@ -21,6 +21,8 @@ import subprocess
 import time
 from typing import Callable
 
+from tinystudio.config import RuntimeTools
+
 
 FORMAT = "tinystudio.execution-profile.v1"
 _LABEL = "tinystudio.owner"
@@ -226,7 +228,7 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
     if request.backend == 'container':
         if grants.network_endpoints or grants.kubernetes_secrets:
             raise ValueError("Docker endpoint ACLs require a separately qualified managed network; endpoint grants are not silently broadened")
-        argv=['docker','create','--pull=never','--name',name,'--label',f'{_LABEL}={owner}','--label',f'tinystudio.attempt={request.attempt_id}',
+        argv=[RuntimeTools.from_environment().command('docker'),'create','--pull=never','--name',name,'--label',f'{_LABEL}={owner}','--label',f'tinystudio.attempt={request.attempt_id}',
               '--read-only','--log-driver','local','--log-opt','max-size=16m','--log-opt','max-file=1','--log-opt','compress=false','--security-opt','no-new-privileges=true','--cap-drop','ALL','--pids-limit',str(request.limits.pids),
               '--cpus',str(request.limits.cpu),'--memory',str(request.limits.memory_bytes),'--memory-swap',str(request.limits.memory_bytes),
               '--network',grants.docker_network or 'none','--user',f'{max(1,os.getuid())}:{max(1,os.getgid())}',
@@ -276,7 +278,7 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
         egress.append({'to':[{'ipBlock':{'cidr':str(ip)+('/32' if ip.version==4 else '/128')}}],'ports':[{'protocol':'TCP','port':port}]})
     policy={'apiVersion':'networking.k8s.io/v1','kind':'NetworkPolicy','metadata':{'name':name,'namespace':request.namespace,'labels':labels},
             'spec':{'podSelector':{'matchLabels':{_LABEL:owner}},'policyTypes':['Ingress','Egress'],'ingress':[],'egress':egress}}
-    argv=('kubectl','--kubeconfig',str(request.kubeconfig),'--context',request.kube_context,'--namespace',request.namespace)
+    argv=(RuntimeTools.from_environment().command('kubectl'),'--kubeconfig',str(request.kubeconfig),'--context',request.kube_context,'--namespace',request.namespace)
     return LaunchPlan('kubernetes',owner,name,request,argv,environment,manifests_json=json.dumps({'items':[policy,job]}),
                       grants_json=public_grants, limitations=('per-pod PID enforcement is a node-policy prerequisite', 'storage quota/output-byte enforcement requires provisioned PVC and runner monitor', 'API deletion does not alone prove node process termination'), required_attestations=tuple(attestations))
 
@@ -300,6 +302,9 @@ class ProfileExecution:
 
     def _kube(self,*args,data=None,check=True):
         return self._command([*self.plan.argv,*args],data=data,check=check)
+
+    def _docker(self,*args,check=True):
+        return self._command([self.plan.argv[0],*args],check=check)
 
     def start(self,*,stdout=None,stderr=None):
         try:
@@ -331,7 +336,7 @@ class ProfileExecution:
             self.identity=identifier
             self.creation_uncertain=False
             self._container_identity()
-            self._command(['docker','start',self.identity])
+            self._docker('start',self.identity)
         else:
             for item in json.loads(self.plan.manifests_json)['items']:
                 self.pending_kind=item['kind']
@@ -347,7 +352,7 @@ class ProfileExecution:
         return self
 
     def _container_identity(self, *, allow_absent=False):
-        result=self._command(['docker','inspect',self.identity or self.plan.name],check=False)
+        result=self._docker('inspect',self.identity or self.plan.name,check=False)
         if result.returncode:
             absent=any(text in result.stderr.lower() for text in ('no such object','no such container'))
             if absent and allow_absent:return None
@@ -381,7 +386,7 @@ class ProfileExecution:
             return "", ""
         if self.plan.backend == "container":
             self._container_identity()
-            result = self._command(['docker','logs','--tail','1000',self.identity])
+            result = self._docker('logs','--tail','1000',self.identity)
         else:
             response = self._kube('get','job',self.plan.name,'-o','json')
             job = json.loads(response.stdout)
@@ -397,9 +402,9 @@ class ProfileExecution:
         elif self.plan.backend=='container' and (self.identity or self.creation_uncertain):
             if self._container_identity(allow_absent=True) is None:
                 self.closed=True;return
-            self._command(['docker','stop','--time','10',self.identity])
-            self._command(['docker','rm','--force',self.identity])
-            response=self._command(['docker','inspect',self.identity],check=False)
+            self._docker('stop','--time','10',self.identity)
+            self._docker('rm','--force',self.identity)
+            response=self._docker('inspect',self.identity,check=False)
             if response.returncode==0 or not any(text in response.stderr.lower() for text in ('no such object','no such container')):
                 raise RuntimeError('container cleanup is unconfirmed')
         elif self.plan.backend=='kubernetes':

@@ -10,9 +10,12 @@ from __future__ import annotations
 import os
 import hashlib
 import tempfile
-from dataclasses import dataclass
+import shutil
+import sys
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import ClassVar
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://tinystudio:tinystudio@127.0.0.1:5432/tinystudio"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
@@ -21,6 +24,143 @@ DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+@dataclass(frozen=True)
+class RuntimePaths:
+    """The existing host-local layout, rooted in a deployment's data/cache directory."""
+
+    root: Path
+
+    @property
+    def artifacts(self) -> Path:
+        return self.root / "artifacts"
+
+    @property
+    def frontend_releases(self) -> Path:
+        return self.root / "frontend-releases"
+
+    @property
+    def uploads(self) -> Path:
+        return self.root / "uploads"
+
+    def project(self, project_id: str) -> Path:
+        return self.root / "projects" / project_id
+
+    def task_log(self, task_id: str) -> Path:
+        return self.root / "tasks" / f"{task_id}.log"
+
+    def snapshot(self, project_id: str, snapshot_id: str) -> Path:
+        return self.project(project_id) / "snapshots" / snapshot_id
+
+    def interpretability(self, project_id: str) -> Path:
+        return self.project(project_id) / "interp"
+
+    def interpretability_locks(self, project_id: str) -> Path:
+        return self.interpretability(project_id) / ".locks"
+
+
+@dataclass(frozen=True)
+class RuntimeTools:
+    """Executable selection; explicit overrides win over discovery on the selected PATH."""
+
+    python: str = field(default_factory=lambda: sys.executable)
+    cloudflared: str = "cloudflared"
+    docker: str = "docker"
+    kubectl: str = "kubectl"
+    redis_server: str = "redis-server"
+    path: str = field(default_factory=lambda: os.environ.get("PATH", os.defpath))
+    names: ClassVar[tuple[str, ...]] = ("python", "cloudflared", "docker", "kubectl", "redis_server")
+
+    @classmethod
+    def from_environment(cls) -> RuntimeTools:
+        defaults = cls()
+        return cls(**{name: _env(f"TINYSTUDIO_{name.upper()}") or getattr(defaults, name)
+                      for name in cls.names},
+                   path=defaults.path)
+
+    def command(self, name: str) -> str:
+        """Freeze a command in a plan without requiring the backend on the authoring host."""
+        if name not in self.names:
+            raise ValueError(f"unknown runtime executable: {name}")
+        command = os.path.expanduser(getattr(self, name))
+        if os.path.dirname(command):
+            command = str(Path(command).absolute())
+        return command
+
+    def resolve(self, name: str) -> str:
+        selected = shutil.which(self.command(name), path=self.path)
+        if not selected:
+            raise FileNotFoundError(f"Set TINYSTUDIO_{name.upper()} to an executable or make {name} available on PATH")
+        return selected
+
+
+@dataclass(frozen=True)
+class LaunchdConfig:
+    """Paths and commands for the macOS login-service adapter."""
+
+    root: Path
+    env_file: Path
+    agents_directory: Path
+    logs_directory: Path
+    tools: RuntimeTools
+    label_prefix: str = "dev.joatlabs.tinystudio"
+
+    @classmethod
+    def from_environment(cls, root: Path) -> LaunchdConfig:
+        home = Path.home()
+        return cls(root=root.absolute(),
+                   env_file=Path(_env("TINYSTUDIO_ENV_FILE") or root / ".env").expanduser().absolute(),
+                   agents_directory=Path(_env("TINYSTUDIO_LAUNCHD_DIR") or home / "Library" / "LaunchAgents").expanduser().absolute(),
+                   logs_directory=Path(_env("TINYSTUDIO_SERVICE_LOG_DIR") or home / "Library" / "Logs" / "TinyStudio").expanduser().absolute(),
+                   tools=RuntimeTools.from_environment())
+
+
+@dataclass(frozen=True)
+class Preferences:
+    """Defaults editable through saved team settings; read afresh after each apply/save."""
+
+    llm_base_url: str = "http://127.0.0.1:8080/v1"
+    llm_model: str = ""
+    llm_api_key: str | None = field(default=None, repr=False)
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    anthropic_model: str = "claude-opus-5-5"
+    anthropic_workspace_id: str = ""
+    assistant_effort: str = "medium"
+    openai_model: str = ""
+    anthropic_key_set: bool = False
+    openai_key_set: bool = False
+    hf_token_set: bool = False
+    mps_fallback: str = "1"
+
+    @classmethod
+    def from_environment(cls) -> Preferences:
+        defaults = cls()
+        names = ("llm_base_url", "llm_model", "llm_api_key", "embedding_model", "anthropic_model",
+                 "anthropic_workspace_id", "assistant_effort", "openai_model")
+        values = {name: os.environ.get(f"TINYSTUDIO_{name.upper()}", getattr(defaults, name)) for name in names}
+        values["llm_base_url"] = values["llm_base_url"].rstrip("/")
+        values["embedding_model"] = values["embedding_model"] or defaults.embedding_model
+        return cls(**values,
+                   anthropic_key_set=bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")),
+                   openai_key_set=bool(os.environ.get("OPENAI_API_KEY")),
+                   hf_token_set=bool(os.environ.get("HF_TOKEN")),
+                   mps_fallback=os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", defaults.mps_fallback))
+
+
+@dataclass(frozen=True)
+class ClientConfig:
+    """CLI/MCP connection settings, independent of origin-bound Access credentials."""
+
+    url: str
+    project: str | None = None
+    api_key: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_environment(cls, *, url: str | None = None) -> ClientConfig:
+        return cls(url=(url or _env("TINYSTUDIO_URL")).rstrip("/") or config().local_url,
+                   project=os.environ.get("TINYSTUDIO_PROJECT") or None,
+                   api_key=os.environ.get("TINYSTUDIO_API_KEY") or None)
 
 
 @dataclass(frozen=True)
@@ -54,6 +194,15 @@ class Config:
     cloudflare_access_required: bool = False
     public_url: str | None = None
     sync_row_limit: int = 100_000  # dataset-wide operations above this many rows run as worker tasks, not inside the request
+    self_url: str | None = None
+
+    @property
+    def paths(self) -> RuntimePaths:
+        return RuntimePaths(self.data_dir)
+
+    @property
+    def local_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
 
     @property
     def cache_dir(self) -> Path:
@@ -62,7 +211,7 @@ class Config:
 
     @property
     def artifact_location(self) -> str:
-        return f"r2://{self.r2_bucket}" if self.storage_backend == "r2" else str(self.data_dir / "artifacts")
+        return f"r2://{self.r2_bucket}" if self.storage_backend == "r2" else str(self.paths.artifacts)
 
     @property
     def inference_in_process(self) -> bool:
@@ -70,14 +219,14 @@ class Config:
         return not self.inference_url
 
     def project_dir(self, project_id: str) -> Path:
-        return self.data_dir / "projects" / project_id
+        return self.paths.project(project_id)
 
     def task_log(self, task_id: str) -> Path:
-        return self.data_dir / "tasks" / f"{task_id}.log"
+        return self.paths.task_log(task_id)
 
     @property
     def uploads_dir(self) -> Path:
-        return self.data_dir / "uploads"
+        return self.paths.uploads
 
 
 def _load() -> Config:
@@ -120,6 +269,7 @@ def _load() -> Config:
         cloudflare_access_audience=_env("CF_ACCESS_AUD") or None,
         cloudflare_access_required=_env("TINYSTUDIO_CF_ACCESS_REQUIRED", "0").lower() in ("1", "true", "yes"),
         public_url=_env("TINYSTUDIO_PUBLIC_URL").rstrip("/") or None,
+        self_url=_env("TINYSTUDIO_SELF_URL").rstrip("/") or None,
         sync_row_limit=int(_env("TINYSTUDIO_SYNC_ROW_LIMIT", "100000")),
     )
 

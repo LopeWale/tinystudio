@@ -1,23 +1,22 @@
 """B: registered application, real local RQ, real runner child and portable evidence.
 
 Only uniquely owned PostgreSQL/Redis stores are used. No live service is restarted.
+TINYSTUDIO_REDIS_SERVER or PATH selects Redis; TINYSTUDIO_TEST_TEMP_DIR can select
+a short socket directory instead of the standard OS temporary directory.
 Run with --noconftest.
 """
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-import subprocess
-import tempfile
 import time
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from redis import Redis
 from rq import Queue, SimpleWorker
 
+from tests.support.environment import TestEnvironment
 from tests.test_lab_foundation import database
 from tinystudio.lab import service as svc
 from tinystudio.lab import operations, rq_adapter
@@ -33,52 +32,42 @@ def integrated(database, tmp_path, monkeypatch):
     from tinystudio.db.models import Project, User
     from tinystudio.storage import ArtifactStorage
 
-    socket_root = tempfile.TemporaryDirectory(prefix="ts-b-redis-", dir="/private/tmp")
-    socket = Path(socket_root.name) / "redis.sock"
-    log = (tmp_path / "redis.log").open("wb")
-    process = subprocess.Popen(["/opt/homebrew/bin/redis-server", "--port", "0", "--unixsocket", str(socket),
-        "--save", "", "--appendonly", "no", "--dir", str(tmp_path)], stdout=log, stderr=subprocess.STDOUT)
-    try:
-        deadline = time.monotonic()+5
-        while not socket.exists():
-            if process.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError("owned Redis did not initialize")
-            time.sleep(.02)
-        connection = Redis.from_url("unix://"+str(socket)+"?db=0")
+    with TestEnvironment.from_environment().owned_redis(tmp_path) as redis:
+        connection = redis.connection
         assert connection.ping()
-        monkeypatch.setenv("TINYSTUDIO_DATABASE_URL", database.kw["bind"].url.render_as_string(hide_password=False))
-        monkeypatch.setenv("TINYSTUDIO_REDIS_URL", "unix://"+str(socket)+"?db=0")
-        monkeypatch.setenv("TINYSTUDIO_DATA_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("TINYSTUDIO_STORAGE_BACKEND", "local")
-        for key in ("TINYSTUDIO_CF_ACCESS_REQUIRED", "CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD"):
-            monkeypatch.setenv(key, "0" if key.endswith("REQUIRED") else "")
-        reload_config(); db_module.reset(); worker.reset(); forget_secret()
-        monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "objects"))
-        monkeypatch.setattr(app_module, "prepare_database", lambda *args: None)
-        app = app_module.create_app(run_migrations=False, ui=False, laboratory_dispatch=False)
-        def sessions():
-            with database() as db:
-                try:
-                    yield db
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
-        app.dependency_overrides[get_db] = sessions
-        with database.begin() as db:
-            user = User(email=uuid.uuid4().hex+"@b.invalid", password_hash="fixture", role="admin")
-            project = Project(slug="b-"+uuid.uuid4().hex[:12], name="B workflow")
-            other = Project(slug="b-"+uuid.uuid4().hex[:12], name="Other")
-            db.add_all([user, project, other]); db.flush()
-            token = issue_service_token(ensure_instance(db).secret_key, user.id)
-            prefix, other_prefix = f"/api/p/{project.slug}/lab", f"/api/p/{other.slug}/lab"
-        with TestClient(app, headers={"Authorization": "Bearer "+token}) as client:
-            yield client, prefix, other_prefix, app, connection, tmp_path, database
-    finally:
-        db_module.reset(); worker.reset(); forget_secret()
-        process.terminate(); process.wait(timeout=5); log.close(); socket_root.cleanup()
-        monkeypatch.undo()
-        reload_config()
+        try:
+            monkeypatch.setenv("TINYSTUDIO_DATABASE_URL", database.kw["bind"].url.render_as_string(hide_password=False))
+            monkeypatch.setenv("TINYSTUDIO_REDIS_URL", redis.url)
+            monkeypatch.setenv("TINYSTUDIO_DATA_DIR", str(tmp_path / "data"))
+            monkeypatch.setenv("TINYSTUDIO_STORAGE_BACKEND", "local")
+            for key in ("TINYSTUDIO_CF_ACCESS_REQUIRED", "CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD"):
+                monkeypatch.setenv(key, "0" if key.endswith("REQUIRED") else "")
+            reload_config(); db_module.reset(); worker.reset(); forget_secret()
+            monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "objects"))
+            monkeypatch.setattr(app_module, "prepare_database", lambda *args: None)
+            app = app_module.create_app(run_migrations=False, ui=False, laboratory_dispatch=False)
+            def sessions():
+                with database() as db:
+                    try:
+                        yield db
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+            app.dependency_overrides[get_db] = sessions
+            with database.begin() as db:
+                user = User(email=uuid.uuid4().hex+"@b.invalid", password_hash="fixture", role="admin")
+                project = Project(slug="b-"+uuid.uuid4().hex[:12], name="B workflow")
+                other = Project(slug="b-"+uuid.uuid4().hex[:12], name="Other")
+                db.add_all([user, project, other]); db.flush()
+                token = issue_service_token(ensure_instance(db).secret_key, user.id)
+                prefix, other_prefix = f"/api/p/{project.slug}/lab", f"/api/p/{other.slug}/lab"
+            with TestClient(app, headers={"Authorization": "Bearer "+token}) as client:
+                yield client, prefix, other_prefix, app, connection, tmp_path, database
+        finally:
+            db_module.reset(); worker.reset(); forget_secret()
+            monkeypatch.undo()
+            reload_config()
 
 
 def author(client, prefix, **extra):

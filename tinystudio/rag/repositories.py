@@ -12,7 +12,9 @@ from typing import Any
 
 from tinystudio.core.project import ProjectError
 
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+from tinystudio.config import Preferences
+
+DEFAULT_EMBEDDING_MODEL = Preferences().embedding_model
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 _EMBEDDERS: dict[tuple[str, str], "Embedder"] = {}
 
@@ -22,7 +24,7 @@ class RepositoryError(ProjectError):
 
 
 def default_embedding_model() -> str:
-    return os.environ.get("TINYSTUDIO_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+    return Preferences.from_environment().embedding_model
 
 
 class Embedder:

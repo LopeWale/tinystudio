@@ -293,7 +293,7 @@ def import_project(directory: Path, name: Annotated[str | None, typer.Option(hel
 
 
 @app.command()
-def mcp(url: Annotated[str, typer.Option(envvar="TINYSTUDIO_URL", help="Base URL of the tinystudio API.")] = "http://127.0.0.1:8000", project: ProjectOpt = None, key: Annotated[str | None, typer.Option(envvar="TINYSTUDIO_API_KEY", help="API key (API Keys page).")] = None) -> None:
+def mcp(url: Annotated[str | None, typer.Option(envvar="TINYSTUDIO_URL", help="Base URL of the tinystudio API (default: configured local API port).")] = None, project: ProjectOpt = None, key: Annotated[str | None, typer.Option(envvar="TINYSTUDIO_API_KEY", help="API key (API Keys page).")] = None) -> None:
     """Run the MCP server on stdio so Claude Code, Codex, or Claude Desktop can drive tinystudio."""
     from tinystudio.integrations.mcp_server import main as mcp_main
 

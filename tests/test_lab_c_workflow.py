@@ -3,6 +3,7 @@
 These are disposable software fixtures, not user research results. No model,
 training experiment, live acquisition, or public server is started.
 Run --noconftest; imported fixtures own their PostgreSQL database and Redis.
+Repository capture requires an explicitly selected TINYSTUDIO_TEST_QDRANT_URL.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import json
 from fastapi.testclient import TestClient
 from rq import Queue, SimpleWorker
 
+from tests.support.environment import TestEnvironment
 from tests.test_lab_b_workflow import database, integrated
 from tinystudio.lab import dispatch
 from tinystudio.lab.runner import Runner
@@ -173,18 +175,15 @@ def test_prepare_review_annotate_promote_and_explicit_training_job(integrated):
 
 
 def test_http_repository_capture_rq_then_native_retrieval_after_source_deletion(integrated, monkeypatch):
-    import uuid
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
     from sqlalchemy import select
     from tinystudio import vectors
     from tinystudio.db.models import Document, Project, Repository
 
     client, prefix, _, app, connection, _, factory = integrated
-    collection = "ts_c_workflow_" + uuid.uuid4().hex
-    qdrant = QdrantClient(url="http://localhost:6333", timeout=10)
-    qdrant.create_collection(collection, vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE))
-    monkeypatch.setattr(vectors, "client", lambda: qdrant)
-    try:
+    with TestEnvironment.from_environment().qdrant_collection(prefix="ts_c_workflow_") as owned:
+        qdrant, collection = owned.client, owned.name
+        monkeypatch.setattr(vectors, "client", lambda: qdrant)
         with factory.begin() as db:
             project = db.scalar(select(Project).where(Project.slug == prefix.split("/")[3]))
             repository = Repository(project_id=project.id, name="c-owned-repository", collection=collection,
@@ -233,7 +232,3 @@ def test_http_repository_capture_rq_then_native_retrieval_after_source_deletion(
             f"repository:{repository_id}:document:{document_id}:chunk:0:point:{vectors.point_id(collection, document_id, 0)}")
         assert hit["source_identity"]["repository_id"] == repository_id
         assert query["trace"]["research_only"] is False
-    finally:
-        if qdrant.collection_exists(collection):
-            qdrant.delete_collection(collection)
-        qdrant.close()

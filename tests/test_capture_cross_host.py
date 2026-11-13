@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from threading import Event, local
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from tests.conftest import _create_test_database, _test_database_url
 from tests.test_storage import MemoryS3
 from tinystudio.db.models import Base, InterpCapture, Project, User
+from tinystudio.config import config
 from tinystudio.interp.neurons import InterpError
 from tinystudio.services import interp
 from tinystudio.storage import ArtifactStorage, StorageError
@@ -46,7 +47,7 @@ def capture_hosts(tmp_path, monkeypatch):
         backend = ArtifactStorage(client=MemoryS3(), bucket="test-only")
         host = local()
         host.root = tmp_path / "host-a"
-        monkeypatch.setattr(interp, "config", lambda: SimpleNamespace(data_dir=host.root, project_dir=lambda p: host.root / "projects" / p))
+        monkeypatch.setattr(interp, "config", lambda: replace(config(), data_dir=host.root))
         monkeypatch.setattr(interp, "storage", lambda: backend)
         monkeypatch.setattr(interp, "session", session)
         monkeypatch.setattr(interp, "db_engine", lambda: scoped)

@@ -105,7 +105,7 @@ def snapshot_rows(db: Session, snapshot: Snapshot) -> tuple[list[dict[str, Any]]
     if prefix:
         import pyarrow.parquet as pq
 
-        directory = config().project_dir(snapshot.project_id) / "snapshots" / snapshot.id
+        directory = config().paths.snapshot(snapshot.project_id, snapshot.id)
         storage().hydrate_directory(prefix, directory)
         def read(split: str) -> list[dict[str, Any]]:
             return [json.loads(value) for path in sorted(directory.glob(f"{split}-*.parquet")) for value in pq.read_table(path)["row_json"].to_pylist()]

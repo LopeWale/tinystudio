@@ -1,92 +1,65 @@
 """D: authenticated application routes to real isolated Docker NF4 training.
 
 Run with --noconftest and disposable PostgreSQL CREATE DATABASE credentials.
-The pinned, already-local image is required: unavailable infrastructure fails
-qualification. Three-step fixtures establish software behavior, not research value.
+TINYSTUDIO_TEST_CONTAINER_PROFILE selects an already-local immutable image and
+its exact recorded runtime map. Unavailable infrastructure fails qualification.
+Three-step fixtures establish software behavior, not research value.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
-import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.support.environment import ContainerQualification, TestEnvironment
 from tests.test_lab_b_workflow import integrated, database
 from tests import test_lab_qlora as qlora_fixture
 from tinystudio.lab.contracts import checksum
 from tinystudio.lab.runner import Runner
 
 
-IMAGE = "tinystudio@sha256:2c8af1da323514b5fee5b56c724424b18fe0aeb11873de1dbc59ccd33c478443"
-
-
-def docker_python(code, *, mounts=(), environment=None, timeout=180):
-    """Run only the pinned local pack, without network, device or secret grants."""
-    container_name = "tinystudio-d-proof-" + uuid.uuid4().hex
-    command = ["docker", "run", "--rm", "--name", container_name, "--pull=never", "--network", "none",
-               "--read-only", "--workdir", "/", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
-               "--cpus", "1", "--memory", "2g", "--pids-limit", "128",
-               "--user", f"{max(1, os.getuid())}:{max(1, os.getgid())}"]
-    for source, target, writable in mounts:
-        command += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
-    for name, value in {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
-                        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", **(environment or {})}.items():
-        command += ["--env", f"{name}={value}"]
-    try:
-        result = subprocess.run([*command, IMAGE, "python", "-c", code], capture_output=True,
-                                text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        # Killing the Docker client alone can leave its container alive.
-        cleanup = subprocess.run(["docker", "rm", "--force", container_name], capture_output=True,
-                                 text=True, timeout=30, check=False)
-        assert cleanup.returncode == 0 or "No such container" in cleanup.stderr, cleanup.stderr
-        raise
-    assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    return result.stdout
+@pytest.fixture(scope="module")
+def container_qualification():
+    return TestEnvironment.from_environment().require_container()
 
 
 def test_reload_timeout_removes_only_its_own_container(monkeypatch):
+    # This lifecycle test has synthetic configuration and never needs a daemon.
+    selected = ContainerQualification(SimpleNamespace(resolve=lambda name: "docker"),
+        "fixture/qualification@sha256:" + "a" * 64,
+        {name: "fixture" for name in ContainerQualification.required_runtime_keys})
     commands = []
+    identifier = "b" * 64
     def execute(command, **kwargs):
         commands.append(command)
         if len(commands) == 1:
             raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+        if command[1] == 'inspect':
+            if command[-1] == identifier:
+                return subprocess.CompletedProcess(command, 1, '', 'Error: No such object: ' + identifier)
+            label = commands[0][commands[0].index('--label') + 1]
+            key, owner = label.split('=', 1)
+            return subprocess.CompletedProcess(command, 0, json.dumps([{'Id': identifier,
+                'Config': {'Image': selected.image, 'Labels': {key: owner}}}]), '')
         return subprocess.CompletedProcess(command, 0, '', '')
     monkeypatch.setattr(subprocess, 'run', execute)
     with pytest.raises(subprocess.TimeoutExpired):
-        docker_python('pass', environment={'HOME': '/proof'}, timeout=1)
+        selected.python('pass', environment={'HOME': '/proof'}, timeout=1)
     owned = commands[0][commands[0].index('--name') + 1]
     assert owned.startswith('tinystudio-d-proof-')
-    assert commands[1] == ['docker', 'rm', '--force', owned]
+    assert commands[1:] == [['docker', 'inspect', owned],
+        ['docker', 'rm', '--force', identifier], ['docker', 'inspect', identifier]]
 
 
 @pytest.fixture(scope="module")
-def image_runtime():
-    # Inspect and measure, rather than asserting the macOS host's versions apply.
-    identity = subprocess.run(["docker", "image", "inspect", IMAGE, "--format", "{{json .RepoDigests}}"],
-                              capture_output=True, text=True, check=True)
-    assert IMAGE in json.loads(identity.stdout), "Local image must retain the selected immutable repository digest"
-    measured = docker_python('''
-import importlib.metadata as metadata, json, platform
-runtime = {"os": platform.system(), "machine": platform.machine(), "python": platform.python_version()}
-for name in ("numpy", "torch", "transformers", "pyarrow", "tokenizers", "peft", "trl", "accelerate", "bitsandbytes", "safetensors", "datasets", "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt"):
-    try: runtime[name] = metadata.version(name)
-    except metadata.PackageNotFoundError: pass
-print(json.dumps(runtime))
-''')
-    runtime = json.loads(measured)
-    assert "bitsandbytes" in runtime, "Pinned image hides bitsandbytes under the isolated runner environment: " + measured
-    assert (runtime["os"], runtime["machine"], runtime["python"]) == ("Linux", "aarch64", "3.12.16")
-    assert {key: runtime[key] for key in ("torch", "transformers", "peft", "trl", "bitsandbytes", "accelerate", "tokenizers", "safetensors", "datasets")} == {
-        "torch": "2.15.0+cpu", "transformers": "5.21.0", "peft": "0.21.2", "trl": "1.16.0", "bitsandbytes": "0.50.2",
-        "accelerate": "1.15.0", "tokenizers": "0.23.3", "safetensors": "0.8.0", "datasets": "5.1.0"}
-    return runtime
+def image_runtime(container_qualification):
+    return container_qualification.measure_runtime()
 
 
 @pytest.fixture
@@ -101,7 +74,8 @@ def pretrained_fixture():
 
 @pytest.mark.parametrize("objective", ["sft", "causal_lm", "dpo"])
 def test_authenticated_application_to_docker_qlora_and_retained_reload(
-        integrated, pretrained_fixture, image_runtime, objective):
+        integrated, pretrained_fixture, container_qualification, image_runtime, objective):
+    image = container_qualification.image
     client, prefix, other_prefix, app, _, root, _ = integrated
     fixture = pretrained_fixture
     private = fixture.specification(objective)
@@ -116,10 +90,10 @@ def test_authenticated_application_to_docker_qlora_and_retained_reload(
         assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
         references.append({"artifact_id": artifact["id"], "role": original["role"], "sha256": artifact["sha256"]})
         assert client.get(other_prefix + "/artifacts/" + artifact["id"]).status_code == 404
-    runtime_evidence = {"image": IMAGE, "runtime": image_runtime,
-                        "sha256": checksum({"image": IMAGE, "runtime": image_runtime})}
+    runtime_evidence = {"image": image, "runtime": image_runtime,
+                        "sha256": checksum({"image": image, "runtime": image_runtime})}
     profile = {"schema_version": 1, "backends": {"container": {
-        "enabled": True, "profiles": ["isolated"], "image": IMAGE,
+        "enabled": True, "profiles": ["isolated"], "image": image, "python": container_qualification.python_command,
         "engines": ["learning.pretrained", "evaluation.compare"], "runtime_evidence": runtime_evidence,
         "limits": {"cpu": 1, "memory_bytes": 2 * 1024**3, "pids": 128}}}}
     target_response = client.post(prefix + "/targets", json={"name": "d-qlora-" + objective})
@@ -159,7 +133,7 @@ def test_authenticated_application_to_docker_qlora_and_retained_reload(
     receipt = result["execution_receipt"]
     assert receipt["runtime"] == image_runtime
     manifest = receipt["profile_manifest"]
-    assert manifest["backend"] == "container" and manifest["image"] == IMAGE
+    assert manifest["backend"] == "container" and manifest["image"] == image
     assert manifest["network_default"] == "deny"
     assert manifest["grants"]["secret_file_count"] == manifest["grants"]["device_count"] == 0
     downloaded = {}
@@ -232,7 +206,7 @@ def test_authenticated_application_to_docker_qlora_and_retained_reload(
     generation_receipt = generated_result["execution_receipt"]
     assert generation_receipt["runtime"] == image_runtime
     generation_manifest = generation_receipt["profile_manifest"]
-    assert generation_manifest["backend"] == "container" and generation_manifest["image"] == IMAGE
+    assert generation_manifest["backend"] == "container" and generation_manifest["image"] == image
     assert generation_manifest["network_default"] == "deny"
     assert generation_manifest["grants"]["secret_file_count"] == generation_manifest["grants"]["device_count"] == 0
     generation_artifacts = {}
@@ -436,7 +410,7 @@ else: raise AssertionError("corrupt retained base was accepted")
 print(json.dumps({"reload": "equal", "corruption": "rejected", "objective": manifest["objective"],
                   "model_session": "quantized_equal_reloaded_context_cancel_clean"}))
 '''.replace("EXPECTED", repr(hashlib.sha256(bundle.read_bytes()).hexdigest()))
-    reload = docker_python(script, mounts=[(source, "/source", False), (transport_root, "/proof", True)],
+    reload = container_qualification.python(script, mounts=[(source, "/source", False), (transport_root, "/proof", True)],
         environment={"PYTHONPATH": "/source", "HOME": "/proof", "TMPDIR": "/proof"})
     assert json.loads(reload) == {"reload": "equal", "corruption": "rejected", "objective": objective,
                                   "model_session": "quantized_equal_reloaded_context_cancel_clean"}

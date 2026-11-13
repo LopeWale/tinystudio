@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tinystudio.storage import ArtifactNotFound, ArtifactStorage, StorageError, project_key
+from tinystudio.config import config
 
 
 class Missing(Exception):
@@ -173,7 +175,8 @@ def test_snapshot_parquet_roundtrip_preserves_heterogeneous_rows_and_legacy(back
     monkeypatch.setattr(snapshots.datasets_svc, 'get_dataset', lambda *args: dataset)
     monkeypatch.setattr(snapshots.datasets_svc, 'iter_rows', lambda *args, bucket: iter(train if bucket == 'training' else val))
     monkeypatch.setattr(snapshots, 'storage', lambda: backend)
-    monkeypatch.setattr(snapshots, 'config', lambda: SimpleNamespace(project_dir=lambda p: tmp_path / p))
+    cfg = replace(config(), data_dir=tmp_path)
+    monkeypatch.setattr(snapshots, 'config', lambda: cfg)
 
     class DB:
         def scalar(self, query):
@@ -235,7 +238,8 @@ def test_capture_remote_discovery_and_expired_cache(backend, tmp_path, monkeypat
         yield SimpleNamespace(scalar=lambda query: row, scalars=lambda query: [row])
     monkeypatch.setattr(interp, 'session', session)
     monkeypatch.setattr(interp, 'storage', lambda: backend)
-    monkeypatch.setattr(interp, 'config', lambda: SimpleNamespace(data_dir=root, project_dir=lambda p: root / 'projects' / p))
+    cfg = replace(config(), data_dir=root)
+    monkeypatch.setattr(interp, 'config', lambda: cfg)
     store = interp.ProjectStore('p')
     assert neurons.list_captures(store)[0]['name'] == 'example'
     assert (store.captures_dir / 'example' / 'meta.json').is_file()
@@ -421,7 +425,8 @@ def test_capture_reader_lock_prevents_losing_appended_sidecars(backend, tmp_path
         yield SimpleNamespace(scalar=lambda query: row)
     monkeypatch.setattr(interp, 'session', session)
     monkeypatch.setattr(interp, 'storage', lambda: backend)
-    monkeypatch.setattr(interp, 'config', lambda: SimpleNamespace(data_dir=root, project_dir=lambda p: root / 'projects' / p))
+    cfg = replace(config(), data_dir=root)
+    monkeypatch.setattr(interp, 'config', lambda: cfg)
     # These tests isolate local cache locking; PostgreSQL ownership is covered
     # independently by test_capture_cross_host.py.
     monkeypatch.setattr(interp.ProjectStore, '_distributed_artifact_lock', lambda *args: nullcontext())
@@ -478,7 +483,8 @@ def test_capture_delete_waits_for_append_publication_and_preserves_lock_inode(ba
         yield SimpleNamespace(scalar=lambda query: row, delete=lambda item: deleted.append(item))
     monkeypatch.setattr(interp, 'session', session)
     monkeypatch.setattr(interp, 'storage', lambda: backend)
-    monkeypatch.setattr(interp, 'config', lambda: SimpleNamespace(data_dir=root, project_dir=lambda p: root / 'projects' / p))
+    cfg = replace(config(), data_dir=root)
+    monkeypatch.setattr(interp, 'config', lambda: cfg)
     monkeypatch.setattr(interp.ProjectStore, '_distributed_artifact_lock', lambda *args: nullcontext())
     writer, deleter = interp.ProjectStore('p'), interp.ProjectStore('p')
     writer.artifact_directory('capture', 'run')

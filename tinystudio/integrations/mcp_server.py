@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -73,9 +72,12 @@ def build_server(studio: Studio) -> MCPServer:
 def main(base_url: str | None = None, project: str | None = None, api_key: str | None = None, *,
          cf_access_client_id: str | None = None, cf_access_client_secret: str | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)  # keep stdio clean; MCP clients treat stderr as noise
-    url = base_url or os.environ.get("TINYSTUDIO_URL", "http://127.0.0.1:8000")
-    slug = project or os.environ.get("TINYSTUDIO_PROJECT") or None
-    token = api_key or os.environ.get("TINYSTUDIO_API_KEY") or None
+    from tinystudio.config import ClientConfig
+
+    settings = ClientConfig.from_environment(url=base_url)
+    url = settings.url
+    slug = project or settings.project
+    token = api_key or settings.api_key
     build_server(Studio(url, slug, token, cf_access_client_id=cf_access_client_id,
                         cf_access_client_secret=cf_access_client_secret)).run(transport="stdio")
 

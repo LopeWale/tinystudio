@@ -35,7 +35,9 @@ def kube(request_,tmp_path):
     return replace(container(request_),backend='kubernetes',namespace='owned-lab',kube_context='owned-fixture-context',kubeconfig=config,storage_claim='owned-attempt-pvc')
 
 
-def test_native_plan_denies_by_default_and_reports_unenforced_resources(request_):
+def test_native_plan_denies_by_default_and_reports_unenforced_resources(request_, monkeypatch):
+    # This test checks a macOS plan, not this host's sandbox availability.
+    monkeypatch.setattr(shutil, 'which', lambda name: '/fixture/sandbox-exec')
     plan=build_profile(request_,system='Darwin')
     assert '(deny default)' in plan.profile_text
     assert '(allow network' not in plan.profile_text
@@ -143,6 +145,27 @@ def test_container_lifecycle_deletes_only_exact_owned_identity_and_checks_absenc
     assert ['docker','stop','--time','10',fixture.id] in fixture.calls
     assert ['docker','rm','--force',fixture.id] in fixture.calls
     with pytest.raises(RuntimeError,match='already started or closed'):owner.start()
+
+
+def test_container_lifecycle_keeps_one_selected_executable_through_cleanup(request_, monkeypatch, tmp_path):
+    selected = str(tmp_path / "selected-docker")
+    monkeypatch.setenv("TINYSTUDIO_DOCKER", selected)
+    plan = build_profile(container(request_))
+    monkeypatch.setenv("TINYSTUDIO_DOCKER", str(tmp_path / "different-docker"))
+    fixture = DockerFixture(plan)
+    owner = ProfileExecution(plan, command_runner=fixture).start()
+    assert owner.poll() == 0
+    owner.logs()
+    owner.close()
+    assert fixture.removed and owner.closed
+    assert all(command[0] == selected for command in fixture.calls)
+
+
+def test_kubernetes_plan_uses_selected_executable(request_, monkeypatch, tmp_path):
+    selected = str(tmp_path / "selected-kubectl")
+    monkeypatch.setenv("TINYSTUDIO_KUBECTL", selected)
+    plan = build_profile(kube(request_, tmp_path))
+    assert plan.argv[0] == selected
 
 
 def test_foreign_identity_and_uncertain_backend_absence_never_qualify_cleanup(request_):
@@ -259,6 +282,7 @@ def test_uncertain_container_creation_reconciles_only_owner_label_and_cleans_up(
     assert ['docker','rm','--force',fixture.id] in fixture.calls
 
 
-def test_native_rejects_network_grants_it_cannot_enforce(request_):
+def test_native_rejects_network_grants_it_cannot_enforce(request_, monkeypatch):
+    monkeypatch.setattr(shutil, 'which', lambda name: '/fixture/sandbox-exec')
     with pytest.raises(ValueError,match='localhost TCP only'):
-        build_profile(request_,RunnerGrants(network_endpoints=(('192.0.2.1',443),)))
+        build_profile(request_,RunnerGrants(network_endpoints=(('192.0.2.1',443),)),system='Darwin')

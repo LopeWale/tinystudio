@@ -1,6 +1,7 @@
 """Owned disposable PostgreSQL and Qdrant fixtures; no embedding downloads.
 
 Run with --noconftest alongside test_lab_operations.py's database fixture.
+Set TINYSTUDIO_TEST_QDRANT_URL and, when needed, TINYSTUDIO_TEST_QDRANT_API_KEY.
 """
 from __future__ import annotations
 
@@ -9,10 +10,11 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from qdrant_client import QdrantClient, models
+from qdrant_client import models
 from sqlalchemy import select
 
 from test_lab_operations import database  # exclusively owned CREATE/DROP DATABASE fixture
+from tests.support.environment import TestEnvironment
 from tinystudio import vectors
 from tinystudio.db.models import Document, Project, Repository
 from tinystudio.lab import repository_capture as capture, service as svc
@@ -23,37 +25,31 @@ from tinystudio.storage import ArtifactStorage
 
 @pytest.fixture
 def source(database, tmp_path, monkeypatch):
-    client = QdrantClient(url="http://localhost:6333", timeout=10)
-    collection = "ts_capture_test_" + uuid.uuid4().hex
-    client.create_collection(collection, vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE))
-    monkeypatch.setattr(vectors, "client", lambda: client)
-    monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "objects"))
-    with database.begin() as db:
-        project = Project(slug=uuid.uuid4().hex, name="Capture fixture")
-        db.add(project)
-        db.flush()
-        repository = Repository(project_id=project.id, name="Evidence", collection=collection,
-                                embedding_model="fixture-two-dimensional", dimension=2)
-        db.add(repository)
-        db.flush()
-        document = Document(repository_id=repository.id, name="fixture.txt", kind="text", chars=36, chunks=2)
-        db.add(document)
-        db.flush()
-        project_id, repository_id, document_id = project.id, repository.id, document.id
-    raw = [{"text": "orchid retained evidence", "document_id": document_id, "document": "fixture.txt",
-            "kind": "text", "index": 0, "partition": "heldout", "visibility": "evaluation",
-            "scientific": {"temperature": 21.5}},
-           {"text": "cedar unrelated evidence", "document_id": document_id, "document": "fixture.txt",
-            "kind": "text", "index": 1}]
-    points = [models.PointStruct(id=vectors.point_id(collection, document_id, i), vector=[[1., 0.], [0., 1.]][i],
-                                payload=payload) for i, payload in enumerate(raw)]
-    client.upsert(collection, points=points, wait=True)
-    try:
+    with TestEnvironment.from_environment().qdrant_collection() as owned:
+        client, collection = owned.client, owned.name
+        monkeypatch.setattr(vectors, "client", lambda: client)
+        monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "objects"))
+        with database.begin() as db:
+            project = Project(slug=uuid.uuid4().hex, name="Capture fixture")
+            db.add(project)
+            db.flush()
+            repository = Repository(project_id=project.id, name="Evidence", collection=collection,
+                                    embedding_model="fixture-two-dimensional", dimension=2)
+            db.add(repository)
+            db.flush()
+            document = Document(repository_id=repository.id, name="fixture.txt", kind="text", chars=36, chunks=2)
+            db.add(document)
+            db.flush()
+            project_id, repository_id, document_id = project.id, repository.id, document.id
+        raw = [{"text": "orchid retained evidence", "document_id": document_id, "document": "fixture.txt",
+                "kind": "text", "index": 0, "partition": "heldout", "visibility": "evaluation",
+                "scientific": {"temperature": 21.5}},
+               {"text": "cedar unrelated evidence", "document_id": document_id, "document": "fixture.txt",
+                "kind": "text", "index": 1}]
+        points = [models.PointStruct(id=vectors.point_id(collection, document_id, i), vector=[[1., 0.], [0., 1.]][i],
+                                    payload=payload) for i, payload in enumerate(raw)]
+        client.upsert(collection, points=points, wait=True)
         yield database, project_id, repository_id, document_id, client, collection, raw, tmp_path
-    finally:
-        if client.collection_exists(collection):
-            client.delete_collection(collection)
-        client.close()
 
 
 def admit(source, key="capture"):

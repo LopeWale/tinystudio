@@ -317,7 +317,9 @@ def storage() -> ArtifactStorage:
     cfg = config()
     backend = getattr(cfg, 'storage_backend', 'local')
     if backend == 'local':
-        return ArtifactStorage(root=cfg.data_dir / 'artifacts')
+        from tinystudio.config import RuntimePaths
+
+        return ArtifactStorage(root=RuntimePaths(cfg.data_dir).artifacts)
     if backend != 'r2':
         raise StorageError('TINYSTUDIO_STORAGE_BACKEND must be local or r2')
     required = ('r2_endpoint_url', 'r2_bucket', 'r2_access_key_id', 'r2_secret_access_key')

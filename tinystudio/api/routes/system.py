@@ -341,7 +341,8 @@ def assistant_chat(body: AssistantBody, request: Request, db: Session = Depends(
         if len(json.dumps({"messages": body.messages, "context": context}, ensure_ascii=False).encode("utf-8")) > 256000:
             raise HTTPException(status_code=413, detail="conversation, page evidence and extracted attachments exceed 256000 bytes; send fewer files or narrower evidence")
         settings_svc.apply(db)
-        self_url = os.environ.get("TINYSTUDIO_SELF_URL") or f"http://127.0.0.1:{config().port}"
+        deployment = config()
+        self_url = deployment.self_url or deployment.local_url
         studio = Studio(self_url, body.project, issue_service_token(instance_secret(db), principal.user.id),
                         cf_access_client_id="", cf_access_client_secret="",
                         access_assertion=getattr(request.state, "cloudflare_assertion", None))
