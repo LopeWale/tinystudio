@@ -46,7 +46,7 @@ The existing runner must be enrolled and running on the selected calculation tar
 
 Both interfaces use the same tools: `lab_statistics_methods` discovers methods, while `lab_statistics_define(name, parameters, execution)` saves a definition without executing. Then `lab_preflight`, `lab_submit`, `lab_run`, `lab_events` and `lab_export` use existing services. The assistant should ask for missing effects, variability or design choices, or present explicitly sourced sensitivity scenarios. It must not invent a variance, claim a planning estimate as an observed outcome, or imply that a sample-size calculation guarantees success.
 
-Pilot estimation, broader post-collection statistical analysis, study/campaign management and additional design methods remain subsequent work. This increment supplies the statistical-planning workflow and its extension boundary.
+Planning receipts can be linked to [versioned studies and collection records](study-tracking.md). Pilot estimation, broader post-collection statistical analysis, campaign automation and additional design methods remain subsequent work. This increment supplies the statistical-planning workflow and its extension boundary.
 
 ## Verification
 

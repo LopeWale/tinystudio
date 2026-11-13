@@ -33,6 +33,11 @@ calculations shared by the UI, CLI and assistant. Install the `statistics`
 extra on the calculation target; see [statistical planning](docs/statistical-planning.md)
 for methods, assumptions and the reproducible workflow.
 
+[Study tracking](docs/study-tracking.md) connects versioned protocols to collected
+observations, notes and frozen run/artifact references in Laboratory → Studies.
+Study assumptions and stopping rules remain editable; ledger counts do not infer
+independent samples or impose the paper's experimental choices.
+
 **Everything in containers** (Linux server, optionally with NVIDIA GPUs):
 
 ```bash

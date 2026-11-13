@@ -1,14 +1,29 @@
 """Additive laboratory tables; existing Job and Experiment identities remain intact."""
 from datetime import datetime
+import json
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from tinystudio.db.models import Base, new_id
+from .contracts import canonical
 
 DOC = JSON().with_variant(JSONB, "postgresql")
+
+
+class StudyDocument(TypeDecorator):
+    """Preserve canonical JSON numbers/signs; JSONB normalizes their spelling."""
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return canonical(value).decode('utf-8') if value is not None else None
+
+    def process_result_value(self, value, dialect):
+        return json.loads(value) if value is not None else None
 
 
 class LabDefinition(Base):
@@ -142,3 +157,47 @@ class LabOperation(Base):
 
 
 TABLES.append(LabOperation.__table__)
+
+
+class LabStudy(Base):
+    __tablename__ = 'lab_studies'
+    __table_args__ = (UniqueConstraint('project_id', 'idempotency_key', name='uq_lab_study_request'),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    revision: Mapped[int] = mapped_column(BigInteger, default=1)
+    next_seq: Mapped[int] = mapped_column(BigInteger, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    created: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LabStudyRevision(Base):
+    __tablename__ = 'lab_study_revisions'
+    study_id: Mapped[str] = mapped_column(ForeignKey('lab_studies.id', ondelete='CASCADE'), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(StudyDocument())
+    digest: Mapped[str] = mapped_column(String(64))
+
+
+class LabStudyRecord(Base):
+    __tablename__ = 'lab_study_records'
+    __table_args__ = (
+        ForeignKeyConstraint(['study_id', 'revision'], ['lab_study_revisions.study_id', 'lab_study_revisions.revision'], ondelete='CASCADE'),
+        UniqueConstraint('study_id', 'seq', name='uq_lab_study_record_sequence'),
+        UniqueConstraint('study_id', 'idempotency_key', name='uq_lab_study_record_request'),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    study_id: Mapped[str] = mapped_column(String(32), index=True)
+    revision: Mapped[int] = mapped_column(BigInteger)
+    seq: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(120))
+    unit_id: Mapped[str] = mapped_column(String(500))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    record: Mapped[dict[str, Any]] = mapped_column(StudyDocument())
+    digest: Mapped[str] = mapped_column(String(64))
+
+
+TABLES.extend([LabStudy.__table__, LabStudyRevision.__table__, LabStudyRecord.__table__])

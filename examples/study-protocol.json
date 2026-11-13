@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "Supervision comparison — illustrative protocol",
+  "description": "Edit these study choices before collection; no result or mechanism is presumed.",
+  "hypothesis": "The selected supervisory mechanism changes the chosen outcome relative to the baseline.",
+  "independent_unit": "One independently reset and prepared plant episode; revise for the actual study design.",
+  "conditions": [
+    {"id": "baseline", "description": "Researcher-selected conventional controller"},
+    {"id": "supervisor", "description": "Researcher-selected supervisory mechanism"}
+  ],
+  "outcomes": [
+    {"id": "net_energy", "unit": "Wh", "description": "Net energy over the complete intervention and recovery window"}
+  ],
+  "sampling_plan": {"replicates_per_condition": null, "source": "Choose using the actual design, pilot evidence or a retained planning calculation."},
+  "stopping_rules": {},
+  "status": "draft",
+  "metadata": {"example": true}
+}

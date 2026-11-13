@@ -36,6 +36,50 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Save a new versioned laboratory definition without executing it."""
         return call("POST", "/api/lab/definitions", json={"definition": definition})
 
+    def lab_studies(offset: int = 0, limit: int = 100) -> list:
+        """List project studies and their current protocol revisions; counts are bookkeeping, not independent sample accrual."""
+        return call('GET', f'/api/lab/studies?offset={offset}&limit={limit}')
+
+    def lab_study(study_id: str, revision: int | None = None) -> dict:
+        """Read an authored study protocol and its digest, optionally at a historical revision."""
+        suffix = f'?revision={revision}' if revision is not None else ''
+        return call('GET', f'/api/lab/studies/{path_identifier(study_id)}'+suffix)
+
+    def lab_study_save(study: dict, idempotency_key: str, study_id: str | None = None,
+                       expected_revision: int | None = None) -> dict:
+        """Create or revise a researcher-authored study; no run starts and no observations are invented.
+
+        New studies require a stable idempotency key. Updating requires the last
+        observed head revision; conflicts require reloading, not blind overwrite.
+        Hypothesis, independent unit, conditions, outcomes, sampling/stopping
+        rules, status and metadata remain researcher choices.
+        """
+        if study_id is None:
+            return call('POST', '/api/lab/studies', json={'study': study, 'idempotency_key': idempotency_key})
+        return call('PUT', f'/api/lab/studies/{path_identifier(study_id)}',
+                    json={'study': study, 'expected_revision': expected_revision})
+
+    def lab_study_revisions(study_id: str) -> list:
+        """Inspect preserved protocol history with authenticated authorship and recording times."""
+        return call('GET', f'/api/lab/studies/{path_identifier(study_id)}/revisions')
+
+    def lab_study_records(study_id: str, after: int = 0) -> dict:
+        """Read a page of append-only collection records pinned to their protocol revisions; continue using next_after."""
+        return call('GET', f'/api/lab/studies/{path_identifier(study_id)}/records?after={after}')
+
+    def lab_study_record(study_id: str, record: dict) -> dict:
+        """Append an authored observation, note, deviation or evidence link with explicit protocol revision/idempotency key.
+
+        Use real observed data and source identities. Negative/missing results
+        are valid. Corrections reference supersedes; they do not erase history.
+        Run/artifact references are resolved within the project and frozen.
+        """
+        return call('POST', f'/api/lab/studies/{path_identifier(study_id)}/records', json=record)
+
+    def lab_study_manifest(study_id: str) -> dict:
+        """Resolve a frozen study export boundary and authenticated JSONL download path. Referenced artifact bytes are external; use existing evidence exports for them."""
+        return call('GET', f'/api/lab/studies/{path_identifier(study_id)}/manifest')
+
     def lab_preflight(definition: dict, target_id: str = "local") -> dict:
         """Check compatibility and actionable prerequisites without submitting or executing."""
         return call("POST", "/api/lab/preflight", json={"definition": definition, "target_id": target_id})
@@ -115,9 +159,11 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Queue an immutable, optimistically validated capture of an existing RAG repository; does not train."""
         return call("POST", "/api/lab/inputs/from-repository", json={"repository": repository, "idempotency_key": idempotency_key})
 
-    methods = [lab_catalog, lab_definitions, lab_statistics_methods, lab_statistics_define, lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input]
+    methods = [lab_catalog, lab_definitions, lab_statistics_methods, lab_statistics_define, lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
+               lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
-    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_statistics_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations},
+    return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_statistics_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
+                                                          lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest},
                      long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input})
             for f in methods]

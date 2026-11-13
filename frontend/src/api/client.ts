@@ -1,4 +1,12 @@
 import { WorkspaceScope } from "../controllers/workspaceScope";
+import { scientificJson } from "./scientific-json";
+
+const scientificBodies = new WeakSet<object>();
+/** Opt in a JSON DTO without adding fields or changing other API workflows. */
+export function withScientificJson<T extends object>(body: T): T {
+  scientificBodies.add(body);
+  return body;
+}
 export interface ApiClient {
   download(path: string, signal?: AbortSignal): Promise<Blob>;
   get<T = any>(path: string, signal?: AbortSignal): Promise<T>;
@@ -117,7 +125,11 @@ export function createApiClient({
             ? undefined
             : body instanceof FormData
               ? body
-              : JSON.stringify(body),
+              : body !== null &&
+                  typeof body === "object" &&
+                  scientificBodies.has(body)
+                ? scientificJson.stringify(body)
+                : JSON.stringify(body),
       });
       lease.assert();
       const content =

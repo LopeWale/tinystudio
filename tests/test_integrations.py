@@ -20,6 +20,8 @@ LAB_TOOLS = {
     "lab_operations", "lab_operation_cancel", "lab_operation_retry",
     "lab_promote_dataset", "lab_repository_input",
     "lab_statistics_methods", "lab_statistics_define",
+    "lab_studies", "lab_study", "lab_study_save", "lab_study_revisions",
+    "lab_study_records", "lab_study_record", "lab_study_manifest",
 }
 
 
@@ -34,7 +36,7 @@ def test_tool_catalog_shape():
     assert all(s.description for s in specs)
     legacy = [s for s in specs if s.name not in LAB_TOOLS]
     assert sum(s.long_running for s in legacy) == 14 and sum(s.read_only for s in legacy) == 25
-    assert {s.name for s in specs if s.name in LAB_TOOLS and s.read_only} == {"lab_catalog", "lab_definitions", "lab_statistics_methods", "lab_preflight", "lab_run", "lab_events", "lab_targets", "lab_operation", "lab_operations"}
+    assert {s.name for s in specs if s.name in LAB_TOOLS and s.read_only} == {"lab_catalog", "lab_definitions", "lab_statistics_methods", "lab_preflight", "lab_run", "lab_events", "lab_targets", "lab_operation", "lab_operations", "lab_studies", "lab_study", "lab_study_revisions", "lab_study_records", "lab_study_manifest"}
     assert {s.name for s in specs if s.name in LAB_TOOLS and s.long_running} == {"lab_submit", "lab_retry", "lab_export", "lab_import", "lab_operation_retry", "lab_promote_dataset", "lab_repository_input"}
 
 

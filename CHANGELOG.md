@@ -1,3 +1,10 @@
+## 2026-11-13 — Study protocols and collection tracking
+
+- Added project studies with immutable, authored protocol revisions and append-only collection records. Researchers choose hypotheses, independent units, conditions, outcomes, sampling/stopping plans and statuses; collection can continue under an explicitly selected historical protocol. Corrections preserve original records, and ledger counts do not infer independent sample accrual.
+- Added a paginated Studies area to the existing Laboratory, CLI commands and shared assistant/MCP tools. Study-only scientific JSON preserves supported floating-point values and signed zero without changing serialization in other workflows. Protocol/record payloads retain canonical JSON rather than database-normalized numeric forms.
+- New evidence associations verify stored bytes against checksum/size before publication, retain run state/error/event positions and exact artifact/outcome references, and survive run retries. Slow verification occurs outside study/run write locks. Metadata-only JSONL exports pin protocol/record boundaries, include per-snapshot digests and a full-prefix checksum footer, and explicitly leave referenced artifact bytes external.
+- Verified actual PostgreSQL migration/legacy-row preservation, competing saves/appends, idempotency, canonical numerical fidelity, guarded downgrade and nonblocking source verification; authenticated HTTP/native-runner workflows preserve planning receipts, failures, missing/negative results and historical associations. See [study tracking](docs/study-tracking.md) for contracts and examples.
+
 ## 2026-11-13 — Statistical planning
 
 - Added sample-size, fixed-sample power, detectable mean-difference and proportion-precision planning through the existing Laboratory definitions, preflight, runner and retained artifacts. Four initial methods expose their inputs, assumptions, equations and references; researcher-supplied source notes and sensitivity scenarios are frozen with the calculation.
