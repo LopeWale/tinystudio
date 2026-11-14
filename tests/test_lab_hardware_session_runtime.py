@@ -24,6 +24,14 @@ def authority():
     return control
 
 
+@pytest.fixture
+def default_sigint():
+    import signal
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try: yield
+    finally: signal.signal(signal.SIGINT, previous)
+
+
 def binding(tmp_path, port=1):
     state = tmp_path / 'operator-state'
     state.mkdir(mode=0o700, exist_ok=True)
@@ -597,7 +605,7 @@ def test_false_arriving_during_seal_keeps_that_report_historical_and_unexported(
         runtime.close(supervisor_cleanup_confirmed=False)
 
 
-def test_actual_startup_sigint_propagates_after_owned_cleanup_and_metadata(tmp_path):
+def test_actual_startup_sigint_propagates_after_owned_cleanup_and_metadata(tmp_path, default_sigint):
     import signal
     from tinystudio.lab.managed_emulator import ManagedEmulatorProcess
     class InterruptAfterReady(ManagedEmulatorProcess):
@@ -631,7 +639,7 @@ def test_startup_systemexit_keeps_safe_code_and_cleanup_without_private_context(
     assert components.emulator.close_calls == 1 and runtime.cleanup_confirmed
 
 
-def test_actual_retention_sigint_propagates_after_real_owned_process_cleanup(tmp_path, monkeypatch):
+def test_actual_retention_sigint_propagates_after_real_owned_process_cleanup(tmp_path, monkeypatch, default_sigint):
     import signal
     components = Components(tmp_path, authority())
     runtime = HardwareSessionRuntime(binding(tmp_path), components.control, components.work, input_paths={},
@@ -682,6 +690,166 @@ def test_regular_retention_failure_keeps_already_verified_artifact_metadata(tmp_
     assert hashlib.sha256(Path(verified[0]['path']).read_bytes()).hexdigest() == verified[0]['sha256']
     assert caught.value.__context__ is None and caught.value.__cause__ is None
     assert 'private-retention-diagnostic' not in str(caught.value)
+
+
+def test_actual_seal_sigint_finishes_metadata_then_propagates_once(tmp_path, monkeypatch, default_sigint):
+    import signal
+    components = Components(tmp_path, authority())
+    runtime = HardwareSessionRuntime(binding(tmp_path), components.control, components.work, input_paths={},
+        emulator_selection=emulator_selection(argv=['-c', 'import time; time.sleep(30)'], shutdown_grace_seconds=.1),
+        emulator_binding=emulator_binding(), bridge_factory=components.bridge_factory).start()
+    observed = []
+    def interrupt_seal():
+        snapshot = runtime.emulator.snapshot()
+        assert snapshot['cleanup_confirmed']
+        with pytest.raises(ProcessLookupError): os.kill(snapshot['pid'], 0)
+        observed.append(True)
+        os.kill(os.getpid(), signal.SIGINT)
+    monkeypatch.setattr(runtime.workspace, 'seal', interrupt_seal)
+    with pytest.raises(KeyboardInterrupt) as caught: runtime.close()
+    assert observed == [True]
+    assert caught.value.args == () and caught.value.__context__ is None and caught.value.__cause__ is None
+    result = runtime.close()
+    assert runtime.cleanup_confirmed and result['workspace']['status'] == 'seal_failed'
+    assert result['evidence']['closed'] and runtime.paths.manifest.is_file()
+    assert {'phase': 'workspace_seal', 'type': 'KeyboardInterrupt'} in result['errors']
+    assert runtime.close() == result and observed == [True]
+
+
+@pytest.mark.parametrize('primary,expected,code', [
+    (KeyboardInterrupt('private-primary'), KeyboardInterrupt, None),
+    (SystemExit(7), SystemExit, 7),
+    (SystemExit(None), SystemExit, None),
+    (ValueError('private-primary'), KeyboardInterrupt, None),
+])
+def test_startup_error_and_second_cleanup_signal_keep_first_shutdown_without_context(tmp_path, primary, expected, code):
+    components = Components(tmp_path, authority())
+    def emulator(*args, **kwargs):
+        owned = components.emulator_factory(*args, **kwargs)
+        original_close = owned.close
+        def ready(): raise primary
+        def close(reason):
+            original_close(reason)
+            raise KeyboardInterrupt('private-secondary')
+        owned.wait_ready, owned.close = ready, close
+        return owned
+    runtime = components.runtime(binding(tmp_path), emulator_factory=emulator)
+    with pytest.raises(expected) as caught: runtime.start()
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    if expected is SystemExit: assert caught.value.code == code
+    else: assert caught.value.args == ()
+    result = runtime.close()
+    assert result['primary_error']['type'] == type(primary).__name__
+    assert components.emulator.close_calls == 1 and runtime.cleanup_confirmed
+    assert 'private-primary' not in str(caught.value) + json.dumps(result)
+    assert 'private-secondary' not in str(caught.value) + json.dumps(result)
+
+
+@pytest.mark.parametrize('boundary', [
+    'bridge_cleanup', 'bridge_cleanup_observation', 'emulator_cleanup', 'emulator_cleanup_observation',
+    'workspace_seal', 'metadata_write', 'metadata_close', 'metadata_identity',
+    'metadata_manifest_write', 'metadata_manifest_hash', 'supervisor_assurance_metadata',
+])
+@pytest.mark.parametrize('shutdown,code', [('interrupt', None), ('exit', None), ('exit', 7), ('exit', 'private-close-code')])
+def test_cleanup_and_metadata_boundaries_deliver_safe_shutdown_once_after_remaining_work(
+        tmp_path, monkeypatch, boundary, shutdown, code):
+    import tinystudio.lab.hardware_session_runtime as module
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path)).start()
+    fired = []
+    def interrupt():
+        if fired: return
+        fired.append(True)
+        if shutdown == 'interrupt': raise KeyboardInterrupt('private-close-args')
+        raise SystemExit(code)
+    phase = boundary
+    if boundary == 'bridge_cleanup':
+        original = runtime.bridge.close
+        def close_bridge():
+            result = original(); interrupt(); return result
+        monkeypatch.setattr(runtime.bridge, 'close', close_bridge)
+    elif boundary == 'bridge_cleanup_observation':
+        value = {'closed': False}
+        def get_closed(self): interrupt(); return value['closed']
+        def set_closed(self, closed): value['closed'] = closed
+        monkeypatch.setattr(type(runtime.bridge), 'cleanup_confirmed', property(get_closed, set_closed))
+    elif boundary == 'emulator_cleanup':
+        original = runtime.emulator.close
+        def close_emulator(reason):
+            result = original(reason); interrupt(); return result
+        monkeypatch.setattr(runtime.emulator, 'close', close_emulator)
+    elif boundary == 'emulator_cleanup_observation':
+        original, calls = runtime.emulator.snapshot, []
+        def snapshot():
+            calls.append(True)
+            if len(calls) == 2: interrupt()
+            return original()
+        monkeypatch.setattr(runtime.emulator, 'snapshot', snapshot)
+    elif boundary == 'workspace_seal':
+        def seal(): interrupt()
+        monkeypatch.setattr(runtime.workspace, 'seal', seal)
+    elif boundary == 'metadata_write':
+        original = runtime._writer.write_record
+        def write_record(row):
+            if row['event'] == 'runtime_closed': interrupt()
+            return original(row)
+        monkeypatch.setattr(runtime._writer, 'write_record', write_record)
+    elif boundary == 'metadata_close':
+        original = runtime._writer.close
+        def close_writer():
+            original(); interrupt()
+        monkeypatch.setattr(runtime._writer, 'close', close_writer)
+    elif boundary in {'metadata_identity', 'metadata_manifest_hash'}:
+        phase = 'metadata_identity' if boundary == 'metadata_identity' else 'metadata_manifest'
+        selected = runtime.paths.lifecycle if boundary == 'metadata_identity' else runtime.paths.manifest
+        original = module._stable_file
+        def observe(path, **kwargs):
+            if Path(path) == selected and kwargs.get('destination') is None: interrupt()
+            return original(path, **kwargs)
+        monkeypatch.setattr(module, '_stable_file', observe)
+    elif boundary in {'metadata_manifest_write', 'supervisor_assurance_metadata'}:
+        phase = 'metadata_manifest' if boundary == 'metadata_manifest_write' else boundary
+        if boundary == 'supervisor_assurance_metadata': runtime.close()
+        selected = runtime.paths.manifest if boundary == 'metadata_manifest_write' else runtime.paths.assurance
+        original = Path.open
+        def open_file(path, *args, **kwargs):
+            if path == selected and args and args[0] == 'xb': interrupt()
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'open', open_file)
+    value = boundary != 'supervisor_assurance_metadata'
+    expected = KeyboardInterrupt if shutdown == 'interrupt' else SystemExit
+    with pytest.raises(expected) as caught: runtime.close(supervisor_cleanup_confirmed=value)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    if shutdown == 'interrupt': assert caught.value.args == ()
+    else: assert caught.value.code == (code if code is None or type(code) is int else 1)
+    result = runtime.close(supervisor_cleanup_confirmed=value)
+    assert runtime.close(supervisor_cleanup_confirmed=value) == result
+    assert fired == [True] and components.bridge.close_calls == components.emulator.close_calls == 1
+    assert result['evidence']['closed']
+    assert {'phase': phase, 'type': expected.__name__} in result['errors']
+    assert 'private-close' not in str(caught.value) + json.dumps(result)
+    if boundary in {'bridge_cleanup_observation', 'emulator_cleanup_observation'}:
+        assert not result['cleanup_confirmed'] and 'seal' not in components.events
+    else: assert result['cleanup_confirmed']
+
+
+def test_shutdown_from_clock_during_startup_does_not_continue_to_factories(tmp_path):
+    class Clock:
+        called = False
+        def monotonic(self):
+            if not self.called:
+                self.called = True
+                raise KeyboardInterrupt('private-clock-args')
+            return time.monotonic()
+        def time(self): return time.time()
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path), clock=Clock())
+    with pytest.raises(KeyboardInterrupt) as caught: runtime.start()
+    assert caught.value.args == () and caught.value.__context__ is None and caught.value.__cause__ is None
+    assert components.events == []
+    result = runtime.close()
+    assert runtime.cleanup_confirmed and result['evidence']['closed']
+    assert {'phase': 'metadata_clock', 'type': 'KeyboardInterrupt'} in result['errors']
 
 
 @pytest.mark.parametrize('raw_visibility', [None, 'truth'])

@@ -127,6 +127,7 @@ class HardwareSessionRuntime:
         self._writer = self._prepared = None
         self._state, self._phase = 'created', 'created'
         self._primary = None
+        self._pending_shutdown = None
         self._errors = []
         self._attempted = {'bridge': False, 'emulator': False}
         self._start_entered = {'bridge': False, 'emulator': False}
@@ -149,7 +150,18 @@ class HardwareSessionRuntime:
         self._startup_thread = None
 
     def _error(self, phase, error):
+        self._capture_shutdown(error)
         self._errors.append({'phase': phase, 'type': type(error).__name__})
+
+    def _capture_shutdown(self, error):
+        shutdown = _public_shutdown(error)
+        if shutdown is not None and self._pending_shutdown is None:
+            self._pending_shutdown = shutdown
+        return shutdown is not None
+
+    def _take_shutdown(self):
+        shutdown, self._pending_shutdown = self._pending_shutdown, None
+        return shutdown
 
     def _dated(self):
         values = {}
@@ -160,6 +172,7 @@ class HardwareSessionRuntime:
                 values[name] = value
             except BaseException as error:
                 values[name] = None; self._error('metadata_clock', error)
+                if isinstance(error, (KeyboardInterrupt, SystemExit)): raise
         return values
 
     def _record(self, event, **fields):
@@ -239,8 +252,13 @@ class HardwareSessionRuntime:
         except BaseException as error:
             primary = {'phase': self._phase, 'type': type(error).__name__}
             self._primary = primary
-            self.close()
-            public_error = _public_shutdown(error)
+            self._capture_shutdown(error)
+            # Startup owns the lifecycle lock. Finish cleanup without delivering
+            # a second signal inside this original native exception handler.
+            self._close_requested.set()
+            self._close()
+            self._refresh_supervisor_assurance()
+            public_error = self._take_shutdown()
             if public_error is None:
                 public_error = HardwareSessionRuntimeError(primary['phase'], primary['type'], self._summary)
         # Raise outside the native exception handler: even __context__ must not
@@ -385,7 +403,10 @@ class HardwareSessionRuntime:
         with self._lifecycle_lock:
             self._close()
             self._refresh_supervisor_assurance()
-            return deepcopy(self._summary)
+            summary = deepcopy(self._summary)
+            shutdown = self._take_shutdown()
+        if shutdown is not None: raise shutdown from None
+        return summary
 
     def _close(self):
         with self._close_lock:
@@ -446,7 +467,12 @@ class HardwareSessionRuntime:
             if not self._close_complete:
                 raise RuntimeError('parent runtime close must complete before evidence retention')
             self._refresh_supervisor_assurance()
-            return self._retain_artifacts(destination, visibility=visibility)
+            artifacts = None
+            if self._pending_shutdown is None:
+                artifacts = self._retain_artifacts(destination, visibility=visibility)
+            shutdown = self._take_shutdown()
+        if shutdown is not None: raise shutdown from None
+        return artifacts
 
     def _retain_artifacts(self, destination, *, visibility):
         if visibility not in {'model', 'evaluation', 'truth'}: raise ValueError('invalid artifact visibility')
@@ -485,10 +511,12 @@ class HardwareSessionRuntime:
             if self.workspace is not None and self._writer_quiescence()['all_writers_quiescent'] and self._workspace['status'] == 'sealed':
                 artifacts.extend(self.workspace.retain_artifacts(destination, visibility=visibility))
         except BaseException as error:
-            public_error = _public_shutdown(error)
-            if public_error is None:
+            if self._capture_shutdown(error):
+                public_error = None
+            else:
                 public_error = HardwareSessionRuntimeError('artifact_retention', type(error).__name__, self._summary, artifacts=artifacts)
         else:
             self._retained[key] = deepcopy(artifacts)
             return artifacts
-        raise public_error from None
+        if public_error is not None: raise public_error from None
+        return None

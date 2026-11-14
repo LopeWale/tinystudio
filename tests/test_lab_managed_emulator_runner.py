@@ -258,6 +258,35 @@ def _wait_for_cancel(control):
     return False
 
 
+def test_actual_sigint_during_workspace_seal_never_publishes_success(tmp_path, monkeypatch):
+    import signal
+    runner, transport, attempt, root, port = fixture(tmp_path)
+    observed = []
+    def interrupt_after_owned_cleanup(workspace):
+        events = [json.loads(line) for line in (workspace.root / 'peer-events.jsonl').read_text().splitlines()]
+        pid = events[0]['pid']
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        observed.append(pid)
+        os.kill(os.getpid(), signal.SIGINT)
+        raise AssertionError('actual SIGINT did not interrupt sealing')
+    monkeypatch.setattr(EmulatorWorkspace, 'seal', interrupt_after_owned_cleanup)
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runner.execute_attempt(attempt, root)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert len(observed) == 1
+    assert getattr(transport, 'finish', None) is None and not transport.uploads
+    manifest = json.loads(HardwareSessionRuntimePaths(root / 'work').manifest.read_text())
+    assert manifest['cleanup_confirmed'] and manifest['workspace']['status'] == 'seal_failed'
+    assert not manifest['metadata_complete']
+    assert {'phase': 'workspace_seal', 'type': 'KeyboardInterrupt'} in manifest['errors']
+    with socket.socket() as probe:
+        assert probe.connect_ex(('127.0.0.1', port)) != 0
+
+
 def test_registered_api_to_native_supervisor_and_managed_peer(integrated, tmp_path):
     client, base, other, app, connection, root, factory = integrated
     selected = tmp_path / 'selected-config'
