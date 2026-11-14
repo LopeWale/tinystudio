@@ -5,6 +5,7 @@ Availability is a target declaration, not a successful execution receipt.
 from __future__ import annotations
 
 from .contracts import ExperimentDefinition
+from .execution_configuration import ExecutionBudget
 
 
 def backend_engines(capabilities: dict, backend: str) -> list[str]:
@@ -201,8 +202,9 @@ def resource_selection(execution, limits, *, kubernetes_pids_limit=None):
         raise ValueError("hard resource requirements need an isolated container or Kubernetes backend")
     maximum = {"cpu": limits.get("cpu", 1), "memory_bytes": limits.get("memory_bytes", 512*1024**2), "pids": limits.get("pids", 64)}
     selected = {**maximum, **requested}
+    budget = ExecutionBudget.from_execution(execution.model_dump())
     Limits(**maximum).validate()
-    Limits(**selected, wall_seconds=execution.max_seconds).validate()
+    Limits(**selected, wall_seconds=budget.max_seconds).validate()
     if any(selected[key] > maximum[key] for key in allowed):
         raise ValueError("requested resources exceed the operator-configured target allowance")
     if execution.backend == "kubernetes" and "pids" in requested and (kubernetes_pids_limit is None or kubernetes_pids_limit > selected["pids"]):

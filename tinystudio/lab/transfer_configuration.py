@@ -347,3 +347,44 @@ class TransferLocalPaths:
     def state(self):
         path = Path(self.target)
         return path.with_name(path.name + '.transfer.json')
+
+
+@dataclass(frozen=True)
+class AttemptArtifactApiPaths:
+    """One attempt scope shared by Runner clients and relative API routes."""
+    base: str
+
+    def __post_init__(self):
+        # Reuse the absolute route validation used by transfer controls. This
+        # also supports FastAPI's explicit path templates on the server side.
+        TransferApiPaths(self.base)
+
+    @classmethod
+    def at_runner(cls, base):
+        return cls(base)
+
+    @property
+    def transfers(self):
+        return TransferApiPaths.at_lab(self.base)
+
+    @property
+    def policy_route(self):
+        return self.transfers.policy_route
+
+    @property
+    def input_download_route(self):
+        return self.input_proxy_route + '/download'
+
+    @property
+    def input_proxy_route(self):
+        return self.base + '/inputs/{artifact_id}'
+
+    def input_proxy(self, artifact_id):
+        return self.input_proxy_route.replace('{artifact_id}', quote(_segment(artifact_id), safe=''))
+
+    def input_download(self, artifact_id):
+        return self.input_proxy(artifact_id) + '/download'
+
+    @property
+    def output_proxy(self):
+        return self.base + '/artifacts'

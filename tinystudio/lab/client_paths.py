@@ -10,6 +10,30 @@ class LabApiPaths:
 
 
 @dataclass(frozen=True)
+class RunnerApiPaths(LabApiPaths):
+    @property
+    def collection(self):
+        return self.base + '/runner'
+
+    @property
+    def target_route(self):
+        return self.collection + '/{target_id}'
+
+    @property
+    def attempt_route(self):
+        return '/attempts/{id_}'
+
+    def target(self, target_id):
+        return self.target_route.replace('{target_id}', path_identifier(target_id))
+
+    def relative_attempt(self, attempt_id):
+        return self.attempt_route.replace('{id_}', path_identifier(attempt_id))
+
+    def attempt(self, target_id, attempt_id):
+        return self.target(target_id) + self.relative_attempt(attempt_id)
+
+
+@dataclass(frozen=True)
 class RuntimeApiPaths(LabApiPaths):
     @property
     def methods(self) -> str:

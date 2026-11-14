@@ -115,6 +115,30 @@ Browser transfers require bucket CORS for the configured Studio origin, methods
 and signed headers; presigned URLs use the S3 endpoint. Owned software fixtures
 and SDK signing tests do not qualify a live bucket, deployment, or CORS setup.
 
+The outbound Runner selects the authenticated per-attempt transfer protocol
+before artifact mutation. R2 inputs use signed downloads checked against the
+frozen input identity, and outputs use resumable transfers. Object requests
+carry no Studio or Access credentials. Local storage retains authenticated proxy
+transfer. A confirmed old-server capability 404/405 selects the legacy protocol;
+an uncertain request never triggers an automatic protocol fallback.
+
+Execution budgets are separate from transfer and provider limits. In the frozen
+execution definition, `max_seconds` and `max_output_bytes` accept a nonnegative
+integer or `null` for no authored cap. Zero remains exact. Omission retains the
+compatibility defaults of 300 seconds and 512 MiB. The time budget covers staging
+and execution; the output monitor counts the work directory, including logs,
+results and parent receipts. Post-stop audit publication still needs a live
+attempt lease, but does not restart an exhausted execution clock or device
+authority. The shared RQ job timeout remains a separate seven-day envelope.
+
+Completion uses a durable `attempt_finalize` operation. A 202 ticket is pending,
+not a terminal acknowledgement. The dispatcher and worker stream-verify evidence
+outside attempt locks, then recheck authority before committing the outcome and
+operation together. Exact canonical request text preserves numeric values across
+database JSON projections. Lost acknowledgements can be inspected by the same
+attempt identity and request digest; failed, lost or cancelled operations are
+never automatically requeued. Without a worker, finalization remains pending.
+
 ## Operator workflow
 
 Use the normal API key and project for authoring and inspection. Enroll a separate project-target credential for outbound execution, then run the runner in its own terminal:
@@ -129,6 +153,21 @@ tinystudio runner --credential-file runner.json
 The remote runner uses outbound HTTPS and its scoped token; it needs no PostgreSQL, Redis or object-store credentials. Plain HTTP is permitted only on loopback. Enrollment requires an administrator and creates a new mode `0600` file. The loader requires an owned regular nonsymlink file. Keep it outside research bundles. Its optional `access` object contains `client_id`, `client_secret` and `public_url` for Cloudflare Access; the existing Studio client sends those credentials only to the matching approved HTTPS origin. Without that object, the normal `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and `TINYSTUDIO_PUBLIC_URL` environment guard applies.
 
 The long-lived runner reconnects after transient claim transport errors and HTTP 408/429/500/502/503/504, with delays from one to thirty seconds. A successful claim resets the delay. Authentication, configuration and active-attempt failures remain explicit; `--once` reports the original claim failure. A lost claim response conveys no execution authority to the client. Inspect and recover the retained attempt before explicitly retrying its run.
+
+Resume retained publication without executing the child again:
+
+```sh
+tinystudio runner-resume /operator/chosen/attempt-root --credential-file runner.json
+```
+
+The private prompt accepts the existing attempt lease token; no token is stored
+in a publication journal or passed as a command-line argument. Recovery validates
+the selected server, target, frozen identity and saved receipts. Before new
+publication it also checks retained source bytes while maintaining the lease.
+An expired lease may inspect an accepted terminal receipt, but cannot publish a
+new outcome. If new publication lacks credentials or sources, use the separate
+host evidence recovery workflow. Explicit resume may resubmit the same immutable
+completion request; it never replays the experiment or retries a failed operation.
 
 Attempt roots must be existing absolute directories, with no symlink at the final
 component. The runner resolves ancestor aliases before constructing input paths,
@@ -326,15 +365,18 @@ separate timestamps.
 
 ### Retained host evidence and archive recovery
 
-Native hardware acquisition and discovery use a persistent host evidence spool
-by default. Other engines can opt in. The operator profile selects
+Native execution retains a host evidence spool by default, including computational
+attempts. Other backends can opt in. The operator profile selects
 `evidence_spool: {enabled: true, root: "/operator/chosen/location", max_bytes: null,
 retention: "keep"}`. `enabled: false` explicitly selects temporary execution.
 `root` defaults to the configured host evidence location; shared path resolution
 uses `RuntimePaths.laboratory_evidence_spool`, and the environment override is
-`TINYSTUDIO_LAB_EVIDENCE_DIR`. With R2 storage, supply an explicit persistent
-location through this override, the operator profile, or the runner work root:
-the ordinary R2 data directory is a disposable cache. A container or Kubernetes
+`TINYSTUDIO_LAB_EVIDENCE_DIR`. With R2 storage, hardware capture requires an explicit
+persistent location through this override, the operator profile, or the runner
+work root. Computational Native attempts may retain their publication state in
+the disposable host cache when no persistent root is selected; this does not
+establish crash durability. Explicitly disabled retention remains temporary and
+cannot promise publication recovery after its sources are removed. A container or Kubernetes
 location also needs persistent operator-managed storage; configuring its name
 does not verify a mount's durability.
 

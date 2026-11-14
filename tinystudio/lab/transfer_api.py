@@ -11,7 +11,9 @@ from tinystudio.api.deps import get_db, project_dep
 from tinystudio.db.models import Project
 from .models import LabAttempt, LabTarget, LabTransfer
 from . import service as svc
-from .transfer_configuration import TransferApiPaths, TransferPolicy
+from .client_paths import RunnerApiPaths
+from .finalization_configuration import FINALIZATION_PROTOCOL_VERSION
+from .transfer_configuration import AttemptArtifactApiPaths, TransferApiPaths, TransferPolicy
 from .transfer_storage import MultipartArtifactStore, TransferStorageError
 
 
@@ -100,13 +102,26 @@ def _control(action, db, project_id, session_id, *args, **options):
 def install(project_routes, runner_routes):
     """Share route definitions and object controls across project/target scopes."""
     project_paths = TransferApiPaths.at_lab('')
-    runner_paths = TransferApiPaths.at_lab('/attempts/{id_}')
+    attempt_paths = AttemptArtifactApiPaths.at_runner(RunnerApiPaths().attempt_route)
+    runner_paths = attempt_paths.transfers
 
     @project_routes.get(project_paths.policy_route)
     def policy(db: DB, project: ProjectDep):
         store = _store()
         return {'backend': 'r2' if store.storage.remote else 'local',
                 'resumable': store.storage.remote, 'policy': TransferPolicy.from_environment().as_dict()}
+
+    @runner_routes.get(attempt_paths.policy_route)
+    def runner_policy(id_: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
+        # Select the protocol before artifact mutation; a target credential
+        # alone does not confer authority over another attempt's execution.
+        svc.attempt_authority(db, target, id_, x_lab_lease)
+        db.commit()
+        store = _store()
+        return {'protocol_version': 1, 'backend': 'r2' if store.storage.remote else 'local',
+                'resumable': store.storage.remote, 'direct_download': store.storage.remote,
+                'finalization_protocol_version': FINALIZATION_PROTOCOL_VERSION,
+                'policy': TransferPolicy.from_environment().as_dict()}
 
     @project_routes.get(project_paths.collection)
     def transfers(db: DB, project: ProjectDep, after: str | None = None,
@@ -215,7 +230,7 @@ def install(project_routes, runner_routes):
             return {'mode': 'proxy', 'artifact': svc.artifact_dict(row)}
         return {'mode': 'direct', 'artifact': svc.artifact_dict(row), **store.sign_download(row.storage_key)}
 
-    @runner_routes.post('/attempts/{id_}/inputs/{artifact_id}/download')
+    @runner_routes.post(attempt_paths.input_download_route)
     def download_input(id_: str, artifact_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
         run, _ = svc.attempt_authority(db, target, id_, x_lab_lease)
         if artifact_id not in {item['artifact_id'] for item in run.spec['definition']['inputs']}:

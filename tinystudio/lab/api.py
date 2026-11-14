@@ -18,16 +18,18 @@ from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
 from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
-from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths
+from .client_paths import RunnerApiPaths, RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
 from .study_import_paths import StudyImportPaths
-from .transfer_configuration import TransferPolicy
+from .transfer_configuration import AttemptArtifactApiPaths, TransferPolicy
+from .finalization_configuration import FinalizationApiPaths
 from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
 from .recovered_evidence import RecoveryPreviewRequest, RecoveryAttachRequest, RecoveryParserLimits
 
 router = APIRouter()
 project_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory"])
-runner_routes = APIRouter(prefix="/api/lab/runner/{target_id}", tags=["laboratory runner"])
+runner_api_paths = RunnerApiPaths()
+runner_routes = APIRouter(prefix=runner_api_paths.target_route, tags=["laboratory runner"])
 data_bridge_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory data bridges"])
 DB = Annotated[Session, Depends(get_db)]
 ProjectDep = Annotated[Project, Depends(project_dep)]
@@ -647,47 +649,81 @@ def advertise(body: Claim, db: DB, target: TargetDep):
     return {"accepted": True, "target_id": target.id}
 
 
-@runner_routes.post("/attempts/{id_}/heartbeat")
+@runner_routes.post(runner_api_paths.attempt_route + '/heartbeat')
 def heartbeat(id_: str, body: Heartbeat, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
     result = svc.heartbeat(db, target, id_, x_lab_lease, body.events)
     db.commit()
     return result
 
 
-@runner_routes.post("/attempts/{id_}/finish")
+@runner_routes.post(FinalizationApiPaths().legacy_finish)
 def finish(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target
     # Credential authentication takes a target lock. Release it before storage
     # readback; the service reacquires attempt authority to publish completion.
+    target = _snapshot_target(target)
     db.commit()
     result = svc.finish(db, target, id_, x_lab_lease, body.state, body.result, body.error)
     db.commit()
     return result
 
 
-@runner_routes.post("/attempts/{id_}/artifacts", status_code=201)
+@runner_routes.post(FinalizationApiPaths().collection_route, status_code=202)
+def request_finalization(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target, finalization_dict, request_finalization as admit
+    target = _snapshot_target(target)
+    db.commit()
+    row = admit(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    db.commit()  # Durable admission precedes its 202 descriptor.
+    return finalization_dict(row)
+
+
+@runner_routes.get(FinalizationApiPaths().digest_route)
+def finalization_by_digest(id_: str, payload_digest: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization
+    target = _snapshot_target(target)
+    db.commit()
+    return finalization_dict(get_finalization(db, target, id_, x_lab_lease, payload_digest=payload_digest))
+
+
+@runner_routes.get(FinalizationApiPaths().operation_route)
+def finalization_by_id(id_: str, operation_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization
+    target = _snapshot_target(target)
+    db.commit()
+    return finalization_dict(get_finalization(db, target, id_, x_lab_lease, operation_id=operation_id))
+
+
+@runner_routes.post(AttemptArtifactApiPaths.at_runner(runner_api_paths.attempt_route).output_proxy, status_code=201)
 def upload_output(id_: str, db: DB, target: TargetDep, file: UploadFile = File(...),
                   role: str = Query("evidence", max_length=64), visibility: str = Query("model", pattern=r"^(model|evaluation|truth)$"),
                   sha256: str = Query(pattern=r"^[0-9a-f]{64}$"), x_lab_lease: str = Header(default="")):
     from .engine import digest
+    from .execution_configuration import ExecutionBudget, ExecutionBudgetExceeded
+    from .finalization_service import _snapshot_target
     name = svc.validate_artifact_name(file.filename or "output.bin")
     run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
-    maximum = run.spec["definition"]["execution"]["max_output_bytes"]
+    budget = ExecutionBudget.from_execution(run.spec["definition"]["execution"])
     existing = db.scalar(select(LabArtifact).where(LabArtifact.attempt_id == id_, LabArtifact.name == name))
     if existing and (existing.sha256, existing.role, existing.visibility) != (sha256, role, visibility):
         raise svc.LabError("artifact name already published with different content or role", 409)
     prior = sum(db.scalars(select(LabArtifact.size).where(LabArtifact.attempt_id == attempt.id)))
     # A lost response may be redelivered after this artifact consumed the entire
     # budget. Bound its body by the retained size without charging it twice.
-    allowance = existing.size if existing else maximum - prior
+    try:
+        allowance = existing.size if existing else budget.remaining_output(prior)
+    except ExecutionBudgetExceeded:
+        raise svc.LabError("attempt output budget exceeded", 413) from None
     # Release target/run locks while transferring large objects. The publication
     # transaction below reacquires authority and rechecks both lease and budget.
+    target = _snapshot_target(target)
     db.commit()
     with tempfile.TemporaryDirectory(prefix="ts-lab-output-") as root:
         path = copy_upload(file, Path(root), allowance)
         if digest(path) != sha256:
             raise svc.LabError("uploaded output checksum mismatch", 409)
         verified = svc.persist_verified(path, target.project_id, file.content_type or "application/octet-stream")
-        svc.attempt_authority(db, target, id_, x_lab_lease)
+        run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
         existing = db.scalar(select(LabArtifact).where(LabArtifact.attempt_id == id_, LabArtifact.name == name))
         if existing:
             if (existing.sha256, existing.role, existing.visibility, existing.size) == (sha256, role, visibility, path.stat().st_size):
@@ -696,15 +732,17 @@ def upload_output(id_: str, db: DB, target: TargetDep, file: UploadFile = File(.
                 return result
             raise svc.LabError("artifact name already published with different content or role", 409)
         prior = sum(db.scalars(select(LabArtifact.size).where(LabArtifact.attempt_id == attempt.id)))
-        if prior + path.stat().st_size > maximum:
-            raise svc.LabError("attempt output budget exceeded", 413)
+        try:
+            ExecutionBudget.from_execution(run.spec["definition"]["execution"]).check_output(prior + path.stat().st_size)
+        except ExecutionBudgetExceeded:
+            raise svc.LabError("attempt output budget exceeded", 413) from None
         result = svc.artifact_dict(svc.store_artifact(db, target.project_id, path, name,
                    file.content_type or "application/octet-stream", role, id_, verified=verified, visibility=visibility))
         db.commit()
         return result
 
 
-@runner_routes.get("/attempts/{id_}/inputs/{artifact_id}")
+@runner_routes.get(AttemptArtifactApiPaths.at_runner(runner_api_paths.attempt_route).input_proxy_route)
 def runner_input(id_: str, artifact_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
     run, _ = svc.attempt_authority(db, target, id_, x_lab_lease)
     if artifact_id not in {item["artifact_id"] for item in run.spec["definition"]["inputs"]}:

@@ -568,6 +568,31 @@ def runner(credential_file: Path = typer.Option(...), once: bool = False):
                profile_config=credential.get("profile_config"), access=credential.get("access"))
 
 
+@app.command("runner-resume")
+def runner_resume(root: Path = typer.Argument(..., exists=True, file_okay=False),
+                  credential_file: Path = typer.Option(...)):
+    """Resume retained publication without executing the experiment again.
+
+    Enter the existing attempt lease token at the private prompt. An expired
+    lease can inspect an accepted completion; it cannot publish a new outcome.
+    Missing credentials or retained sources require operator evidence recovery.
+    """
+    from .rq_adapter import load_credentials
+    from .runner import Runner
+    try:
+        credential = load_credentials(credential_file)
+        selected = Runner(credential["server"], credential["target_id"], credential["token"],
+                          profile_config=credential.get("profile_config"), access=credential.get("access"))
+        try:
+            lease = typer.prompt("Existing attempt lease token", hide_input=True)
+            result = selected.resume_publication(root, lease_token=lease)
+        finally:
+            selected.client.close()
+    except (ValueError, OSError, RuntimeError, httpx.HTTPError):
+        raise typer.BadParameter("Publication is unconfirmed; inspect the retained attempt and its scoped credentials.") from None
+    show(result)
+
+
 @app.command("dispatch")
 def dispatch(once: bool = False):
     """Deliver committed evidence operations and configured RQ runs; PostgreSQL owns state."""
@@ -589,3 +614,4 @@ def register(root: typer.Typer, *, include_data_bridges: bool = False):
                                       if include_data_bridges or command.name not in bridge_commands]
     root.add_typer(registered, name="lab")
     root.command("runner")(runner)
+    root.command("runner-resume")(runner_resume)

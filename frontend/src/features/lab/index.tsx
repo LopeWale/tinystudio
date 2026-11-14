@@ -30,6 +30,8 @@ import { Label } from "react-aria-components";
 import {
   makeDefinition,
   parseDefinition,
+  DEFAULT_EXECUTION_BUDGETS,
+  parseFiniteExecutionBudget,
   evaluationParameters,
   hardwareSessionInputPatch,
   templates,
@@ -96,6 +98,120 @@ function Fault({ error }: { error: unknown }) {
       {error instanceof Error ? error.message : String(error)}
     </p>
   ) : null;
+}
+/** Omission, explicit null and zero retain different authored budget choices. */
+function ExecutionBudgetField({
+  label,
+  modeLabel,
+  value,
+  defaultValue,
+  unit,
+  fieldKey,
+  report,
+  onChange,
+}: {
+  label: string;
+  modeLabel: string;
+  value: number | null | undefined;
+  defaultValue: number;
+  unit: string;
+  fieldKey: string;
+  report: (key: string, valid: boolean) => void;
+  onChange: (value: number | null | undefined) => void;
+}) {
+  const serialized =
+    value === undefined
+      ? "default"
+      : value === null
+        ? "unbounded"
+        : String(value);
+  const [draft, setDraft] = useState(
+    typeof value === "number" ? String(value) : "",
+  );
+  const [error, setError] = useState("");
+  const committed = useRef(serialized);
+  useEffect(() => {
+    if (serialized !== committed.current) {
+      committed.current = serialized;
+      setDraft(typeof value === "number" ? String(value) : "");
+      setError("");
+      report(fieldKey, true);
+    }
+  }, [serialized, value, fieldKey, report]);
+  useEffect(() => () => report(fieldKey, true), [fieldKey, report]);
+  const mode =
+    value === undefined ? "default" : value === null ? "unbounded" : "finite";
+  return (
+    <div className="flex flex-col gap-2">
+      <Choice
+        label={modeLabel}
+        value={mode}
+        options={[
+          { id: "default", name: "Use default" },
+          { id: "finite", name: "Finite limit" },
+          { id: "unbounded", name: "Unbounded" },
+        ]}
+        onChange={(nextMode) => {
+          const next =
+            nextMode === "default"
+              ? undefined
+              : nextMode === "unbounded"
+                ? null
+                : typeof value === "number"
+                  ? value
+                  : defaultValue;
+          committed.current =
+            next === undefined
+              ? "default"
+              : next === null
+                ? "unbounded"
+                : String(next);
+          setDraft(typeof next === "number" ? String(next) : "");
+          setError("");
+          report(fieldKey, true);
+          onChange(next);
+        }}
+      />
+      {mode === "finite" && (
+        <Input
+          label={label}
+          value={draft}
+          inputMode="numeric"
+          isInvalid={!!error}
+          onChange={(text) => {
+            setDraft(text);
+            try {
+              const next = parseFiniteExecutionBudget(text);
+              committed.current = String(next);
+              setError("");
+              report(fieldKey, true);
+              onChange(next);
+            } catch (failure) {
+              setError(
+                failure instanceof Error ? failure.message : String(failure),
+              );
+              report(fieldKey, false);
+            }
+          }}
+        />
+      )}
+      {mode === "default" && (
+        <p className="text-caption-1-regular text-text-secondary">
+          Default: {defaultValue} {unit}.
+        </p>
+      )}
+      {mode === "unbounded" && (
+        <p className="text-caption-1-regular text-text-secondary">
+          No authored {unit === "seconds" ? "time" : "output size"} limit.
+        </p>
+      )}
+      {error && (
+        <p role="alert">
+          {label}: {error}
+        </p>
+      )}
+    </div>
+  );
 }
 // A temporarily empty name is an editing state, not a reason to remove the
 // controls. Save and preflight continue to use the strict definition parser.
@@ -1639,48 +1755,42 @@ function LabWorkspace() {
                           </SettingsSection>
                           <SettingsSection
                             title="Limits"
-                            description="Bound execution time and retained output size."
+                            description="Choose a finite budget, an explicit unbounded budget, or the default. Zero is an exact zero budget."
                           >
                             <div className="lab-fields">
-                              <Input
-                                label="Maximum execution seconds"
-                                type="number"
-                                value={String(
-                                  definition.execution.max_seconds ?? 300,
-                                )}
-                                onChange={(value) => {
-                                  if (
-                                    Number.isInteger(Number(value)) &&
-                                    Number(value) > 0
-                                  )
-                                    change({
-                                      execution: {
-                                        ...definition.execution,
-                                        max_seconds: Number(value),
-                                      },
-                                    });
-                                }}
-                              />
-                              <Input
-                                label="Maximum output bytes"
-                                type="number"
-                                value={String(
-                                  definition.execution.max_output_bytes ??
-                                    536870912,
-                                )}
-                                onChange={(value) => {
-                                  if (
-                                    Number.isInteger(Number(value)) &&
-                                    Number(value) > 0
-                                  )
-                                    change({
-                                      execution: {
-                                        ...definition.execution,
-                                        max_output_bytes: Number(value),
-                                      },
-                                    });
-                                }}
-                              />
+                              {(
+                                ["max_seconds", "max_output_bytes"] as const
+                              ).map((key) => (
+                                <ExecutionBudgetField
+                                  key={`${authoringGeneration}:execution:${key}`}
+                                  fieldKey={`${authoringGeneration}:execution:${key}`}
+                                  label={
+                                    key === "max_seconds"
+                                      ? "Maximum execution seconds"
+                                      : "Maximum output bytes"
+                                  }
+                                  modeLabel={
+                                    key === "max_seconds"
+                                      ? "Execution time budget"
+                                      : "Output size budget"
+                                  }
+                                  value={definition.execution[key]}
+                                  defaultValue={DEFAULT_EXECUTION_BUDGETS[key]}
+                                  unit={
+                                    key === "max_seconds" ? "seconds" : "bytes"
+                                  }
+                                  report={reportParameter}
+                                  onChange={(value) => {
+                                    const execution = {
+                                      ...definition.execution,
+                                    };
+                                    if (value === undefined)
+                                      delete execution[key];
+                                    else execution[key] = value;
+                                    change({ execution });
+                                  }}
+                                />
+                              ))}
                             </div>
                           </SettingsSection>
                           <p>

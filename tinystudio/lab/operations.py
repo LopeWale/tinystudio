@@ -212,6 +212,9 @@ class _Lease:
         if row.kind == 'artifact_verify':
             from .transfer_service import check_verify_publication_authority
             check_verify_publication_authority(db, row, result)
+        elif row.kind == 'attempt_finalize':
+            from .finalization_service import check_finalization_publication_authority
+            check_finalization_publication_authority(db, row, result)
         row.state, row.result, row.finished = "succeeded", result, svc.now()
         row.claim_token, row.lease_until, row.error = None, None, None
         return operation_dict(row)
@@ -271,6 +274,10 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
                 elif kind == 'artifact_verify':
                     from .transfer_service import execute_verify
                     result = execute_verify(db, project, payload, directory, check_authority=lease.check)
+                elif kind == 'attempt_finalize':
+                    from .finalization_service import execute_finalization
+                    result = execute_finalization(db, project, payload, directory,
+                                                  check_authority=lease.check, session_factory=session_factory)
                 else:
                     raise svc.LabError("unsupported operation kind")
                 # Read back persisted bytes before publishing references. This also
@@ -287,8 +294,10 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
     except Exception as exc:
         # Import rows roll back before recording failure in an independent txn.
         with session_factory() as db, db.begin():
+            error = (f"Attempt finalization failed ({type(exc).__name__}); completion was not acknowledged."
+                     if kind == 'attempt_finalize' else f"{type(exc).__name__}: {str(exc)[:1800]}")
             db.execute(update(LabOperation).where(*lease.predicate()).values(state="failed", finished=svc.now(),
-                error=f"{type(exc).__name__}: {str(exc)[:1800]}", claim_token=None, lease_until=None,
+                error=error, claim_token=None, lease_until=None,
                 error_detail={"status": getattr(exc, "status", 500), "code": "limit_exceeded" if getattr(exc, "status", None) == 413 else "operation_failed"}))
         return None
     finally:

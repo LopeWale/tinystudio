@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from rq import Queue, SimpleWorker
 
 from tests.support.environment import TestEnvironment
+from tests.support.lab_finalization import finalization_worker
 from tests.test_lab_foundation import database
 from tinystudio.lab import service as svc
 from tinystudio.lab import operations, rq_adapter
@@ -63,7 +64,8 @@ def integrated(database, tmp_path, monkeypatch):
                 token = issue_service_token(ensure_instance(db).secret_key, user.id)
                 prefix, other_prefix = f"/api/p/{project.slug}/lab", f"/api/p/{other.slug}/lab"
             with TestClient(app, headers={"Authorization": "Bearer "+token}) as client:
-                yield client, prefix, other_prefix, app, connection, tmp_path, database
+                with finalization_worker(database):
+                    yield client, prefix, other_prefix, app, connection, tmp_path, database
         finally:
             db_module.reset(); worker.reset(); forget_secret()
             monkeypatch.undo()

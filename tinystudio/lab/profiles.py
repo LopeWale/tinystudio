@@ -22,10 +22,15 @@ import time
 from typing import Callable
 
 from tinystudio.config import RuntimeTools
+from .execution_configuration import DEFAULT_MAX_SECONDS, ExecutionBudget, ExecutionBudgetExceeded
 from .shared_work_configuration import SharedWorkConfiguration
 
 
 FORMAT = "tinystudio.execution-profile.v1"
+# Provider representation, not a general execution-duration ceiling:
+# https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/job-v1/
+# JobSpec.activeDeadlineSeconds is a positive int64 when present.
+KUBERNETES_MAXIMUM_ACTIVE_DEADLINE_SECONDS = 2 ** 63 - 1
 _LABEL = "tinystudio.owner"
 _NAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?\Z")
 
@@ -35,15 +40,16 @@ class Limits:
     cpu: float = 1
     memory_bytes: int = 512 * 1024**2
     pids: int = 64
-    wall_seconds: int = 300
+    wall_seconds: int | None = DEFAULT_MAX_SECONDS
 
     def validate(self):
         if isinstance(self.cpu, bool) or not isinstance(self.cpu, (int, float)) or not math.isfinite(self.cpu) or not 0 < self.cpu <= 64:
             raise ValueError("CPU limit must be finite and between zero and 64")
         for name, value, lower, upper in (("memory", self.memory_bytes, 16*1024**2, 64*1024**3),
-                                           ("pids", self.pids, 1, 4096), ("wall time", self.wall_seconds, 1, 86400)):
+                                           ("pids", self.pids, 1, 4096)):
             if type(value) is not int or not lower <= value <= upper:
                 raise ValueError(f"invalid bounded {name} limit")
+        ExecutionBudget(max_seconds=self.wall_seconds)
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,11 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
         raise ValueError("typed runner-owned profile configuration is required")
     grants = grants or RunnerGrants()
     grants.validate(); request.limits.validate()
+    if request.limits.wall_seconds == 0:
+        # A zero budget is already exhausted. Never represent it as an absent
+        # provider deadline or produce a runnable plan with a substituted value.
+        budget = ExecutionBudget(max_seconds=0)
+        budget.check_wall(0, budget.deadline(0))
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request.attempt_id):
         raise ValueError("invalid attempt identity")
     if not isinstance(request.command, tuple) or not request.command or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in request.command):
@@ -277,8 +288,12 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
                         'resources':{'requests':{'cpu':str(request.limits.cpu),'memory':str(request.limits.memory_bytes)},'limits':{'cpu':str(request.limits.cpu),'memory':str(request.limits.memory_bytes)}},
                         'securityContext':{'allowPrivilegeEscalation':False,'readOnlyRootFilesystem':True,'capabilities':{'drop':['ALL']}}}], 'volumes':volumes}
     job={'apiVersion':'batch/v1','kind':'Job','metadata':{'name':name,'namespace':request.namespace,'labels':labels},
-         'spec':{'backoffLimit':0,'activeDeadlineSeconds':request.limits.wall_seconds,'ttlSecondsAfterFinished':3600,
+         'spec':{'backoffLimit':0,'ttlSecondsAfterFinished':3600,
                  'template':{'metadata':{'labels':labels},'spec':pod}}}
+    if request.limits.wall_seconds is not None:
+        if request.limits.wall_seconds > KUBERNETES_MAXIMUM_ACTIVE_DEADLINE_SECONDS:
+            raise ValueError('Kubernetes activeDeadlineSeconds exceeds the provider int64 representation')
+        job['spec']['activeDeadlineSeconds'] = request.limits.wall_seconds
     egress=[]
     for address,port in grants.network_endpoints:
         ip=ipaddress.ip_address(address)
@@ -297,6 +312,8 @@ class ProfileExecution:
         self.termination_probe=termination_probe
         self.group=None;self.identity=None;self.closed=False;self.created=[]
         self.started_at=None
+        self._budget=ExecutionBudget(max_seconds=plan.request.limits.wall_seconds)
+        self._deadline=None
         self.creation_uncertain=False
         self.pending_kind=None
         self.deleted=set()
@@ -325,17 +342,22 @@ class ProfileExecution:
 
     def _start(self,*,stdout=None,stderr=None):
         if self.closed or self.started_at is not None:raise RuntimeError('profile execution already started or closed')
+        started=time.monotonic()
+        deadline=self._budget.deadline(started)
+        self._budget.check_wall(started,deadline)
         if self.plan.required_attestations:raise RuntimeError('unqualified backend prerequisites: '+', '.join(self.plan.required_attestations))
-        self.started_at=time.monotonic()
+        self.started_at=started;self._deadline=deadline
         if self.plan.backend=='native':
             from .runner import ProcessGroup
             if platform.system() != self.plan.request.expected_os:
                 raise RuntimeError('native target OS changed before launch')
             env={key:value for key,value in os.environ.items() if key in {'PATH','LANG','LC_ALL'}}
             env.update(dict(self.plan.environment))
+            self._budget.check_wall(time.monotonic(),self._deadline)
             self.group=ProcessGroup(list(self.plan.argv),env=env,cwd=self.plan.request.output_root,stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr)
             self.identity=str(self.group.pgid)
         elif self.plan.backend=='container':
+            self._budget.check_wall(time.monotonic(),self._deadline)
             self.creation_uncertain=True
             result=self._command(self.plan.argv)
             identifier=result.stdout.strip()
@@ -343,9 +365,11 @@ class ProfileExecution:
             self.identity=identifier
             self.creation_uncertain=False
             self._container_identity()
+            self._budget.check_wall(time.monotonic(),self._deadline)
             self._docker('start',self.identity)
         else:
             for item in json.loads(self.plan.manifests_json)['items']:
+                self._budget.check_wall(time.monotonic(),self._deadline)
                 self.pending_kind=item['kind']
                 result=self._kube('create','-f','-','-o','json',data=json.dumps(item))
                 resource=json.loads(result.stdout)
@@ -356,6 +380,7 @@ class ProfileExecution:
                 self.created.append((resource['kind'],resource['metadata']['uid']))
                 self.pending_kind=None
             self.identity=self.created[-1][1]
+        self._budget.check_wall(time.monotonic(),self._deadline)
         return self
 
     def _container_identity(self, *, allow_absent=False):
@@ -375,8 +400,10 @@ class ProfileExecution:
 
     def poll(self):
         if self.started_at is None:raise RuntimeError('profile execution was not started')
-        if time.monotonic()-self.started_at>self.plan.request.limits.wall_seconds:
-            self.close();raise TimeoutError('profile exceeded wall-time budget')
+        try:
+            self._budget.check_wall(time.monotonic(),self._deadline)
+        except ExecutionBudgetExceeded as error:
+            self.close();raise TimeoutError('profile exceeded wall-time budget') from error
         if self.plan.backend=='native':return self.group.process.poll()
         if self.plan.backend=='container':
             data=self._container_identity()['State']

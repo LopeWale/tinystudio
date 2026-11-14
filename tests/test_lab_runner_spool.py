@@ -123,6 +123,37 @@ def test_r2_disposable_cache_requires_an_explicit_spool_location(tmp_path):
     disabled.require_ready()
 
 
+def test_native_computation_retains_by_default_but_disposable_r2_cache_is_unqualified(tmp_path):
+    host=SimpleNamespace(storage_backend='r2',lab_evidence_dir=None,
+                         laboratory_evidence_spool=tmp_path/'disposable-cache/spool')
+    selected=SpoolConfiguration.resolve(None,'synthetic.signal','native',host=host,persistent_publication=True)
+    selected.require_ready()
+    assert selected.policy.enabled is True
+    assert selected.policy.root==host.laboratory_evidence_spool
+    assert selected.advertised()['mode']=='automatic_native'
+    assert selected.advertised()['root_configured'] is False
+    assert 'disposable' in selected.advertised()['qualification'].lower()
+    disabled=SpoolConfiguration.resolve({'evidence_spool':{'enabled':False}},'synthetic.signal','native',
+                                        host=host,persistent_publication=True)
+    disabled.require_ready()
+    assert disabled.policy.enabled is False
+    assert disabled.advertised()['mode']=='disabled'
+    assert 'volatile' in disabled.advertised()['qualification'].lower()
+
+
+def test_computational_explicit_retention_is_host_claim_and_hardware_still_requires_root(tmp_path):
+    host=SimpleNamespace(storage_backend='r2',lab_evidence_dir=None,
+                         laboratory_evidence_spool=tmp_path/'cache/spool')
+    selected=SpoolConfiguration.resolve({'evidence_spool':{'root':str(tmp_path/'volume')}},
+                        'statistics.analyze','native',host=host,persistent_publication=True)
+    selected.require_ready()
+    assert selected.advertised()['root_configured'] is True
+    assert 'unqualified' in selected.advertised()['qualification'].lower()
+    hardware=SpoolConfiguration.resolve(None,'hardware.session','native',host=host,persistent_publication=True)
+    with pytest.raises(ValueError,match='disposable host cache'):
+        hardware.require_ready()
+
+
 def test_spool_admission_failure_finishes_fresh_authority_before_any_child(source,tmp_path,monkeypatch):
     claimed=prepare(source);transport=ClaimTransport(claimed);root=tmp_path/'spool'
     worker=agent(source,root,transport,monkeypatch)

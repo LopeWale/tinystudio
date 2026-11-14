@@ -451,12 +451,17 @@ def claim(db: Session, target: LabTarget, capabilities: dict, *, run_id: str | N
 
 
 def attempt_authority(db: Session, target: LabTarget, id_: str, token: str, *, terminal: bool = False) -> tuple[LabRun, LabAttempt]:
-    lock_target(db, target)
+    project_id, target_hash = target.project_id, target.token_hash
+    current_target = lock_target(db, target)
+    if current_target.project_id != project_id or current_target.token_hash != target_hash:
+        raise LabError("execution target credential changed", 403)
     attempt = db.get(LabAttempt, id_)
     if attempt is None or attempt.target_id != target.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
         raise LabError("invalid attempt authority", 403)
     run = get_run(db, target.project_id, attempt.run_id, lock=True)
     db.refresh(attempt)
+    if attempt.target_id != target.id or attempt.run_id != run.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
+        raise LabError("invalid attempt authority", 403)
     if attempt.state == "running" and aware(attempt.lease_until) <= now():
         raise LabError("attempt lease expired; stale execution may not publish", 409)
     if not terminal and (attempt.state != "running" or run.state != "running"):
@@ -588,62 +593,12 @@ def retry(db: Session, project: str, id_: str) -> LabRun:
 
 
 def finish(db: Session, target: LabTarget, attempt_id: str, token: str, state: str, result: dict | None, error: str | None) -> dict:
-    if state not in {"succeeded", "failed", "cancelled"}:
-        raise LabError("invalid terminal state")
-    payload_digest = checksum({"state": state, "result": result, "error": error})
-    # Read identity without acquiring the target/run authority locks. Slow
-    # storage verification must not prevent a heartbeat extending the lease.
-    attempt = db.get(LabAttempt, attempt_id)
-    if attempt is None or attempt.target_id != target.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
-        raise LabError("invalid attempt authority", 403)
-    run = get_run(db, target.project_id, attempt.run_id)
-    if attempt.state != "running":
-        # Recheck under the normal locks even for an idempotent completion.
-        _, ended = attempt_authority(db, target, attempt_id, token, terminal=True)
-        if ended.result_digest == payload_digest:
-            return {"accepted": True, "state": ended.state}
-        raise LabError("attempt already ended with a different outcome", 409)
-    if aware(attempt.lease_until) <= now():
-        raise LabError("attempt lease expired; stale execution may not publish", 409)
-    if checksum(run.spec) != run.spec_digest:
-        raise LabError("immutable specification checksum mismatch", 409)
-    canonical_result = _canonical_result(db, run.project_id, attempt.id, result)
-    if state == "succeeded" and (not canonical_result or not canonical_result.get("artifacts")):
-        raise LabError("success requires a complete evidence manifest")
-    with tempfile.TemporaryDirectory(prefix="ts-lab-outcome-") as root:
-        directory = Path(root)
-        _verify_result(db, run.project_id, canonical_result, directory)
-        document = _outcome_document(run, attempt.id, state, canonical_result, error)
-        path = directory / "attempt-outcome.json"
-        path.write_bytes(canonical(document))
-        verified = persist_verified(path, run.project_id, "application/json")
-        # Only publication holds authority locks; repeat all mutable ownership
-        # checks after verification, including cancellation and lease expiry.
-        run, attempt = attempt_authority(db, target, attempt_id, token, terminal=True)
-        if attempt.state != "running":
-            if attempt.result_digest == payload_digest:
-                return {"accepted": True, "state": attempt.state}
-            raise LabError("attempt already ended with a different outcome", 409)
-        if run.state != "running":
-            raise LabError("attempt no longer owns this run", 409)
-        if run.spec_digest != document["spec_digest"] or checksum(run.spec) != run.spec_digest:
-            raise LabError("immutable specification changed during completion verification", 409)
-        if state == "succeeded" and run.cancel_requested:
-            raise LabError("cancellation requested; completion cannot publish success", 409)
-        # Refresh/canonicalize metadata after the unlocked transfer boundary.
-        final_result = _canonical_result(db, run.project_id, attempt.id, result)
-        if final_result != canonical_result:
-            raise LabError("artifact metadata changed during completion verification", 409)
-        archive = store_artifact(db, run.project_id, path, "attempt-outcome.json", "application/json", "attempt_outcome",
-                                 attempt.id, already_stored=True, visibility="evaluation", verified=verified)
-        attempt.state, attempt.result_digest = state, payload_digest
-        run.state, run.result, run.error = state, final_result, error[:8192] if error else None
-        outcome = {"attempt_id": attempt.id, "state": state, "outcome_artifact_id": archive.id, "sha256": archive.sha256}
-        if run.error:
-            outcome["error"] = run.error
-        event(db, run, "server.outcome", outcome)
-        event(db, run, state, {"attempt_id": attempt.id, **({"error": run.error} if run.error else {})})
-    return {"accepted": True, "state": state}
+    from .finalization_service import _authenticate_finish, _prepare_finish, _publish_prepared_finish
+    authenticated = _authenticate_finish(db, target, attempt_id, token, state, result, error)
+    if isinstance(authenticated, dict):
+        return authenticated
+    identity, request_json = authenticated
+    return _publish_prepared_finish(db, _prepare_finish(db, identity, request_json))
 
 
 def outcome_references(db, run_id):

@@ -231,6 +231,7 @@ def test_project_and_runner_scope(setup):
 
 
 def test_actual_http_subprocess_evidence_and_bundle_restore(setup, tmp_path):
+    from tests.support.lab_finalization import finalization_worker
     factory, project, other, client, prefix, app = setup
     target = client.post(prefix+"/targets", json={"name": "local"}).json()
     created = client.post(prefix+"/definitions", json={"definition": definition(pipeline=[{"kind": "offset", "parameters": {"offset": -2}}])})
@@ -238,7 +239,7 @@ def test_actual_http_subprocess_evidence_and_bundle_restore(setup, tmp_path):
     submitted = client.post(prefix+"/runs", json={"definition_id": created.json()["id"], "revision": 1, "idempotency_key": "roundtrip"})
     assert submitted.status_code == 202, submitted.text
     run_id = submitted.json()["id"]
-    with TestClient(app, headers={"Authorization": "Bearer "+target["token"]}) as machine:
+    with finalization_worker(factory), TestClient(app, headers={"Authorization": "Bearer "+target["token"]}) as machine:
         runner = Runner("http://localhost", target["id"], target["token"], client=machine)
         assert runner.run_once()
     finished = client.get(prefix+f"/runs/{run_id}").json()

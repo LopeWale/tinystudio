@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import shutil
@@ -20,13 +21,16 @@ from urllib.parse import urlsplit
 import httpx
 
 from .contracts import checksum
+from .client_paths import RunnerApiPaths
 from .engine import digest
 from .execution_outcome import (CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT,
                                 cancelled_evidence_outcome, failed_evidence_outcome)
 from .service import catalog, implementation_digest, runtime_versions
 from .shared_work_configuration import SharedWorkConfiguration
+from .execution_configuration import ExecutionBudget, ExecutionBudgetExceeded
+from .runner_publication import AttemptPublication, PublicationUnconfirmed
+from .transfer_client import TransferDataClient
 
-TRANSFER_LIMIT = 512 * 1024**2
 CLAIM_RETRY_INITIAL_SECONDS = 1.0
 CLAIM_RETRY_MAX_SECONDS = 30.0
 log = logging.getLogger("tinystudio.lab")
@@ -82,7 +86,7 @@ def capabilities(profile_config: dict | None = None, *, work_root: Path | None =
         for key in session_bindings] if result['hardware_session_native_execution'] else []
     from .spool_configuration import SpoolConfiguration
     result['evidence_spool_by_backend'] = {
-        backend:SpoolConfiguration.resolve(profile_config,'hardware.discover',backend,work_root=work_root).advertised()
+        backend:SpoolConfiguration.resolve(profile_config,'hardware.discover',backend,work_root=work_root,persistent_publication=backend=='native').advertised()
         for backend in {'native',*_backend_configs(profile_config)}}
     for backend, config in _backend_configs(profile_config).items():
         if backend == "rq" and isinstance(config, dict) and config.get("enabled") is True and config.get("profiles") == ["trusted_native"]:
@@ -290,7 +294,7 @@ class AttemptCancelled(Exception):
 
 class LeaseHeartbeat:
     """Lease renewal/cancellation outlives individual downloads, execution and uploads."""
-    def __init__(self, runner, prefix: str, lease: str, root: Path, *, interval: float, deadline: float,authority=None):
+    def __init__(self, runner, prefix: str, lease: str, root: Path, *, interval: float, deadline: float | None,authority=None):
         self.runner, self.prefix, self.lease, self.root = runner, prefix, lease, root
         self.interval, self.deadline = interval, deadline
         self.authority=authority
@@ -298,6 +302,7 @@ class LeaseHeartbeat:
         self.cancelled = threading.Event()
         self.error: Exception | None = None
         self.connectivity_lost = False
+        self.lease_deadline = None
         self.offset = 0
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self._loop, name="tinystudio-lab-lease", daemon=True)
@@ -335,9 +340,20 @@ class LeaseHeartbeat:
                 sent_at=time.monotonic()
                 try:
                     status = self.runner.post(self.prefix + "/heartbeat", {"events": events}, self.lease)
-                except Exception:
-                    self.connectivity_lost = True
+                except Exception as cause:
+                    self.connectivity_lost = not (isinstance(cause,httpx.HTTPStatusError)
+                        and cause.response.status_code==409)
                     raise
+                self.check_authority(ignore_cancel=True)
+                if 'lease_seconds' in status:
+                    ttl=status['lease_seconds']
+                    if (type(ttl) not in {int,float} or not math.isfinite(ttl) or ttl<=0
+                            or not math.isfinite(sent_at+ttl) or sent_at+ttl<=sent_at):
+                        raise ValueError('server heartbeat lease must be positive finite seconds')
+                    self.lease_deadline=sent_at+ttl
+                    self._observe_lease()
+                elif self.lease_deadline is not None:
+                    raise ValueError('server heartbeat omitted its previously selected lease')
                 self.offset = offset
                 if status.get("cancel_requested"):
                     if self.authority is not None:self.authority.revoke('server_requested_cancellation',termination='cancel')
@@ -363,16 +379,31 @@ class LeaseHeartbeat:
             except Exception:
                 return
 
-    def check(self, *, ignore_cancel=False):
+    def check_authority(self, *, ignore_cancel=False):
         if self.error:
             if self.connectivity_lost:
                 raise RuntimeError("runner lost lease connectivity") from self.error
             raise self.error
+        self._observe_lease()
         if self.cancelled.is_set() and not ignore_cancel:
             raise AttemptCancelled("server requested cancellation")
-        if time.monotonic() > self.deadline:
+
+    def _observe_lease(self):
+        if self.lease_deadline is not None and time.monotonic()>=self.lease_deadline:
+            if self.authority is not None:self.authority.revoke('known_lab_lease_expired',termination='expiry')
+            if self.error is None:self.error=TimeoutError('runner known server lease expired')
+            (self.root/'cancel').touch()
+            raise self.error
+    def check_execution_budget(self):
+        try:
+            ExecutionBudget().check_wall(time.monotonic(),self.deadline)
+        except ExecutionBudgetExceeded:
             if self.authority is not None:self.authority.revoke('selected_execution_deadline_exceeded',termination='cancel')
             raise TimeoutError("experiment exceeded selected wall-time budget")
+
+    def check(self, *, ignore_cancel=False):
+        self.check_authority(ignore_cancel=ignore_cancel)
+        self.check_execution_budget()
 
     def stop(self):
         if self.authority is not None:self.authority.revoke('lab_heartbeat_stopped',termination='cancel')
@@ -391,7 +422,7 @@ class GuardedUpload:
         self.read_bytes = 0
 
     def read(self, size=-1):
-        self.heartbeat.check(ignore_cancel=self.audit_only)
+        self.heartbeat.check_authority(ignore_cancel=self.audit_only)
         block = self.stream.read(size)
         self.read_bytes += len(block)
         if self.read_bytes > self.maximum:
@@ -412,6 +443,7 @@ class Runner:
     def __init__(self, server: str, target_id: str, token: str, *, client=None, work_root: Path | None = None,
                  source_root: Path | None = None, heartbeat_interval: float = 5, process_grace: float = 3,
                  profile_config: dict | None = None, access: dict | None = None):
+        self.prefix = RunnerApiPaths().target(target_id)
         if client is None:
             from tinystudio.integrations.tools import Studio
             access = access or {}
@@ -421,8 +453,7 @@ class Runner:
             self.client.timeout = httpx.Timeout(30)
         else:
             self.client = client
-        self.prefix = f"/api/lab/runner/{target_id}"
-        self.server = server
+        self.server = validate_url(server)
         self.target_id = target_id
         self.work_root = work_root
         self.source_root = source_root or Path(__file__).resolve().parents[1]
@@ -476,7 +507,7 @@ class Runner:
         from .evidence_spool import EvidenceSpool
         from .spool_configuration import SpoolConfiguration
         try:
-            selected_spool = SpoolConfiguration.resolve(self._profile_config,attempt["spec"]["definition"]["engine"],backend,work_root=self.work_root)
+            selected_spool = SpoolConfiguration.resolve(self._profile_config,attempt["spec"]["definition"]["engine"],backend,work_root=self.work_root,persistent_publication=backend=='native')
             selected_spool.require_ready()
             spool_policy = selected_spool.policy
             retained = EvidenceSpool(spool_policy).allocate(attempt, server=self.server, target_id=self.target_id) if spool_policy.enabled else None
@@ -494,7 +525,8 @@ class Runner:
             raise
         if spool_policy.enabled:
             try:
-                self.execute_attempt(attempt, retained.execution_root, evidence_recorder=retained)
+                self.execute_attempt(attempt, retained.execution_root, evidence_recorder=retained,
+                                     retention_description=selected_spool.advertised())
             except BaseException as cause:
                 try:
                     retained.snapshot()
@@ -504,10 +536,12 @@ class Runner:
             retained.snapshot()
             return True
         with tempfile.TemporaryDirectory(prefix="tinystudio-lab-", dir=directory) as root:
-            self.execute_attempt(attempt, Path(root))
+            try:self.execute_attempt(attempt, Path(root))
+            except PublicationUnconfirmed:
+                raise PublicationUnconfirmed('publication is unconfirmed; selected volatile staging is removed at exit and cannot be resumed') from None
         return True
 
-    def _download(self, spec, root, prefix, lease, heartbeat):
+    def _download(self, spec, root, prefix, lease, heartbeat, publication=None):
         paths, total = {}, 0
         (root / "inputs").mkdir()
         metadata = {row["id"]: row for row in spec.get("input_manifest", [])}
@@ -520,7 +554,20 @@ class Runner:
             if not re.fullmatch(r"\.[A-Za-z0-9_-]{1,20}", suffix):
                 suffix = ".bin"
             target = root / "inputs" / (identifier + suffix)
-            with self.client.stream("GET", self.prefix + prefix + "/inputs/" + identifier, headers={"X-Lab-Lease": lease}) as response:
+            frozen=metadata.get(identifier,{})
+            if 'size' in frozen and (type(frozen['size']) is not int or frozen['size']<0
+                    or frozen.get('sha256')!=ref['sha256']):
+                raise ValueError('invalid frozen input identity')
+            descriptor=(publication.descriptor(ref,frozen) if publication is not None
+                        and publication.direct_download and 'size' in frozen else None)
+            if descriptor is not None and descriptor['mode']=='direct':
+                TransferDataClient(check_authority=heartbeat.check).download(descriptor,target,
+                    size=frozen['size'],sha256=ref['sha256'])
+                target.chmod(0o444)
+                paths[identifier]=str(target)
+                continue
+            route=publication.artifacts.input_proxy(identifier) if publication is not None else self.prefix + prefix + "/inputs/" + identifier
+            with self.client.stream("GET", route, headers={"X-Lab-Lease": lease}) as response:
                 response.raise_for_status()
                 with target.open("xb") as output:
                     received = 0
@@ -528,13 +575,13 @@ class Runner:
                         heartbeat.check()
                         received += len(block)
                         total += len(block)
-                        if total > TRANSFER_LIMIT:
-                            raise ValueError("inputs exceed runner's 512 MiB aggregate transfer limit")
+                        if 'size' in frozen and received>frozen['size']:
+                            raise ValueError('downloaded input exceeds frozen input size')
                         output.write(block)
             heartbeat.check()
             if digest(target) != ref["sha256"]:
                 raise ValueError("downloaded input checksum mismatch")
-            if identifier in metadata and received != metadata[identifier]["size"]:
+            if 'size' in frozen and received != frozen['size']:
                 raise ValueError("downloaded input size differs from frozen input manifest")
             target.chmod(0o444)
             paths[identifier] = str(target)
@@ -580,6 +627,106 @@ class Runner:
             raise ValueError("selected execution backend prerequisites remain unqualified")
         return config, _backend_runtime(backend, config)
 
+    def _proxy_artifact(self,publication,path,item,heartbeat,audit_only):
+        with path.open('rb') as stream:
+            response=self.client.post(publication.artifacts.output_proxy,
+                params={key:item[key] for key in ('role','sha256','visibility')},
+                files={'file':(item['name'],GuardedUpload(stream,heartbeat,item['size'],audit_only=audit_only),item['media_type'])},
+                headers=publication.headers)
+        response.raise_for_status()
+        publication.check_authority()
+        return response.json()
+
+    def resume_publication(self,root:Path,*,lease_token:str)->dict:
+        """Explicitly recover retained publication; never restart its child.
+
+        The caller supplies current authenticated Runner and historical attempt
+        credentials. Filesystem retention is a selected host mechanism, not a
+        guarantee that a disposable cache survived a restart.
+        """
+        publication=AttemptPublication.recover(self,root,lease_token=lease_token)
+        with publication.locked():
+            plan=None
+            prior=None
+            if publication.paths.execution.exists():
+                plan=publication.load(publication.paths.execution)
+                if (not isinstance(plan,dict) or checksum(plan.get('spec'))!=publication.scope['spec_digest']
+                        or plan.get('cleanup_confirmed') is not True
+                        or type(plan.get('audit_only')) is not bool
+                        or plan.get('state') not in {'succeeded','failed','cancelled'}
+                        or not isinstance(plan.get('artifacts'),list)
+                        or not isinstance(plan.get('result'),dict)
+                        or not isinstance(plan.get('receipt'),dict)
+                        or plan['receipt'].get('spec_digest')!=publication.scope['spec_digest']
+                        or plan['receipt'].get('implementation_digest')!=checksum(plan['spec']['implementation'])
+                        or plan['receipt'].get('runtime')!=plan['spec']['runtime']):
+                    raise PublicationUnconfirmed('retained execution identity or cleanup receipt is invalid')
+                if publication.load(publication.paths.cleanup)!={'confirmed':True}:
+                    raise PublicationUnconfirmed('retained process cleanup is unconfirmed; publication was not resumed')
+                for item in plan['artifacts']:
+                    publication.source_path(item)
+                prior=(publication.load(publication.paths.receipts) if publication.paths.receipts.exists()
+                       else {'plan_digest':checksum(plan),'artifacts':[]})
+                if (not isinstance(prior,dict) or prior.get('plan_digest')!=checksum(plan)
+                        or not isinstance(prior.get('artifacts'),list)
+                        or len(prior['artifacts'])>len(plan['artifacts'])):
+                    raise PublicationUnconfirmed('retained artifact receipts differ from the execution plan')
+                for index,receipt in enumerate(prior['artifacts']):
+                    publication.validate_artifact(receipt,plan['artifacts'][index])
+            body=(publication.load(publication.paths.finalization)
+                  if publication.paths.finalization.exists() else None)
+            if body is not None and plan is not None and body.get('result') is not None:
+                if (len(prior['artifacts'])!=len(plan['artifacts'])
+                        or body['result'].get('artifacts')!=prior['artifacts']
+                        or body['result'].get('execution_receipt')!=plan['receipt']):
+                    raise PublicationUnconfirmed('completion body differs from retained artifact or execution receipts')
+            if plan is None and body is None:
+                raise PublicationUnconfirmed('no validated execution or exact completion request is retained')
+            heartbeat=LeaseHeartbeat(self,RunnerApiPaths().relative_attempt(publication.scope['attempt_id']),lease_token,
+                publication.root/'work',interval=self.heartbeat_interval,deadline=None)
+            try:
+                try:heartbeat.start()
+                except Exception:
+                    if body is None:
+                        raise PublicationUnconfirmed('live attempt authority is unavailable; retained sources unchanged') from None
+                    # Exact historical completion lookup is still permitted.
+                publication.check_authority=lambda:heartbeat.check_authority(
+                    ignore_cancel=body is not None and body.get('state')!='succeeded'
+                        or plan is not None and plan['audit_only'])
+                ticket=(publication.lookup(body) if body is not None and not publication.protocol.get('legacy') else None)
+                if ticket is None and plan is not None:
+                    for item in plan['artifacts']:publication.source(item)
+                if body is None:
+                    artifacts=[]
+                    for index,item in enumerate(plan['artifacts']):
+                        if index<len(prior['artifacts']):
+                            receipt=publication.validate_artifact(prior['artifacts'][index],item)
+                        else:
+                            receipt=publication.upload(item,index,lambda path,item:self._proxy_artifact(
+                                publication,path,item,heartbeat,plan['audit_only']))
+                            publication.save(publication.paths.receipts,
+                                {'plan_digest':checksum(plan),'artifacts':[*artifacts,receipt]})
+                        artifacts.append(receipt)
+                    result=json.loads(json.dumps(plan['result'],allow_nan=False))
+                    result.update(artifacts=artifacts,execution_receipt=plan['receipt'])
+                    state=plan['state']
+                    if heartbeat.cancelled.is_set() and state=='succeeded':
+                        state,result='cancelled',None
+                    body={'state':state,'result':result,'error':plan['error']}
+                acknowledgement=publication.finish(body,resume=True,ticket=ticket)
+                if plan is not None and plan.get('spool') is not None:
+                    from .evidence_spool import EvidenceSpool,SpoolPolicy
+                    selected=plan['spool']
+                    entry=EvidenceSpool(SpoolPolicy(True,Path(selected['root']),selected['max_bytes'],selected['retention'])).open_attempt(selected['key'])
+                    if entry.execution_root.resolve()!=publication.root:
+                        raise PublicationUnconfirmed('retained spool location differs from publication root')
+                    entry.record_server_ack({**acknowledgement,'run_id':publication.scope['run_id'],
+                                             'attempt_id':publication.scope['attempt_id']})
+                    entry.snapshot()
+                return acknowledgement
+            finally:
+                heartbeat.stop()
+
     def _profile(self, spec, attempt, root, snapshot, config, command):
         from .profiles import ProfileRequest, RunnerGrants, Limits, build_profile
         grants = config.get("grants", {})
@@ -616,7 +763,20 @@ class Runner:
             return evidence.get("job_uid") == job_uid and evidence.get("terminated") is True
         return probe
 
-    def execute_attempt(self, attempt: dict, root: Path, *, evidence_recorder=None):
+    def execute_attempt(self, attempt: dict, root: Path, *, evidence_recorder=None,retention_description=None):
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+            raise ValueError('attempt root must be an existing absolute non-symlink directory')
+        lifetime=AttemptPublication(self,attempt,root)
+        heartbeats=[]
+        with lifetime.locked():
+            try:
+                return self._execute_attempt(attempt,root,evidence_recorder=evidence_recorder,
+                    retention_description=retention_description,heartbeat_created=heartbeats.append)
+            finally:
+                for heartbeat in heartbeats:heartbeat.stop()
+
+    def _execute_attempt(self, attempt: dict, root: Path, *, evidence_recorder=None,
+                         retention_description=None,heartbeat_created=lambda value:None):
         if not root.is_absolute() or root.is_symlink() or not root.is_dir():
             raise ValueError("attempt root must be an existing absolute non-symlink directory")
         # macOS temporary-directory ancestors can be aliases (/var -> /private/var).
@@ -627,13 +787,14 @@ class Runner:
         spec = json.loads(frozen)
         if checksum(spec) != attempt["spec_digest"]:
             raise ValueError("server specification checksum mismatch")
-        prefix, lease = f"/attempts/{attempt['attempt_id']}", attempt["lease_token"]
+        prefix, lease = RunnerApiPaths().relative_attempt(attempt['attempt_id']), attempt["lease_token"]
         policy = spec["definition"]["execution"]
+        budget=ExecutionBudget.from_execution(policy)
         work = root / "work"
         work.mkdir()
         evidence = work / "evidence"
         engine=spec['definition']['engine']
-        deadline=time.monotonic()+policy['max_seconds']
+        deadline=budget.deadline(time.monotonic())
         authority=None
         if engine=='hardware.session':
             from .attempt_control import AttemptControl,AttemptIdentity
@@ -641,6 +802,9 @@ class Runner:
                 self.target_id,attempt['spec_digest']),deadline=deadline)
         heartbeat = LeaseHeartbeat(self, prefix, lease, work, interval=self.heartbeat_interval,
                                    deadline=deadline,authority=authority)
+        heartbeat_created(heartbeat)
+        publication=AttemptPublication(self,attempt,root,check_authority=heartbeat.check_authority)
+        publication_pending=False
         group = None
         session_bridge=None;parent_artifacts=[];parent_outcome=None
         state, result, error = "failed", None, None
@@ -649,6 +813,7 @@ class Runner:
         recorder_error = None
         try:
             heartbeat.start()
+            publication.discover()
             heartbeat.check()
             snapshot = ImplementationSnapshot(self.source_root, root / "runtime" / "tinystudio", spec["implementation"]).create(heartbeat.check)
             config, selected_runtime = self._selection(spec)
@@ -656,7 +821,7 @@ class Runner:
                 raise ValueError("runner runtime changed after claim")
             if policy["backend"] == "kubernetes":
                 SharedWorkConfiguration.from_backend(config).relative_path(root)
-            paths = self._download(spec, root, prefix, lease, heartbeat)
+            paths = self._download(spec, root, prefix, lease, heartbeat,publication)
             (root / "spec.json").write_text(frozen)
             (root / "spec.json").chmod(0o444)
             engine = spec["definition"]["engine"]
@@ -686,11 +851,17 @@ class Runner:
                 context["profile_manifest"]["evidence_retention"] = {
                     "mechanism":"persistent_host_spool","classification":"operator_host_evidence",
                     "spool_key":evidence_recorder.key,"retention":evidence_recorder.spool.policy.retention,
-                    "qualification":"Selected retention mechanism; no filesystem or physical outcome guarantee."}
+                    "qualification":(retention_description or {}).get('qualification',
+                        'Selected host retention only; filesystem durability and physical outcome are unqualified.')}
+            else:
+                context['profile_manifest']['evidence_retention']={
+                    'mechanism':'caller_owned_execution_root','classification':'operator_host_evidence',
+                    'qualification':'Caller-selected staging only; temporary roots have no crash-resume guarantee.'}
             if policy["backend"] == "rq":
                 context["profile_manifest"].update(backend="rq", execution_backend="native")
             (root / "context.json").write_text(json.dumps(context, allow_nan=False))
             (root / "context.json").chmod(0o444)
+            heartbeat.check()
             with (work / "stdout.log").open("wb") as stdout, (work / "stderr.log").open("wb") as stderr:
                 if plan is None:
                     cleanup_confirmed = False
@@ -717,11 +888,11 @@ class Runner:
                             cancellation_deadline = time.monotonic() + max(0, self.process_grace)
                         if time.monotonic() >= cancellation_deadline:
                             raise
-                    if self._output_size(root) > policy["max_output_bytes"]:
-                        raise ValueError("experiment exceeded selected output budget")
+                    budget.check_output(self._output_size(root))
                     pause = .05 if cancellation_deadline is None else min(.05, max(0, cancellation_deadline - time.monotonic()))
                     time.sleep(pause)
                     returncode = poll()
+                heartbeat.check_execution_budget()
                 if plan is not None and policy["backend"] != "native":
                     captured_out,captured_err = group.logs()
                     stdout.write(captured_out.encode());stderr.write(captured_err.encode())
@@ -738,15 +909,15 @@ class Runner:
                 expected_outcome = (cancelled_evidence_outcome() if returncode == CANCELLED_EVIDENCE_EXIT
                                     else failed_evidence_outcome() if returncode == FAILED_EVIDENCE_EXIT else None)
                 def publication_guard():
-                    heartbeat.check(ignore_cancel=audit_only)
+                    heartbeat.check_authority(ignore_cancel=audit_only)
+                publication.check_authority=publication_guard
                 publication_guard()
                 if returncode not in {0, CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}:
                     with (work / "stderr.log").open("rb") as stream:
                         stream.seek(max(0, stream.seek(0, 2) - 8192))
                         error = stream.read().decode(errors="replace")
                 else:
-                    if self._output_size(root) > policy["max_output_bytes"]:
-                        raise ValueError("experiment exceeded selected output budget")
+                    budget.check_output(self._output_size(root))
                     snapshot.verify()
                     for ref in spec["definition"]["inputs"]:
                         if digest(Path(paths[ref["artifact_id"]])) != ref["sha256"]:
@@ -775,7 +946,7 @@ class Runner:
                     if session_bridge is not None:
                         result.setdefault('artifacts',[]).extend(parent_artifacts)
                         result['parent_session']=parent_outcome
-                    artifacts, total = [], 0
+                    artifacts, total, source_items = [], 0, []
                     for item in result.get("artifacts", []):
                         publication_guard()
                         path = Path(item["path"])
@@ -783,18 +954,27 @@ class Runner:
                             raise ValueError("executor artifact escapes its output directory")
                         size = path.stat().st_size
                         total += size
-                        if total > min(policy["max_output_bytes"], TRANSFER_LIMIT):
-                            raise ValueError("outputs exceed bounded artifact transfer budget")
+                        budget.check_output(total)
                         if digest(path) != item["sha256"]:
                             raise ValueError("executor artifact checksum mismatch")
-                        with path.open("rb") as stream:
-                            response = self.client.post(self.prefix + prefix + "/artifacts", params={"role": item.get("role", "evidence"), "sha256": item["sha256"], "visibility": item.get("visibility", "model")},
-                                files={"file": (item["name"], GuardedUpload(stream, heartbeat, size, audit_only=audit_only), item.get("media_type", "application/octet-stream"))}, headers={"X-Lab-Lease": lease})
-                        response.raise_for_status()
-                        publication_guard()
-                        if digest(path) != item["sha256"]:
-                            raise ValueError("executor artifact changed during publication")
-                        artifacts.append(response.json())
+                        source_items.append({'relative_path':path.resolve().relative_to(root).as_posix(),
+                            'name':item['name'],'sha256':item['sha256'],'size':size,
+                            'media_type':item.get('media_type','application/octet-stream'),
+                            'role':item.get('role','evidence'),'visibility':item.get('visibility','model')})
+                    plan={'spec':spec,'result':result,'receipt':receipt,'artifacts':source_items,
+                          'state':expected_outcome['state'] if audit_only else 'succeeded',
+                          'error':result.get('execution_error') if returncode==FAILED_EVIDENCE_EXIT else None,
+                          'audit_only':audit_only,'cleanup_confirmed':cleanup_confirmed}
+                    if evidence_recorder is not None:
+                        selected_spool=evidence_recorder.spool.policy
+                        plan['spool']={'root':str(selected_spool.root),'key':evidence_recorder.key,
+                            'max_bytes':selected_spool.max_bytes,'retention':selected_spool.retention}
+                    publication.prepare_execution(plan)
+                    publication_pending=True
+                    for index,item in enumerate(source_items):
+                        artifacts.append(publication.upload(item,index,
+                            lambda path,item:self._proxy_artifact(publication,path,item,heartbeat,audit_only)))
+                        publication.save(publication.paths.receipts,{'plan_digest':checksum(plan),'artifacts':artifacts})
                     heartbeat.renew()
                     publication_guard()
                     result["artifacts"] = artifacts
@@ -802,9 +982,11 @@ class Runner:
                     state = expected_outcome["state"] if audit_only else "succeeded"
                     error = result.get("execution_error") if returncode == FAILED_EVIDENCE_EXIT else None
                     verified_audit_result = audit_only
+                    publication_pending=False
         except AttemptCancelled:
             if authority is not None:authority.revoke('attempt_cancelled',termination='cancel')
             state, result, error = "cancelled", None, None
+            publication_pending=False
         except Exception as cause:
             if authority is not None:authority.revoke('attempt_failed',termination='cancel')
             error = f"{type(cause).__name__}: {cause}"[:8192]
@@ -827,7 +1009,10 @@ class Runner:
                     evidence_recorder.mark_cleanup(cleanup_confirmed)
                 except Exception as cause:
                     recorder_error = cause
+            publication.save(publication.paths.cleanup,{'confirmed':cleanup_confirmed})
         try:
+            if publication_pending:
+                raise PublicationUnconfirmed('artifact publication is unconfirmed; explicit resume requires retained source bytes and never replays its child')
             if heartbeat.connectivity_lost:
                 raise RuntimeError("runner lost lease connectivity; local execution stopped, server must recover the attempt") from heartbeat.error
             if heartbeat.cancelled.is_set() and state == "succeeded":
@@ -835,7 +1020,8 @@ class Runner:
             elif heartbeat.cancelled.is_set() and state == "failed" and verified_audit_result and result is not None:
                 state = "cancelled"
             retained = result if state == "succeeded" or (state in {"cancelled", "failed"} and verified_audit_result) else None
-            acknowledgement = self.post(prefix + "/finish", {"state": state, "result": retained, "error": error}, lease)
+            publication.check_authority=lambda:heartbeat.check_authority(ignore_cancel=state!='succeeded')
+            acknowledgement = publication.finish({"state": state, "result": retained, "error": error})
             if evidence_recorder is not None:
                 if not isinstance(acknowledgement, dict) or acknowledgement.get("accepted") is not True or acknowledgement.get("state") != state:
                     raise RuntimeError("completion acknowledgement is unconfirmed; local evidence remains retained")

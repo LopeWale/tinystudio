@@ -27,6 +27,7 @@ from tinystudio.lab import operations, service as svc
 from tinystudio.lab.models import TABLES, LabArtifact, LabAttempt, LabOperation
 from tinystudio.lab.runner import Runner, capabilities
 from tinystudio.storage import ArtifactStorage
+from tests.support.lab_finalization import finalization_worker
 
 
 @pytest.fixture
@@ -81,8 +82,9 @@ def native_http(tmp_path, monkeypatch):
                 time.sleep(.01)
             with httpx.Client(base_url=url, headers={"Authorization": "Bearer "+token},
                               trust_env=False, timeout=30) as user_client:
-                yield SimpleNamespace(http=user_client, url=url, prefix="/api/p/native-b/lab",
-                    restored="/api/p/restored-b/lab", factory=factory, store=store, root=tmp_path)
+                with finalization_worker(factory):
+                    yield SimpleNamespace(http=user_client, url=url, prefix="/api/p/native-b/lab",
+                        restored="/api/p/restored-b/lab", factory=factory, store=store, root=tmp_path)
         finally:
             server.should_exit = True
             thread.join(timeout=5)

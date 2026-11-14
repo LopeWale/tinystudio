@@ -133,7 +133,7 @@ class LabOperation(Base):
     __tablename__ = "lab_operations"
     __table_args__ = (
         UniqueConstraint("project_id", "idempotency_key", name="uq_lab_operation_request"),
-        CheckConstraint("kind IN ('export', 'import', 'data_bridge', 'artifact_verify')", name="ck_lab_operation_kind"),
+        CheckConstraint("kind IN ('export', 'import', 'data_bridge', 'artifact_verify', 'attempt_finalize')", name="ck_lab_operation_kind"),
         CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed', 'lost', 'cancelled')", name="ck_lab_operation_state"),
         CheckConstraint("generation >= 0", name="ck_lab_operation_generation"),
     )
