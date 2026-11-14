@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -353,6 +354,51 @@ def upload(file: Path, project: str = typer.Option(..., "--project", "-p")):
         response = http.post(path(project, "/inputs"), files={"file": (file.name, stream)})
         response.raise_for_status()
         show(response.json())
+
+
+@app.command('transfer-upload')
+def transfer_upload(file: Path, project: str = typer.Option(..., '--project', '-p'),
+                    name: str | None = typer.Option(None, '--name'),
+                    role: str = typer.Option('source', '--role'),
+                    visibility: str = typer.Option('model', '--visibility'),
+                    media_type: str = typer.Option('application/octet-stream', '--media-type'),
+                    sha256: str | None = typer.Option(None, '--sha256'),
+                    idempotency_key: str | None = typer.Option(None, '--idempotency-key'),
+                    request_file: Path | None = typer.Option(None, '--request-file'),
+                    deadline_seconds: float | None = typer.Option(None, '--deadline-seconds', min=0)):
+    """Stream a private R2 input; repeat the same request to resume accepted parts.
+
+    Optional request-file state contains identifiers, never signed URLs or
+    credentials. Failed verification requires explicit operation recovery.
+    Local storage continues to use the existing upload command.
+    """
+    from .transfer_client import ArtifactTransferError, ResumableTransferClient
+    from .transfer_configuration import TransferApiPaths
+    try:
+        paths = TransferApiPaths.at_lab(path(project, ''))
+        with client() as http:
+            transfer = ResumableTransferClient(http, paths,
+                deadline=None if deadline_seconds is None else time.monotonic() + deadline_seconds)
+            show(transfer.upload(file, name=name, media_type=media_type, role=role, visibility=visibility,
+                expected_sha256=sha256, idempotency_key=idempotency_key, state_path=request_file))
+    except (ArtifactTransferError, ValueError) as cause:
+        raise typer.BadParameter(str(cause)) from None
+
+
+@app.command('transfer-status')
+def transfer_status(session_id: str, project: str = typer.Option(..., '--project', '-p')):
+    """Read a durable input transfer; this never retries its verifier."""
+    from .transfer_configuration import TransferApiPaths
+    paths = TransferApiPaths.at_lab('')
+    show(call('GET', project, paths.session(session_id)))
+
+
+@app.command('transfer-abort')
+def transfer_abort(session_id: str, project: str = typer.Option(..., '--project', '-p')):
+    """Explicitly abort an input transfer and cancel unpublished verification."""
+    from .transfer_configuration import TransferApiPaths
+    paths = TransferApiPaths.at_lab('')
+    show(call('POST', project, paths.abort(session_id), {}))
 
 
 @app.command("snapshot-input")

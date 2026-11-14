@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useResource, useStudio } from "../../app/StudioContext";
 import { SegmentedControl } from "../../components/affectui/controls";
 import { ScrollPane } from "../../components/studio/scroll-pane";
-import { FileUploadField } from "../../components/studio/uploads";
+import { FileUploadField, UploadStatus } from "../../components/studio/uploads";
 import { Button, EmptyState } from "../../components/studio/primitives";
 import {
   defaultVisibility,
@@ -11,6 +11,11 @@ import {
   type InputBinding,
 } from "./definition";
 import { RepositoryInput } from "./repository-input";
+import {
+  ArtifactTransferClient,
+  type SavedTransfer,
+  type TransferProgress,
+} from "./artifact-transfers";
 import "./inputs-desktop.css";
 import { Select, SelectItem } from "@/components/boardui/base/select/select";
 export function LabChoice({
@@ -117,7 +122,7 @@ export function InputArtifacts({
   active?: boolean;
   signal: () => AbortSignal | undefined;
 }) {
-  const { api } = useStudio();
+  const { api, project, scopeKey } = useStudio();
   const inputs = useResource<LabInput[]>("/api/lab/inputs");
   const [inputView, setInputView] = useState("library");
   const [mobile, setMobile] = useState(
@@ -138,6 +143,20 @@ export function InputArtifacts({
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [progress, setProgress] = useState<TransferProgress | null>(null);
+  const [terminal, setTerminal] = useState<"failed" | "paused" | null>(null);
+  const [saved, setSaved] = useState<SavedTransfer[]>([]);
+  const transfers = useMemo(
+    () =>
+      project
+        ? new ArtifactTransferClient(api, {
+            origin: window.location.origin,
+            project,
+          })
+        : null,
+    [api, project, scopeKey],
+  );
   const expectations = inputExpectations(definition);
   const [role, setRole] = useState(expectations[0]?.role ?? "source");
   const [visibility, setVisibility] = useState<InputBinding["visibility"]>(
@@ -166,7 +185,35 @@ export function InputArtifacts({
   const latest = useRef({ chosen, onChange, role, visibility });
   latest.current = { chosen, onChange, role, visibility };
   const uploadAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => uploadAbort.current?.abort(), []);
+  const transferScope = useRef(transfers);
+  transferScope.current = transfers;
+  const refreshSaved = () => {
+    if (transferScope.current !== transfers) return;
+    if (!transfers) {
+      setSaved([]);
+      return;
+    }
+    try {
+      setSaved(transfers.pending());
+    } catch {
+      setError(
+        "Saved transfer metadata is unavailable. Existing sessions were left unchanged.",
+      );
+    }
+  };
+  useEffect(() => {
+    setFiles([]);
+    setProgress(null);
+    setTerminal(null);
+    setError("");
+    setNotice("");
+    setBusy(false);
+    refreshSaved();
+    return () => {
+      uploadAbort.current?.abort();
+      uploadAbort.current = null;
+    };
+  }, [transfers]);
   const attach = (row: Pick<LabInput, "id" | "sha256">) =>
     latest.current.onChange([
       ...latest.current.chosen.filter((item) => item.artifact_id !== row.id),
@@ -212,6 +259,7 @@ export function InputArtifacts({
           <LabChoice
             label="Input role"
             value={role}
+            disabled={busy}
             onChange={(next) => {
               setRole(next);
               setVisibility(defaultVisibility(next));
@@ -226,6 +274,7 @@ export function InputArtifacts({
           <LabChoice
             label="Input visibility"
             value={visibility ?? "model"}
+            disabled={busy}
             onChange={(next) =>
               setVisibility(next as InputBinding["visibility"])
             }
@@ -256,12 +305,19 @@ export function InputArtifacts({
             presentation="compact"
             label="Import laboratory input"
             files={files}
-            onChange={setFiles}
+            onChange={(selected) => {
+              setFiles(selected);
+              setError("");
+              setNotice("");
+              setProgress(null);
+              setTerminal(null);
+            }}
             disabled={busy}
           />
           <Button
-            disabled={busy || !files.length}
+            disabled={busy || !files.length || !transfers}
             onClick={async () => {
+              if (!transfers) return;
               const scopeSignal = signal();
               if (!scopeSignal || scopeSignal.aborted) return;
               const controller = new AbortController();
@@ -271,17 +327,26 @@ export function InputArtifacts({
               scopeSignal.addEventListener("abort", cancel, { once: true });
               setBusy(true);
               setError("");
+              setNotice("");
+              setTerminal(null);
               try {
-                const body = new FormData();
-                body.append("file", files[0]);
-                const row = await api.upload<LabInput>(
-                  "/api/lab/inputs",
-                  body,
+                const row = await transfers.upload(
+                  files[0],
+                  { role, visibility: visibility ?? "model" },
                   {
                     signal: abort,
+                    onProgress: (value) => {
+                      if (transferScope.current !== transfers) return;
+                      setProgress(value);
+                      if (
+                        value.phase === "admitting" ||
+                        value.phase === "verifying"
+                      )
+                        refreshSaved();
+                    },
                   },
                 );
-                if (!abort.aborted) {
+                if (!abort.aborted && transferScope.current === transfers) {
                   attach(row);
                   setRecent((current) => [
                     ...current.filter((item) => item.id !== row.id),
@@ -291,16 +356,152 @@ export function InputArtifacts({
                   inputs.reload();
                 }
               } catch (e: any) {
-                if (!abort.aborted && e.name !== "AbortError")
+                if (transferScope.current !== transfers) return;
+                if (e.name === "AbortError") {
+                  setTerminal("paused");
+                  setNotice(
+                    "Import paused. Retry with the same file; any saved transfer is retained.",
+                  );
+                } else if (!abort.aborted) {
+                  setTerminal("failed");
                   setError(e.message);
+                }
               } finally {
                 scopeSignal.removeEventListener("abort", cancel);
-                if (!abort.aborted) setBusy(false);
+                if (uploadAbort.current === controller) {
+                  uploadAbort.current = null;
+                  setBusy(false);
+                  refreshSaved();
+                }
               }
             }}
           >
-            {busy ? "Importing input…" : "Import and attach input"}
+            {busy
+              ? "Importing input…"
+              : error && files.length
+                ? "Resume / retry import"
+                : "Import and attach input"}
           </Button>
+          {(progress || terminal) && (
+            <UploadStatus
+              phase={
+                terminal
+                  ? terminal === "failed"
+                    ? "Import failed"
+                    : "Import paused"
+                  : {
+                      hashing: "Hashing full-file SHA-256",
+                      admitting: "Preparing resumable transfer",
+                      uploading: "uploading",
+                      verifying: "Server verification · not yet attached",
+                      verified: "Input verified",
+                    }[progress!.phase]
+              }
+              progress={
+                progress
+                  ? { loaded: progress.loaded, total: progress.total }
+                  : undefined
+              }
+            />
+          )}
+          {busy && uploadAbort.current && (
+            <Button type="button" onClick={() => uploadAbort.current?.abort()}>
+              Pause import
+            </Button>
+          )}
+          {notice && <p role="status">{notice}</p>}
+          {saved.length > 0 && (
+            <div className="grid gap-2" aria-label="Saved input transfers">
+              <p className="text-body-2-regular text-text-secondary">
+                Saved transfers remain available after interruption. Reselect
+                the same file and choices to resume; attachment waits for server
+                verification.
+              </p>
+              {saved.map((record) => (
+                <div key={record.idempotency_key} className="grid gap-2">
+                  <p className="text-caption-1-regular text-text-secondary">
+                    <bdi>{record.intent.name}</bdi> ·{" "}
+                    {record.intent.size.toLocaleString()} bytes ·{" "}
+                    {record.intent.role} · {record.intent.visibility} ·{" "}
+                    {record.state ?? "admission unconfirmed"}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setRole(record.intent.role);
+                        setVisibility(record.intent.visibility);
+                        setFiles([]);
+                        setError("");
+                        setProgress(null);
+                        setTerminal(null);
+                        setNotice(
+                          `Reselect ${record.intent.name} to resume its saved transfer.`,
+                        );
+                      }}
+                    >
+                      Use saved choices for {record.intent.name}
+                    </Button>
+                    {record.session_id && (
+                      <Button
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          if (!transfers) return;
+                          const scopeSignal = signal();
+                          if (!scopeSignal || scopeSignal.aborted) return;
+                          setBusy(true);
+                          setError("");
+                          setProgress(null);
+                          setTerminal(null);
+                          setNotice("Aborting transfer…");
+                          try {
+                            await transfers.abort(record, {
+                              signal: scopeSignal,
+                            });
+                            if (
+                              !scopeSignal.aborted &&
+                              transferScope.current === transfers
+                            ) {
+                              setFiles([]);
+                              setProgress(null);
+                              setNotice(
+                                "Transfer aborted. No input was attached.",
+                              );
+                            }
+                          } catch (cause) {
+                            if (
+                              !scopeSignal.aborted &&
+                              transferScope.current === transfers
+                            ) {
+                              setTerminal("failed");
+                              setNotice("");
+                              setError(
+                                cause instanceof Error
+                                  ? cause.message
+                                  : "Transfer abort is unconfirmed.",
+                              );
+                            }
+                          } finally {
+                            if (
+                              !scopeSignal.aborted &&
+                              transferScope.current === transfers
+                            ) {
+                              setBusy(false);
+                              refreshSaved();
+                            }
+                          }
+                        }}
+                      >
+                        Abort transfer for {record.intent.name}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <p className="lab-input-note">
             Evaluation and truth inputs stay outside model readers.
           </p>

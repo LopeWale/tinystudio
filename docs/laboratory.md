@@ -22,7 +22,7 @@ Rows D–G describe future acceptance boundaries, including any existing experim
 | LAB-A02 | Existing training identities survive | Additive laboratory tables and optional Job/Experiment foreign keys; pretrained wrapper calls the existing trainer |
 | LAB-A03 | Capability portfolio stays visible | Adapter/method catalog reports implementation, dependencies and qualification separately |
 | LAB-B01 | Durable submit, claim, events, cancellation, retry | PostgreSQL transactional dispatch, target-first lease locking, run/attempt separation; no Redis credentials on runners |
-| LAB-B02 | Raw and derived evidence remain distinct | Content-addressed objects; manifests published after uploads; original hashes and record identities retained |
+| LAB-B02 | Raw and derived evidence remain distinct | Hash-verified objects; manifests published after uploads; original hashes and record identities retained |
 | LAB-B03 | Portable outbound execution | Scoped target token, HTTPS except loopback, frozen source package, runtime receipt, transfer heartbeats and complete process-group cleanup |
 | LAB-C01 | Data preparation preserves scientific meaning | Explicit units, missingness, estimated values, observation availability, causal versus future-aware transforms |
 | LAB-C02 | Independent partitions and retrieval | Grouped/temporal split contracts, final-test exclusion, immutable retrieval indexes and lineage audits |
@@ -46,7 +46,7 @@ Ports reference versioned schemas exposed in the catalog's `contract_schemas` re
 
 The runner owns attempt preparation, process cancellation and output publication. A plugin cannot grant itself filesystem, network, credential or device access. Pause is unsupported. Checkpoint-specific continuation requires the selected method's compatible checkpoint; a declaration never establishes exact continuation. Qualification requires an actual receipt for the exact method selections, source, dependencies and target. The matrix deliberately remains unqualified when only fixture requirements are present.
 
-The operational database and laboratory share one SQLAlchemy metadata registry. Migration `f9b1c5d43e27` adds laboratory tables after `e8a0b4c32d16`; `g0c2d6e54f38` adds durable evidence operations. Revision `h1d3e7f65a49` adds the data-bridge operation kind and structured operation errors without changing existing identities. Downgrade refuses to discard historical data-bridge operations. Later schema changes require new revisions. Legacy Job/Experiment links identify source experiments, preserve their identities and metric semantics, and freeze referenced configuration without writing their training state.
+The operational database and laboratory share one SQLAlchemy metadata registry. Migration `f9b1c5d43e27` adds laboratory tables after `e8a0b4c32d16`; `g0c2d6e54f38` adds durable evidence operations. Revision `h1d3e7f65a49` adds the data-bridge operation kind and structured operation errors without changing existing identities. `i2e4f8067b50` adds study tracking, and `j3f5a9078c61` adds durable transfer sessions and artifact verification operations. Downgrade refuses to discard retained operation/transfer identities. Later schema changes require new revisions. Legacy Job/Experiment links identify source experiments, preserve their identities and metric semantics, and freeze referenced configuration without writing their training state.
 
 Definition revisions are saved separately; submission commits the resolved specification, run and dispatch row together. An execution host advertises its installed implementation and dependency versions, then claims a leased attempt. It receives only that attempt's input artifacts and publication authority. Every event has a durable run sequence; clients reconnect using `events --after LAST_SEQUENCE` (HTTP responses include `next_after` and `has_more`). Optional timezone-aware `not_before` is frozen in the submission schedule, normalized to UTC, and enforced before claim; a client disconnect does not remove it.
 
@@ -57,6 +57,63 @@ A cancelled running attempt stays running until the worker acknowledges terminat
 Terminal results supplied to completion, including failed or cancelled partial results, resolve artifact references to canonical metadata from the same project and attempt. Referenced bytes must pass SHA256 and size verification before publication. Each retained attempt outcome is an `attempt-outcome.json` artifact; the reserved `server.outcome` event carries its small identity/checksum reference rather than embedding the full result in the timeline.
 
 Content-addressed publication reads back and verifies stored bytes before publishing metadata. An already valid object is reused without rewriting it; missing or verified-corrupt objects may be repaired. Redelivery of an identical active-attempt upload preserves its artifact identity and does not charge its bytes twice, even when the original upload exhausted the output budget. Different content, role, visibility or size under the same attempt filename is rejected.
+
+### Resumable private object transfers
+
+With R2 storage, the Lab input picker hashes the selected file incrementally,
+uploads missing parts directly to signed object-store URLs, and attaches the
+artifact only after a durable background operation has verified its full linear
+SHA-256 and size. Verification uses the existing dispatcher and `tinystudio worker`;
+without an available worker, its committed operation remains queued. The Studio API carries authenticated metadata and controls;
+object requests omit Studio/Access credentials and cookies and reject redirects.
+ETags and multipart composite checksums do not establish a whole-file SHA-256.
+Each session owns a unique object key; completion seals its parts, and verified
+bytes are retained at that key without a large server-side CAS copy.
+
+Network failure preserves the session. Explicitly retry or reselect the same
+file to reconcile accepted parts. Browser recovery state contains the immutable
+request and session identity, scoped to the origin and project. It contains no
+signed URLs or credentials. Failed, lost or cancelled verification requires
+explicit operation recovery. Abort is a separate action and never deletes an
+already verified artifact. Project-authorized cleanup can abort an unpublished
+session after its Runner lease expires; stale execution cannot publish it.
+
+The CLI uses the same contracts:
+
+```sh
+tinystudio lab transfer-upload weights.safetensors --project research --request-file weights-transfer.json
+tinystudio lab transfer-status SESSION_ID --project research
+tinystudio lab transfer-abort SESSION_ID --project research
+```
+
+Repeating the same immutable upload resumes its accepted parts. An optional
+`--deadline-seconds` selects a client deadline; omission selects no overall
+client deadline. `--name`, `--role`, `--visibility`, `--media-type`, `--sha256`
+and `--idempotency-key` remain explicit choices. Local storage uses the existing
+`lab upload` command and ordinary input picker.
+
+`TransferPolicy`, multipart geometry and client/object paths are importable from
+`tinystudio.lab.transfer_configuration`. Host settings use
+`TINYSTUDIO_TRANSFER_MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_FILES`, `PART_BYTES`,
+`CONCURRENCY`, `SIGNED_URL_SECONDS` and `VERIFIER_TIMEOUT_SECONDS`, with the same
+`TINYSTUDIO_TRANSFER_` prefix for each name. File, aggregate and verification
+budgets default to `None`; zero remains a real zero budget. Aggregate reservations
+cover non-aborted transfer sessions in the project, counting an already verified
+artifact once. The ordinary proxy input/import upload uses the file budget.
+Per-run execution, worker execution and archive-extraction settings apply separately. SDK socket
+timeouts and retries remain those of the supplied storage client; no adapter
+retry loop turns an uncertain mutation into a new upload or completion.
+
+Geometry defaults to 16 MiB parts and a concurrency budget of four. It reports
+the required larger part size rather than silently changing a selected geometry
+that would exceed 10,000 parts. R2's exact provider limits, including its rounded
+size-limit footnotes, are exposed separately from resource budgets. See the
+[R2 limits](https://developers.cloudflare.com/r2/platform/limits/),
+[multipart contract](https://developers.cloudflare.com/r2/objects/multipart-objects/)
+and [presigned URL contract](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
+Browser transfers require bucket CORS for the configured Studio origin, methods
+and signed headers; presigned URLs use the S3 endpoint. Owned software fixtures
+and SDK signing tests do not qualify a live bucket, deployment, or CORS setup.
 
 ## Operator workflow
 

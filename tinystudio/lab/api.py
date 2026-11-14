@@ -21,6 +21,7 @@ from . import service as svc
 from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
 from .study_import_paths import StudyImportPaths
+from .transfer_configuration import TransferPolicy
 from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
 from .recovered_evidence import RecoveryPreviewRequest, RecoveryAttachRequest, RecoveryParserLimits
 
@@ -491,17 +492,17 @@ def inputs(db: DB, project: ProjectDep):
 def import_run(db: DB, project: ProjectDep, file: UploadFile = File(...)):
     from .portable import import_bundle
     with tempfile.TemporaryDirectory(prefix="ts-lab-import-") as root:
-        path = copy_upload(file, Path(root), 512 * 1024**2)
+        path = copy_upload(file, Path(root), TransferPolicy.from_environment().per_file.max_bytes)
         return import_bundle(db, project.id, path, Path(root))
 
 
-def copy_upload(file: UploadFile, root: Path, maximum: int) -> Path:
+def copy_upload(file: UploadFile, root: Path, maximum: int | None) -> Path:
     path = root / "upload"
     size = 0
     with path.open("wb") as stream:
         while block := file.file.read(1024**2):
             size += len(block)
-            if size > maximum:
+            if maximum is not None and size > maximum:
                 raise svc.LabError(f"upload exceeds {maximum} byte limit", 413)
             stream.write(block)
     return path
@@ -510,7 +511,7 @@ def copy_upload(file: UploadFile, root: Path, maximum: int) -> Path:
 @project_routes.post("/inputs", status_code=201)
 def upload_input(db: DB, project: ProjectDep, file: UploadFile = File(...)):
     with tempfile.TemporaryDirectory(prefix="ts-lab-upload-") as root:
-        path = copy_upload(file, Path(root), 512 * 1024**2)
+        path = copy_upload(file, Path(root), TransferPolicy.from_environment().per_file.max_bytes)
         result = svc.artifact_dict(svc.store_artifact(db, project.id, path, file.filename or "input.bin", file.content_type or "application/octet-stream"))
         # A recovery client persists this identity before its attach request.
         # Commit before acknowledging it, so that identity is already visible
@@ -712,6 +713,9 @@ def runner_input(id_: str, artifact_id: str, db: DB, target: TargetDep, x_lab_le
     db.commit()
     return download_artifact(artifact)
 
+
+from .transfer_api import install as install_transfers
+install_transfers(project_routes, runner_routes)
 
 router.include_router(project_routes)
 router.include_router(runner_routes)

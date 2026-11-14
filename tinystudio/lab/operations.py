@@ -181,13 +181,21 @@ class _Lease:
         return (LabOperation.id == self.id, LabOperation.state == "running", LabOperation.claim_token == self.token,
                 LabOperation.generation == self.generation, LabOperation.lease_until > svc.now())
 
+    def _locked_row(self, db):
+        row = db.scalar(select(LabOperation).where(*self.predicate()).with_for_update().execution_options(populate_existing=True))
+        # The predicate's timestamp was bound before a possibly blocking lock.
+        # Neither renewal nor publication may revive authority that expired
+        # while waiting, even when its token and generation still match.
+        if row is None or svc.aware(row.lease_until) <= svc.now():
+            raise svc.LabError("operation authority expired or was cancelled", 409)
+        return row
+
     def _heartbeat(self):
         while not self.stop.wait(HEARTBEAT_SECONDS):
             try:
                 with self.factory() as db, db.begin():
-                    result = db.execute(update(LabOperation).where(*self.predicate()).values(lease_until=svc.now()+timedelta(seconds=LEASE_SECONDS)))
-                    if result.rowcount != 1:
-                        return
+                    row = self._locked_row(db)
+                    row.lease_until = svc.now()+timedelta(seconds=LEASE_SECONDS)
             except Exception:
                 # No guessed authority after a failed heartbeat: final publication
                 # still checks the persisted lease and may reject this attempt.
@@ -200,9 +208,10 @@ class _Lease:
                 raise svc.LabError("operation authority expired or was cancelled", 409)
 
     def finish(self, db, result):
-        row = db.scalar(select(LabOperation).where(*self.predicate()).with_for_update().execution_options(populate_existing=True))
-        if row is None:
-            raise svc.LabError("operation authority expired or was cancelled", 409)
+        row = self._locked_row(db)
+        if row.kind == 'artifact_verify':
+            from .transfer_service import check_verify_publication_authority
+            check_verify_publication_authority(db, row, result)
         row.state, row.result, row.finished = "succeeded", result, svc.now()
         row.claim_token, row.lease_until, row.error = None, None, None
         return operation_dict(row)
@@ -259,6 +268,9 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
                     else:
                         from .data_bridge_operations import execute
                         result = execute(db, project, payload, directory)
+                elif kind == 'artifact_verify':
+                    from .transfer_service import execute_verify
+                    result = execute_verify(db, project, payload, directory, check_authority=lease.check)
                 else:
                     raise svc.LabError("unsupported operation kind")
                 # Read back persisted bytes before publishing references. This also
