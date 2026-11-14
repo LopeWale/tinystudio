@@ -18,6 +18,7 @@ import pytest
 from tinystudio.lab import runner as module
 from tinystudio.lab.contracts import checksum
 from tinystudio.lab.runner import ProcessGroup, Runner
+from tinystudio.lab.runner_publication import PublicationUnconfirmed, RunnerPublicationPaths
 
 
 def sha(data):
@@ -95,7 +96,7 @@ def attempt(source, **parameters):
                                          "max_seconds": 5, "max_output_bytes": 1024 ** 2}},
             "implementation": {"version": 1, "files": files}, "runtime": {"fixture-runtime": "1"},
             "input_manifest": []}
-    return {"attempt_id": "cancelled-evidence", "lease_token": "not-child-visible",
+    return {"run_id": "cancelled-audit-run", "attempt_id": "cancelled-evidence", "lease_token": "not-child-visible",
             "spec": spec, "spec_digest": checksum(spec)}
 
 
@@ -118,13 +119,17 @@ class Transport:
     def stream(self, *args, **kwargs):
         yield SimpleNamespace(raise_for_status=lambda: None, iter_bytes=lambda: iter([self.payload]))
 
+    def get(self, path, **kwargs):
+        return httpx.Response(404, request=httpx.Request("GET", "http://localhost" + path))
+
     def post(self, path, *, json=None, files=None, params=None, headers=None):
         if path.endswith("/heartbeat"):
             self.beats += 1
             self.started |= any(event.get("event") == "fixture_started" for event in json["events"])
             if self.lose_on_upload and self.uploading:
                 raise httpx.ConnectError("controlled lost audit lease")
-            body = {"cancel_requested": self.cancel and self.started or self.cancel_on_upload and self.uploading}
+            body = {"cancel_requested": self.cancel and self.started or self.cancel_on_upload and self.uploading,
+                    "lease_seconds": 30}
         elif path.endswith("/artifacts"):
             self.uploading = True
             self.upload_started = True
@@ -138,12 +143,14 @@ class Transport:
                     body_bytes.extend(block)
                 self.uploads.append(bytes(body_bytes))
                 body = {"id": "audit-" + str(len(self.uploads)), "name": files["file"][0],
-                        "sha256": sha(body_bytes), "size": len(body_bytes)}
+                        "sha256": sha(body_bytes), "size": len(body_bytes),
+                        "media_type": files["file"][2], "role": params.get("role", "evidence"),
+                        "visibility": params.get("visibility", "model")}
             finally:
                 self.uploading = False
         elif path.endswith("/finish"):
             self.finish = copy.deepcopy(json)
-            body = {}
+            body = {"accepted": True, "state": json["state"]}
         else:
             raise AssertionError(path)
         return httpx.Response(200, json=body, request=httpx.Request("POST", "http://localhost" + path))
@@ -237,9 +244,13 @@ def test_cancelled_evidence_must_match_exit_receipt_digest_and_output_bounds(sou
 
 def test_lost_lease_during_cancelled_audit_upload_prevents_authoritative_finish(source, tmp_path, monkeypatch):
     transport = Transport(lose_on_upload=True, upload_delay=.025)
-    with pytest.raises(RuntimeError, match="lost lease connectivity"):
+    with pytest.raises(PublicationUnconfirmed, match="publication is unconfirmed"):
         run(source, tmp_path, monkeypatch, transport=transport)
     assert transport.finish is None and not transport.uploads
+    paths = RunnerPublicationPaths(tmp_path / "attempt")
+    assert json.loads(json.loads(paths.cleanup.read_text())["payload_json"]) == {"confirmed": True}
+    assert paths.execution.is_file() and not paths.finalization.is_file()
+    assert (tmp_path / "attempt/work/evidence/discovery.json").is_file()
 
 
 def test_normal_success_cancellation_race_does_not_publish_as_audit(source, tmp_path, monkeypatch):
@@ -284,22 +295,56 @@ def test_cancelled_evidence_rechecks_downloaded_input_hash(source, tmp_path, mon
     transport = Transport()
     claim = attempt(source, mutate_input=True)
     claim["spec"]["definition"]["inputs"] = [{"artifact_id": "input-one", "sha256": sha(transport.payload)}]
-    claim["spec"]["input_manifest"] = [{"id": "input-one", "name": "input.txt", "size": len(transport.payload)}]
+    claim["spec"]["input_manifest"] = [{"id": "input-one", "name": "input.txt", "size": len(transport.payload),
+                                          "sha256": sha(transport.payload)}]
     claim["spec_digest"] = checksum(claim["spec"])
     transport, _ = run(source, tmp_path, monkeypatch, transport=transport, claim=claim)
     assert transport.finish["state"] == "failed" and transport.finish["result"] is None
     assert "frozen input" in transport.finish["error"] and not transport.uploads
 
 
-def test_cancelled_audit_upload_still_observes_wall_timeout(source, tmp_path, monkeypatch):
-    transport = Transport(upload_delay=.1)
+def test_stopped_cancelled_audit_upload_uses_live_lease_after_execution_deadline(source, tmp_path, monkeypatch):
+    original_close = ProcessGroup.close
+    closed = []
+    def close(group):
+        original_close(group)
+        assert group.process.poll() is not None
+        if group not in closed:
+            closed.append(group)
+    monkeypatch.setattr(ProcessGroup, "close", close)
+    monotonic = time.monotonic
+    advance = [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: monotonic() + advance[0])
+    crossed = []
+    class CrossDeadline(Transport):
+        def post(self, path, **kwargs):
+            if path.endswith("/artifacts"):
+                assert len(closed) == 1 and closed[0].process.poll() is not None
+                filename, guarded, media_type = kwargs["files"]["file"]
+                class DelayedRead:
+                    def read(self, size=-1):
+                        block = guarded.read(size)
+                        if block and not crossed:
+                            crossed.append(True)
+                            # Cross the selected one-second execution deadline
+                            # only after the real child stopped and upload began.
+                            # The fixture's finite 30-second Lab lease stays live.
+                            advance[0] = 2
+                        return block
+                kwargs["files"] = {"file": (filename, DelayedRead(), media_type)}
+            return super().post(path, **kwargs)
+    transport = CrossDeadline(upload_delay=.025)
     claim = attempt(source)
-    claim["spec"]["definition"]["execution"]["max_seconds"] = .6
+    claim["spec"]["definition"]["execution"]["max_seconds"] = 1
     claim["spec_digest"] = checksum(claim["spec"])
-    transport, _ = run(source, tmp_path, monkeypatch, transport=transport, claim=claim)
-    assert transport.finish["state"] == "failed" and transport.finish["result"] is None
-    assert transport.upload_started, "the selected deadline must apply during audit transfer"
-    assert "wall-time" in transport.finish["error"] and not transport.uploads
+    transport, root = run(source, tmp_path, monkeypatch, transport=transport, claim=claim)
+    assert crossed and len(closed) == 1 and transport.upload_started
+    assert transport.finish["state"] == "cancelled" and transport.finish["result"] is not None
+    assert len(transport.uploads) == 1 and json.loads(transport.uploads[0])["status"] == "cancelled"
+    result = transport.finish["result"]
+    assert result["execution_outcome"] == {"format": "tinystudio.cancelled-evidence.v1", "state": "cancelled", "audit_only": True}
+    assert result["execution_receipt"]["result_digest"] == checksum(json.loads((root / "work/result.json").read_text()))
+    assert "hardware_session" not in json.loads((root / "context.json").read_text())
 
 
 def test_cancelled_audit_still_observes_output_budget(source, tmp_path, monkeypatch):
@@ -307,8 +352,8 @@ def test_cancelled_audit_still_observes_output_budget(source, tmp_path, monkeypa
     claim["spec"]["definition"]["execution"]["max_output_bytes"] = 32
     claim["spec_digest"] = checksum(claim["spec"])
     transport, _ = run(source, tmp_path, monkeypatch, claim=claim)
-    assert transport.finish["result"] is None and not transport.uploads
-    assert "output budget" in transport.finish["error"]
+    assert transport.finish["state"] == "failed" and transport.finish["result"] is None and not transport.uploads
+    assert "output_bytes" in transport.finish["error"] and "budget" in transport.finish["error"]
 
 
 def test_cancellation_exception_only_qualifies_explicit_attached_result():
@@ -318,11 +363,16 @@ def test_cancellation_exception_only_qualifies_explicit_attached_result():
     assert ExecutionCancelled("audit", evidence_result=payload).evidence_result is payload
 
 
-def test_cancelled_audit_still_observes_transfer_limit(source, tmp_path, monkeypatch):
-    monkeypatch.setattr(module, "TRANSFER_LIMIT", 4)
-    transport, _ = run(source, tmp_path, monkeypatch)
-    assert transport.finish["state"] == "failed" and transport.finish["result"] is None
-    assert "artifact transfer budget" in transport.finish["error"] and not transport.uploads
+def test_cancelled_audit_preserves_explicit_unbounded_output_budget(source, tmp_path, monkeypatch):
+    claim = attempt(source)
+    claim["spec"]["definition"]["execution"]["max_output_bytes"] = None
+    claim["spec_digest"] = checksum(claim["spec"])
+    transport, _ = run(source, tmp_path, monkeypatch, claim=claim)
+    assert transport.finish["state"] == "cancelled" and transport.finish["result"] is not None
+    assert len(transport.uploads) == 1 and json.loads(transport.uploads[0])["status"] == "cancelled"
+    assert transport.finish["result"]["execution_outcome"] == {"format": "tinystudio.cancelled-evidence.v1", "state": "cancelled", "audit_only": True}
+    assert claim["spec"]["definition"]["execution"]["max_output_bytes"] is None
+    assert checksum(claim["spec"]) == claim["spec_digest"]
 
 
 def test_cancelled_audit_rechecks_parent_runtime_identity(source, tmp_path, monkeypatch):
