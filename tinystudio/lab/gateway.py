@@ -3,20 +3,24 @@
 One operator-provisioned endpoint per journal in one canonical local state directory.
 Endpoint locks also prevent different journals in that directory claiming the same
 transport endpoint. The installer MUST provision that single directory; copying
-journals to different roots or restoring old backups is not a valid ownership transfer. Constructing
-plugins never opens a device/network. API: acquire(owner, ttl), dispatch(id,
-owner, epoch, parameters, expires_at), heartbeat, local_stop(operator, request_id),
-reconcile(operator), snapshot/journal, close. HTTP/device-token authentication and
+journals to different roots or restoring old backups is not a valid ownership transfer.
+Built-in transport construction does not open devices or network connections;
+operator adapters are trusted host code. API: acquire(owner, ttl), dispatch(id,
+owner, epoch, parameters or payload, expires_at), heartbeat, local_stop(operator, request_id),
+reconcile(operator, evidence), snapshot/journal, close. HTTP/device-token authentication and
 installation belong to the local gateway host, not this module or service tokens.
 
-Wire protocol 1 requires endpoint_id, command_id, epoch and absolute expires_at.
-Devices MUST persist epoch/id fences, reject expired/stale commands and return an
+The legacy wire protocol 1 carries endpoint_id, command_id, epoch and absolute expires_at.
+That selected protocol requires devices to persist epoch/id fences, reject expired/stale commands and return an
 application ack with the same identity, status='confirmed', applied=True. Serial
 writes, Modbus register responses and MQTT PUBACK are NOT application acks.
 Reconciliation returns status='state', device_epoch, stopped=True, parameters,
 and command_outcomes mapping every uncertain ID to applied/not_applied.
-No generic transport or this fixture-tested implementation proves exactly-once
-physical effects. Physical acknowledgement/fencing remains unqualified.
+Native command profiles preserve operator-selected bytes and protocol operations,
+retaining transport delivery separately from application and physical outcomes.
+Their reconciliation records an explicit operator attestation, keeping unresolved
+physical outcomes unverified and command identities consumed. Exactly-once physical
+effects, hardware acknowledgement and device fencing remain unqualified.
 """
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ import time
 import uuid
 
 from .ownership import OwnershipError
+from .gateway_configuration import GatewayStoragePaths
+from .command_profiles import COMMAND_FORMAT,RECEIPT_FORMAT
 
 
 class GatewayError(OwnershipError):
@@ -43,6 +49,11 @@ class GatewayError(OwnershipError):
 
 
 class GatewayBusy(GatewayError):
+    pass
+
+
+class GatewayExpired(GatewayError):
+    """A new intent expired before admission; no application write was made."""
     pass
 
 
@@ -72,6 +83,10 @@ def _parameters(parameters, limits):
 
 
 def _binding(supplied):
+    if isinstance(supplied,dict) and 'command_profile' in supplied:
+        from .command_profiles import NativeCommandProfile
+        try:return NativeCommandProfile.from_binding(supplied).binding
+        except ValueError as error:raise GatewayError(str(error)) from error
     value = deepcopy(supplied)
     required = {"endpoint_id", "operator_id", "transport", "limits", "local_stop"}
     if not isinstance(value, dict) or not required <= value.keys():
@@ -141,6 +156,9 @@ class CommandGateway:
 
     def __init__(self, path, binding, transport=None, *, clock=time.time):
         self._binding = _binding(binding)
+        from .command_profiles import NativeCommandProfile
+        self._native_profile=(NativeCommandProfile.from_binding(self._binding)
+                              if 'command_profile' in self._binding else None)
         self._clock = clock
         self._mutex = threading.RLock()
         self._send_lock = threading.RLock()
@@ -152,17 +170,30 @@ class CommandGateway:
         kind = config["kind"]
         identity = ({"kind": kind, "port": str(Path(config["port"]).resolve())} if kind == "serial" else
                     {"kind": kind, "host": config["host"], "port": config.get("port", 502), "device_id": config.get("device_id", 1)} if kind == "modbus" else
-                    {"kind": kind, "host": config["host"], "port": config.get("port", 1883), "command_topic": config["command_topic"]} if kind == "mqtt" else
+                    {"kind": kind, "host": config["host"], "port": config.get("port", 1883), "command_topic": config.get("command_topic",config.get('topic'))} if kind == "mqtt" else
                     {"kind": kind, "endpoint_id": self._binding["endpoint_id"]})
-        endpoint_key = hashlib.sha256(_json(identity).encode()).hexdigest()
-        self._endpoint_lock = (self.path.parent / ("." + endpoint_key + ".endpoint.lock")).open("a+b")
+        if self._native_profile is not None:
+            if 'ownership_key' in self._binding:
+                identity={'operator_selected_ownership_key':self._binding['ownership_key']}
+            elif kind=='serial':
+                port=config['port']
+                identity={'kind':kind,'port':port if '://' in port else str(Path(port).resolve())}
+            elif kind in {'tcp','modbus'}:
+                identity={'kind':kind,'host':config['host'],'port':config.get('port',502 if kind=='modbus' else None)}
+                if kind=='modbus':identity['device_id']=config.get('device_id',1)
+            elif kind=='mqtt':
+                identity={'kind':kind,'host':config['host'],'port':config.get('port',1883),'topic':config['topic']}
+            elif kind=='can':identity={'kind':kind,'interface':config['interface'],'channel':config['channel']}
+            elif kind=='custom':identity={'kind':kind,'identity':config['identity']}
+        paths=GatewayStoragePaths(self.path)
+        self._endpoint_lock = paths.endpoint_lock(identity).open("a+b")
         os.chmod(self._endpoint_lock.name, 0o600)
         try:
             fcntl.flock(self._endpoint_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             self._endpoint_lock.close()
             raise GatewayBusy("another gateway owns this endpoint in the provisioned state directory") from exc
-        self._lock = self.path.with_suffix(self.path.suffix + ".lock").open("a+b")
+        self._lock = paths.journal_lock.open("a+b")
         os.chmod(self._lock.name, 0o600)
         try:
             fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -221,13 +252,23 @@ class CommandGateway:
                 yield
             except GatewayError:
                 # Fail-closed epoch revocations/expiry checks must survive their reported rejection.
-                self._db.execute("COMMIT")
+                self._commit()
                 raise
-            except BaseException:
-                self._db.execute("ROLLBACK")
+            except BaseException as cause:
+                self._rollback(cause)
                 raise
             else:
-                self._db.execute("COMMIT")
+                self._commit()
+
+    def _rollback(self,cause):
+        try:self._db.execute('ROLLBACK')
+        except BaseException as error:cause.add_note(f'Gateway rollback unconfirmed: {type(error).__name__}: {error}')
+
+    def _commit(self):
+        try:self._db.execute('COMMIT')
+        except BaseException as cause:
+            self._rollback(cause)
+            raise
 
     def _recovery(self, reason):
         self._db.execute("UPDATE gateway SET state='recovery_required', epoch=epoch+1, owner=NULL, lease_expires=0, reason=? WHERE id=1", (reason,))
@@ -252,12 +293,22 @@ class CommandGateway:
             raise GatewayError("fresh matching endpoint ownership and epoch required")
         return now, state
 
+    def _identifier(self,value,label,*,internal=False):
+        maximum=(self._native_profile.binding['command_profile']['max_identity_chars']
+                 if self._native_profile is not None else 128)
+        if (not isinstance(value,str) or not value or '\0' in value
+                or not internal and maximum is not None and len(value)>maximum):
+            raise GatewayError(label+' must be a nonempty identity within the selected endpoint policy')
+        return value
+
+    def _completed(self,state):
+        if self._native_profile is None:return state=='confirmed'
+        from .command_profiles import COMPLETED_NATIVE_STATUSES
+        return state in COMPLETED_NATIVE_STATUSES
+
     def acquire(self, owner, *, ttl=30):
-        if not isinstance(owner, str) or not 1 <= len(owner) <= 128:
-            raise GatewayError("owner must identify one run")
-        duration = _finite(ttl, "lease ttl")
-        if not 0 < duration <= 3600:
-            raise GatewayError("lease ttl must be 0..3600 seconds")
+        self._identifier(owner,'owner')
+        duration = self._lease_duration(ttl)
         with self._transaction():
             now = self._now()
             state = self._db.execute("SELECT * FROM gateway WHERE id=1").fetchone()
@@ -269,31 +320,53 @@ class CommandGateway:
         return {"epoch": epoch, "owner": owner, "endpoint_id": self._binding["endpoint_id"], "expires_at": now + duration}
 
     def heartbeat(self, owner, epoch, *, ttl=30):
-        duration = _finite(ttl, "lease ttl")
-        if not 0 < duration <= 3600:
-            raise GatewayError("lease ttl must be 0..3600 seconds")
+        duration = self._lease_duration(ttl)
         with self._transaction():
             now, _ = self._authority(owner, epoch)
             self._db.execute("UPDATE gateway SET lease_expires=? WHERE id=1", (now + duration,))
         return now + duration
 
-    def _request(self, command_id, owner, epoch, parameters, expires_at, kind):
-        if not isinstance(command_id, str) or not 1 <= len(command_id) <= 128:
-            raise GatewayError("command identity must contain 1..128 characters")
+    def _lease_duration(self,ttl):
+        duration=_finite(ttl,'lease ttl')
+        maximum=self._binding.get('max_lease_seconds',None if self._native_profile is not None else 3600)
+        if maximum is not None:
+            maximum=_finite(maximum,'max_lease_seconds')
+            if maximum<=0:raise GatewayError('max_lease_seconds must be positive or None')
+        if duration<=0 or maximum is not None and duration>maximum:
+            raise GatewayError('lease ttl exceeds the selected endpoint policy')
+        return duration
+
+    def _request(self, command_id, owner, epoch, parameters, expires_at, kind,*,payload=None):
+        self._identifier(command_id,'command',internal=kind=='local_stop')
+        if self._native_profile is not None:
+            if parameters is not None:raise GatewayError('native profile accepts payload rather than legacy typed parameters')
+            try:normalized=self._native_profile.validate_payload(payload,operator_action=kind=='local_stop')
+            except ValueError as error:raise GatewayError(str(error)) from error
+            return {'protocol':COMMAND_FORMAT,'endpoint_id':self._binding['endpoint_id'],
+                'command_id':command_id,'epoch':epoch,'owner':owner,'payload':normalized,
+                'expires_at':_finite(expires_at,'command expiry'),'kind':kind,'profile_digest':self._native_profile.digest}
+        if payload is not None:raise GatewayError('legacy typed profile does not accept native payload')
         return {"protocol": 1, "endpoint_id": self._binding["endpoint_id"], "command_id": command_id,
                 "epoch": epoch, "owner": owner, "parameters": _parameters(parameters, self._binding["limits"]),
                 "expires_at": _finite(expires_at, "command expiry"), "kind": kind}
 
-    def _pending(self, request):
+    def _existing_receipt(self,request):
         encoded = _json(request)
         fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
         existing = self._db.execute("SELECT * FROM commands WHERE command_id=?", (request["command_id"],)).fetchone()
         if existing:
             if existing["payload_sha256"] != fingerprint:
                 raise GatewayError("command identity already belongs to a different immutable request")
-            if existing["state"] == "confirmed":
+            if self._completed(existing['state']):
                 return json.loads(existing["ack"])
             raise GatewayError("command identity is pending/uncertain/consumed; never automatically retry")
+        return None
+
+    def _pending(self, request):
+        existing=self._existing_receipt(request)
+        if existing is not None:return existing
+        encoded=_json(request)
+        fingerprint=hashlib.sha256(encoded.encode()).hexdigest()
         self._db.execute("INSERT INTO commands VALUES(?,?,?,?,?,'pending',NULL,NULL)",
                          (request["command_id"], request["epoch"], request["owner"], encoded, fingerprint))
         return None
@@ -310,7 +383,15 @@ class CommandGateway:
                     raise GatewayError("local stop epoch changed before dispatch")
             if now >= request["expires_at"]:
                 raise GatewayError("command expired at the final transport write boundary")
-            _parameters(request["parameters"], self._binding["limits"])
+            if self._native_profile is not None:
+                if request.get('profile_digest')!=self._native_profile.digest:
+                    raise GatewayError('command profile differs from the bound immutable profile')
+                try:normalized=self._native_profile.validate_payload(request['payload'],operator_action=request['kind']=='local_stop')
+                except ValueError as error:raise GatewayError(str(error)) from error
+                if normalized!=request['payload']:raise GatewayError('native command changed after admission')
+                if request['kind']=='local_stop' and normalized!=self._native_profile.local_stop_payload:
+                    raise GatewayError('operator stop must use exactly the selected stop payload')
+            else:_parameters(request["parameters"], self._binding["limits"])
             stored = self._db.execute("SELECT request,state FROM commands WHERE command_id=?", (request["command_id"],)).fetchone()
             if not stored or stored["state"] != "pending" or stored["request"] != _json(request):
                 raise GatewayError("final write requires the exact committed pending journal entry")
@@ -329,28 +410,62 @@ class CommandGateway:
         return ack
 
     def _effect(self, request, cancelled):
+        ack=None
         try:
             self._final_authorize(request)
             ack = self.transport.exchange(deepcopy(request), timeout=self._binding["send_timeout"], cancelled=cancelled,
                                           authorize=lambda: self._final_authorize(request))
-            self._ack(request, ack)
+            if self._native_profile is not None:
+                try:self._native_profile.validate_receipt(request,ack)
+                except ValueError as error:raise GatewayError(str(error)) from error
+            else:self._ack(request, ack)
         except Exception as exc:
+            evidence=getattr(exc,'delivery_evidence',None)
+            if evidence is None and ack is not None:
+                evidence={'classification':'unverified_transport_receipt','returned_receipt':ack,
+                    'physical_outcome':'unverified','validation_error':str(exc)}
+            self._unknown(request,exc,evidence)
+        state=ack['status'] if self._native_profile is not None else 'confirmed'
+        try:
             with self._transaction():
-                self._db.execute("UPDATE commands SET state='unknown',error=? WHERE command_id=?", (type(exc).__name__, request["command_id"]))
-                self._recovery("unknown_command_outcome")
-            raise GatewayError("command outcome unknown; explicit device reconciliation required, no retry") from exc
-        with self._transaction():
-            self._db.execute("UPDATE commands SET state='confirmed',ack=? WHERE command_id=?", (_json(ack), request["command_id"]))
-            self._now()  # A late ack is retained, but an expired ownership lease still revokes authority.
+                self._db.execute("UPDATE commands SET state=?,ack=? WHERE command_id=?", (state,_json(ack),request["command_id"]))
+                self._now()  # A late receipt never renews endpoint ownership.
+        except GatewayError as error:
+            error.delivery_receipt=deepcopy(ack)
+            raise
+        except Exception as error:
+            self._unknown(request,error,{'classification':'delivery_receipt_commit_unconfirmed',
+                'observed_delivery':ack,'physical_outcome':'unverified'})
         return ack
 
-    def dispatch(self, command_id, *, owner, epoch, parameters, expires_at, cancelled=lambda: False):
-        with self._send_lock:
-            request = self._request(command_id, owner, epoch, parameters, expires_at, "command")
+    def _unknown(self,request,cause,evidence):
+        try:
+            encoded=_json(evidence) if evidence is not None else None
+            retained=json.loads(encoded) if encoded is not None else None
+        except (TypeError,ValueError,RecursionError):
+            retained={'classification':'unserializable_transport_evidence','error_type':type(cause).__name__}
+            encoded=_json(retained)
+        failure=GatewayError('command outcome unknown; explicit reconciliation required, no automatic retry')
+        failure.delivery_receipt=retained
+        try:
             with self._transaction():
+                self._db.execute("UPDATE commands SET state='unknown',ack=?,error=? WHERE command_id=?", (encoded,type(cause).__name__,request['command_id']))
+                self._recovery('unknown_command_outcome')
+        except Exception as error:
+            failure.add_note(f'Outcome journal update unconfirmed: {type(error).__name__}: {error}')
+        raise failure from cause
+
+    def dispatch(self, command_id, *, owner, epoch, parameters=None, expires_at, payload=None,cancelled=lambda: False):
+        with self._send_lock:
+            request = self._request(command_id, owner, epoch, parameters, expires_at, "command",payload=payload)
+            with self._transaction():
+                existing_ack=self._existing_receipt(request)
+                if existing_ack is not None:return existing_ack
                 now, state = self._authority(owner, epoch)
-                if not now < request["expires_at"] <= state["lease_expires"]:
-                    raise GatewayError("command expired or outlives its ownership lease")
+                if now>=request['expires_at']:
+                    raise GatewayExpired('command has expired before admission')
+                if request['expires_at']>state['lease_expires']:
+                    raise GatewayError('command outlives its ownership lease')
                 existing_ack = self._pending(request)
             if existing_ack is not None:
                 return existing_ack  # Read an existing receipt; never repeat the effect.
@@ -358,45 +473,72 @@ class CommandGateway:
             if should_cancel():
                 with self._transaction():
                     self._db.execute("UPDATE commands SET state='cancelled' WHERE command_id=?", (command_id,))
-                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest())
-                raise GatewayError("command cancelled; configured local stop acknowledged")
+                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
+                raise GatewayError("command cancelled; inspect the configured local-stop outcome")
             try:
                 ack = self._effect(request, should_cancel)
             except GatewayError:
                 if should_cancel():
-                    self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest())
+                    self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
                 raise
             if should_cancel():
-                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest())
-                raise GatewayError("cancelled after dispatch; application ack retained and local stop acknowledged")
+                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
+                raise GatewayError("cancelled after dispatch; delivery receipt retained; inspect the local-stop outcome")
             return ack
 
-    def local_stop(self, operator_id, *, request_id):
-        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
-            raise GatewayError("local stop request identity must contain 1..128 characters")
+    def _stop_receipt(self,request_id,operator_id):
+        existing=self._db.execute('SELECT * FROM commands WHERE command_id=?',(request_id,)).fetchone()
+        if existing is None:return None
+        stored=json.loads(existing['request'])
+        if stored['kind']!='local_stop' or stored['owner']!=operator_id:
+            raise GatewayError('local stop identity collision')
+        if existing['state']=='not_configured' or self._completed(existing['state']):
+            return json.loads(existing['ack'])
+        raise GatewayError('uncertain local stop cannot be retried automatically')
+
+    def local_stop(self, operator_id, *, request_id,_internal=False):
+        # Generated stop identities are fixed implementation metadata, rather
+        # than authored IDs governed by the optional user-input length budget.
+        self._identifier(request_id,'local stop',internal=_internal)
         if operator_id != self._binding["operator_id"]:
             raise GatewayError("local stop requires the bound operator identity")
-        self._stop_requested.set()  # Bounded transport calls must observe this before the serialized stop.
+        with self._transaction():
+            completed=self._stop_receipt(request_id,operator_id)
+            if completed is not None:return completed
+            # Lookup and signalling share the journal mutex. An old receipt
+            # replay must never leave a cancellation flag on a newer owner.
+            self._stop_requested.set()
         with self._send_lock:
             with self._transaction():
+                completed=self._stop_receipt(request_id,operator_id)
+                if completed is not None:return completed
                 now = self._now()
-                existing = self._db.execute("SELECT * FROM commands WHERE command_id=?", (request_id,)).fetchone()
-                if existing:
-                    stored = json.loads(existing["request"])
-                    if stored["kind"] != "local_stop" or stored["owner"] != operator_id:
-                        raise GatewayError("local stop identity collision")
-                    if existing["state"] == "confirmed":
-                        return json.loads(existing["ack"])
-                    raise GatewayError("uncertain local stop cannot be retried automatically")
                 self._recovery("operator_local_stop")
                 epoch = self._db.execute("SELECT epoch FROM gateway WHERE id=1").fetchone()[0]
-                request = self._request(request_id, operator_id, epoch, self._binding["local_stop"], now + self._binding["send_timeout"], "local_stop")
+                if self._native_profile is not None and self._native_profile.local_stop_payload is None:
+                    request={'protocol':COMMAND_FORMAT,'endpoint_id':self._binding['endpoint_id'],
+                        'command_id':request_id,'epoch':epoch,'owner':operator_id,'payload':None,
+                        'expires_at':now+self._binding['send_timeout'],'kind':'local_stop','profile_digest':self._native_profile.digest}
+                    self._pending(request)
+                    receipt={'format':RECEIPT_FORMAT,
+                        **{key:request[key] for key in ('endpoint_id','command_id','epoch','profile_digest')},
+                        'status':'not_configured','device_application_confirmed':False,'physical_outcome':'unverified',
+                        'disclosure':'Host authority revoked; no device stop action was configured or sent.'}
+                    self._db.execute("UPDATE commands SET state='not_configured',ack=? WHERE command_id=?",(_json(receipt),request_id))
+                    return receipt
+                request = self._request(request_id, operator_id, epoch,
+                    None if self._native_profile is not None else self._binding["local_stop"],
+                    now + self._binding["send_timeout"], "local_stop",
+                    payload=self._native_profile.local_stop_payload if self._native_profile is not None else None)
                 self._pending(request)
             return self._effect(request, lambda: False)
 
-    def reconcile(self, operator_id):
+    def reconcile(self, operator_id,*,evidence=None):
         if operator_id != self._binding["operator_id"]:
             raise GatewayError("explicit reconciliation requires the bound operator identity")
+        if self._native_profile is not None:
+            return self._reconcile_native(operator_id,evidence)
+        if evidence is not None:raise GatewayError('legacy device reconciliation obtains evidence through its bound protocol')
         with self._send_lock:
             with self._transaction():
                 now = self._now()
@@ -435,12 +577,39 @@ class CommandGateway:
             self._stop_requested.clear()
             return {"state": "idle", "replay": False, "evidence": deepcopy(evidence)}
 
+    def _reconcile_native(self,operator_id,evidence):
+        if not isinstance(evidence,dict) or evidence.get('acknowledge_unverified_outcomes') is not True:
+            raise GatewayError('native reconciliation requires explicit operator acknowledgement of unresolved physical outcomes')
+        try:operator_evidence=json.loads(_json(evidence))
+        except (TypeError,ValueError) as error:raise GatewayError('operator evidence must be finite JSON') from error
+        with self._send_lock:
+            with self._transaction():
+                now=self._now()
+                state=self._db.execute('SELECT state,epoch FROM gateway WHERE id=1').fetchone()
+                if state['state']!='recovery_required':raise GatewayError('reconciliation requires recovery_required state')
+                uncertain=[row[0] for row in self._db.execute("SELECT command_id FROM commands WHERE state IN ('pending','unknown','cancelled') ORDER BY rowid")]
+                retained={'classification':'operator_attestation','operator_id':operator_id,
+                    'physical_outcome':'unverified','device_application_confirmed':False,
+                    'operator_evidence':operator_evidence,'consumed_command_ids':uncertain,
+                    'previous_epoch':state['epoch'],'observed_at':now,
+                    'disclosure':'Operator-authorized host ownership reset; no physical effect or stopping claim is verified.'}
+                self._db.execute('INSERT INTO recovery(recorded_at,evidence) VALUES(?,?)',(now,_json(retained)))
+                self._db.execute("UPDATE commands SET state='reconciled_consumed' WHERE state IN ('pending','unknown','cancelled')")
+                self._db.execute("UPDATE gateway SET state='idle',owner=NULL,lease_expires=0,epoch=epoch+1,reason=NULL WHERE id=1")
+            self._stop_requested.clear()
+        return {'state':'idle','replay':False,'evidence':retained}
+
     def snapshot(self):
         with self._transaction():
             self._now()
             state = dict(self._db.execute("SELECT epoch,state,owner,lease_expires,reason FROM gateway WHERE id=1").fetchone())
-        return {**state, "endpoint_id": self._binding["endpoint_id"], "physical_qualified": False,
-                "qualification": "fixture-tested journal boundary; matching hardware acknowledgement/fencing unqualified"}
+        result={**state, "endpoint_id": self._binding["endpoint_id"], "physical_qualified": False,
+                "qualification": "Host journal boundary; device application and physical effects require separate evidence."}
+        if self._native_profile is not None:result['command_profile']=self._native_profile.describe()
+        else:result['command_profile']={'format':'tinystudio.fenced-command-profile.v1','protocol':1,
+            'required_device_capabilities':['epoch_fencing','command_deduplication','command_expiry','application_ack'],
+            'device_capabilities_verified':False}
+        return result
 
     def journal(self):
         with self._transaction():
@@ -634,7 +803,12 @@ class MQTTTransport:
             client.disconnect()
 
 
-def transport_for(binding):
+def transport_for(binding,*,runtime_secrets=None):
+    if 'command_profile' in binding:
+        from .native_command_transports import native_transport_for
+        return native_transport_for(binding,runtime_secrets=runtime_secrets)
+    if runtime_secrets:
+        raise GatewayError('the default legacy driver does not consume runtime_secrets; use an explicit operator transport factory or native profile')
     config = binding["transport"]
     factory = {"serial": SerialTransport, "modbus": ModbusMailboxTransport, "mqtt": MQTTTransport}.get(config["kind"])
     if factory is None:

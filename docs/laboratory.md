@@ -354,6 +354,150 @@ their cloud/runtime availability is separate from a successful local transport
 test. A Lab session coordinating telemetry, model decisions, gateway ownership,
 commands and recovery remains additional implementation work.
 
+## Standalone command gateway
+
+The operator-provisioned gateway runs separately from the Lab API and read-only
+acquisition adapters. It currently has no Lab `physical_control` executor,
+session binding, release workflow or watchdog. Lease expiry prevents subsequent
+authorized writes; it does not automatically send a local stop. Host scheduling
+and SDK waits provide no hard real-time, control-stability or physical-stop
+guarantee.
+
+The existing fenced protocol 1 remains available when the binding omits
+`command_profile`. It uses typed `parameters` with operator-selected units and
+limits. Its device application must implement persistent epochs, command-ID
+deduplication, expiry checks and matching application acknowledgements. A serial
+write, ordinary Modbus response or MQTT PUBACK cannot substitute for that
+application protocol. Neither profile qualifies physical effects or device
+fencing merely by accepting a binding.
+
+Native profiles explicitly select `tinystudio.native-command-profile.v1` and
+accept serial/SCPI or TCP writes and queries, ordinary Modbus register/coil
+operations, MQTT publications, CAN frames or an operator-installed custom
+adapter. Serial/TCP queries require selected delimiter or fixed-byte read framing.
+Native payloads are validated against the selected operation and protocol ranges;
+values are never clamped or converted into typed engineering controls. Byte data
+uses explicit `utf8`, `hex` or `base64` encoding, with no appended delimiter or
+newline. Device JSON/text inside `data.value` remains literal, including malformed
+JSON for fault-injection experiments; the HTTP envelope itself rejects duplicate
+keys and nonfinite numbers.
+
+For an operator-chosen local MQTT broker and topic, a native binding can be:
+
+```json
+{
+  "endpoint_id": "bench-mqtt",
+  "operator_id": "bench-operator",
+  "transport": {
+    "kind": "mqtt", "host": "127.0.0.1", "port": 1883,
+    "topic": "owned-bench/commands", "allow_dns": false, "tls": false
+  },
+  "command_profile": {
+    "format": "tinystudio.native-command-profile.v1",
+    "allowed_operations": ["mqtt.publish"],
+    "max_request_bytes": null, "max_response_bytes": null,
+    "max_capture_bytes": null, "max_identity_chars": null
+  },
+  "send_timeout": 2,
+  "max_lease_seconds": null,
+  "local_stop": null
+}
+```
+
+These values select one example endpoint and wait, rather than a recommended
+device configuration. Profile byte budgets and identity-length budgets default to
+`null` (Python `None`); there is no implicit scientific or sample-count ceiling.
+Byte budgets can be zero. Request/response bounds reject excess traffic or
+results; capture bounds retain a disclosed prefix and hash without changing the
+authored command. `GET /command-profile` reports their precise byte scopes.
+An optional positive `max_lease_seconds` bounds requested lease durations;
+`null` still requires a positive acquired lease and an unexpired command.
+`capability_claims` and any `ownership_key` remain operator claims.
+
+Provision binding and token-descriptor files as operator-owned regular files,
+mode `0600`, without symbolic or hard links, and the canonical journal root as
+operator-owned mode `0700`. The token descriptor contains exactly `endpoint_id`,
+`operator_id`, `token_sha256` and an explicit `permissions` list. Keep the bearer
+secret with the calling operator. Use one canonical local journal root for an
+endpoint; locks in that root do not coordinate copied journals on other roots or
+hosts. With operator-chosen paths, start the standalone listener using:
+
+```sh
+python -m tinystudio.lab.gateway_cli \
+  --binding-file ./gateway/binding.json \
+  --token-file ./gateway/token.json \
+  --journal-root ./gateway/state
+```
+
+The default listener is loopback. Other listeners require `--binding-mode tls`
+with certificate/key, or `reverse-proxy` with trusted proxy addresses and
+external TLS termination; endpoint bearer authentication still applies.
+`--config-max-bytes N` and `--request-max-bytes N` select optional private-file
+and HTTP-body budgets; absent explicit selections, the corresponding
+`TINYSTUDIO_GATEWAY_CONFIG_BYTES` and `TINYSTUDIO_GATEWAY_HTTP_BYTES` environment
+settings apply, defaulting to `None`. Zero is a valid budget; no fixed 64 KiB
+configuration or request limit is imposed. Importable `GatewayFilePolicy`,
+`GatewayRequestPolicy`, `GatewayStoragePaths` and `GatewayApiPaths` live in
+`tinystudio.lab.gateway_configuration`; `NativeCommandProfile` lives in
+`tinystudio.lab.command_profiles`.
+
+Device credentials belong in a separate private `--runtime-secrets-file`, not the
+public binding or payload. MQTT supports `username`/`password` and TLS fields
+`ca_certs`, `certfile`, `keyfile`, `key_password`; TCP supports those TLS fields
+plus `server_hostname`. TLS credentials require selecting TLS in the binding.
+Other built-in native drivers and the default legacy driver reject nonempty
+runtime secrets. An injected transport factory used with a credentials file must
+explicitly accept the `runtime_secrets` keyword; custom native adapter
+constructors receive `binding` and `runtime_secrets` separately. An incompatible
+factory signature fails before listener startup.
+
+Authenticated `GET /state`, `/journal` and `/command-profile` inspect the host
+journal and selected profile; `/command-profile` requires the token's `state`
+permission and exposes the read-only payload schema, digest, budgets and
+qualification scope. `POST /acquire` selects `endpoint_id`, `owner` and positive
+`ttl`; retain its returned `epoch` and lease expiry. `POST /heartbeat` renews that
+owner/epoch. Each `POST /commands` supplies `endpoint_id`, `owner`, `epoch`, a new
+`command_id`, absolute wall-clock `expires_at` within the lease, and exactly one
+of legacy `parameters` or native `payload`. For the binding above, one payload is:
+
+```json
+{
+  "operation": "mqtt.publish",
+  "data": {"encoding": "base64", "value": "AAH/DQo="},
+  "qos": 1,
+  "retain": false
+}
+```
+
+| Native receipt status | Recorded scope |
+| --- | --- |
+| `delivered_unverified` | Transport/adapter reports delivery; application outcome unverified |
+| `protocol_accepted` | Protocol acceptance report, such as MQTT QoS acknowledgement |
+| `response_received` | A protocol response was received, without proving the requested physical effect |
+| `application_reported` | Custom adapter application claim, retained as `adapter_claim` |
+
+Built-in receipts keep `device_application_confirmed: false`; every native
+receipt keeps `physical_outcome: "unverified"`. Custom-adapter file hashes describe
+module bytes observed after import; they do not attest the executed code.
+A matching completed command ID
+returns its retained receipt without another delivery, even after its lease or
+command expiry. This authenticated lookup requires the same immutable request,
+including owner, epoch, expiry and payload. Reusing the ID for different intent
+fails. Pending, unknown or consumed IDs never authorize automatic replay.
+
+`POST /stop` uses the bound operator and a stable `request_id`, revokes host
+authority and attempts the exact configured `local_stop` payload. With
+`local_stop: null`, it records `not_configured` and sends no device stop.
+Neither outcome proves that equipment stopped. In `recovery_required`, explicit
+`POST /reconcile` evidence must include `acknowledge_unverified_outcomes: true`.
+Native reconciliation records an `operator_attestation`, advances the host epoch
+and consumes uncertain command IDs while preserving receipts and unknown
+physical outcomes. It performs no command replay or physical-state verification.
+
+Verification uses owned software endpoints, native loopback/emulator fixtures and
+controlled failures. It establishes no physical-device, Wokwi/Renode session,
+mounted-volume power-loss or end-to-end Lab control qualification.
+
 ## Data preparation contracts
 
 The actual Lab parameter view uses shared application templates and controls for

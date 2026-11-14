@@ -11,9 +11,10 @@ from the token descriptor, never from an authored research definition.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from copy import deepcopy
 import hashlib
 import hmac
-import json
+import inspect
 import os
 from pathlib import Path
 import re
@@ -22,28 +23,56 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .gateway import CommandGateway, GatewayError, _binding, _parameters
+from .gateway import CommandGateway, GatewayError, GatewayExpired, _binding, _parameters,transport_for
+from .gateway_configuration import (GatewayApiPaths, GatewayStoragePaths, GatewayFilePolicy,
+    GatewayRequestPolicy,GatewayRequestTooLarge,decode_gateway_json)
 
 PERMISSIONS = {"state", "journal", "acquire", "heartbeat", "commands", "stop", "reconcile"}
 Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
-Identity = Annotated[str, Field(strict=True, min_length=1, max_length=128)]
+Identity = Annotated[str, Field(strict=True, min_length=1)]
+PATHS=GatewayApiPaths()
 
 
-def private_json(path):
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("gateway configuration must be an existing regular file")
-    info = path.stat()
-    if stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.geteuid():
-        raise ValueError("gateway configuration must be owned by the operator with mode 0600")
-    if info.st_size > 65536:
-        raise ValueError("gateway configuration exceeds 64 KiB")
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ValueError("gateway configuration must be a JSON object")
-    return value
+class GatewayJsonEnvelope:
+    """Buffer bounded JSON intent before any effect, preserving ASGI delivery.
+
+    Native device bytes remain encoded strings inside this envelope. They are
+    never parsed as JSON, so malformed device-protocol experiments remain valid.
+    """
+    def __init__(self,app,*,policy):
+        self.app,self.policy=app,policy
+
+    async def __call__(self,scope,receive,send):
+        path=scope.get('path','');root=scope.get('root_path','')
+        if root and (path==root or path.startswith(root+'/')):path=path[len(root):] or '/'
+        if scope['type']!='http' or scope.get('method')!='POST' or path not in PATHS.mutation_routes:
+            return await self.app(scope,receive,send)
+        messages=[];body=bytearray()
+        try:
+            while True:
+                event=await receive()
+                if event['type']=='http.disconnect':return
+                if event['type']!='http.request':raise ValueError('invalid gateway request stream')
+                chunk=event.get('body',b'')
+                self.policy.check_size(len(body)+len(chunk))
+                body.extend(chunk);messages.append(event)
+                if not event.get('more_body',False):break
+            decode_gateway_json(body)
+        except (ValueError,RecursionError) as error:
+            response=JSONResponse(status_code=413 if isinstance(error,GatewayRequestTooLarge) else 422,
+                content={'detail':str(error)})
+            return await response(scope,receive,send)
+        iterator=iter(messages)
+        async def replay():
+            try:return next(iterator)
+            except StopIteration:return await receive()
+        return await self.app(scope,replay,send)
+
+
+def private_json(path,*,policy=None):
+    return (policy or GatewayFilePolicy.from_environment()).read(path)
 
 
 class EndpointRequest(BaseModel):
@@ -53,7 +82,7 @@ class EndpointRequest(BaseModel):
 
 class AcquireRequest(EndpointRequest):
     owner: Identity
-    ttl: Annotated[Finite, Field(gt=0, le=3600)] = 30
+    ttl: Annotated[Finite, Field(gt=0)] = 30
 
 
 class HeartbeatRequest(AcquireRequest):
@@ -63,24 +92,42 @@ class HeartbeatRequest(AcquireRequest):
 class ParameterValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     value: Finite
-    unit: Annotated[str, Field(strict=True, max_length=128)]
+    unit: str = Field(strict=True)
 
 
 class CommandRequest(EndpointRequest):
     command_id: Identity
     owner: Identity
     epoch: Annotated[int, Field(strict=True, ge=1)]
-    parameters: dict[str, ParameterValue] = Field(min_length=1, max_length=32)
+    parameters: dict[str, ParameterValue] | None = Field(default=None,min_length=1)
+    payload: dict | None = None
     expires_at: Annotated[Finite, Field(gt=0)]
+
+    @model_validator(mode='after')
+    def selected_command_form(self):
+        if (self.parameters is None)==(self.payload is None):
+            raise ValueError('provide exactly one of typed parameters or native payload')
+        return self
 
 
 class StopRequest(EndpointRequest):
     request_id: Identity
 
 
-def create_gateway_app(binding_file, journal_root, token_file, transport_factory=None):
-    binding = _binding(private_json(binding_file))
-    token = private_json(token_file)
+class ReconcileRequest(EndpointRequest):
+    evidence: dict | None = None
+
+
+def create_gateway_app(binding_file, journal_root, token_file, transport_factory=None,*,runtime_secrets_file=None,file_policy=None,request_policy=None):
+    policy=file_policy or GatewayFilePolicy.from_environment()
+    http_policy=request_policy or GatewayRequestPolicy.from_environment()
+    binding = _binding(private_json(binding_file,policy=policy))
+    token = private_json(token_file,policy=policy)
+    runtime_secrets=private_json(runtime_secrets_file,policy=policy) if runtime_secrets_file is not None else None
+    if runtime_secrets is not None and transport_factory is not None:
+        try:inspect.signature(transport_factory).bind(binding,runtime_secrets=runtime_secrets)
+        except (TypeError,ValueError) as error:
+            raise ValueError('a transport_factory used with a credential file must explicitly accept runtime_secrets') from error
     if set(token) != {"endpoint_id", "operator_id", "token_sha256", "permissions"}:
         raise ValueError("token descriptor requires explicit endpoint/operator/hash/permissions")
     if token["endpoint_id"] != binding["endpoint_id"] or token["operator_id"] != binding["operator_id"]:
@@ -97,8 +144,12 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
 
     @asynccontextmanager
     async def lifespan(app):
-        transport = transport_factory(binding) if transport_factory is not None else None
-        gateway = CommandGateway(root / "gateway.sqlite3", binding, transport)
+        if transport_factory is None:
+            transport=transport_for(binding,runtime_secrets=runtime_secrets)
+        else:
+            selected={'runtime_secrets':deepcopy(runtime_secrets)} if runtime_secrets is not None else {}
+            transport=transport_factory(deepcopy(binding),**selected)
+        gateway = CommandGateway(GatewayStoragePaths.in_directory(root).journal, binding, transport)
         app.state.gateway = gateway
         try:
             yield
@@ -108,14 +159,20 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
 
     app = FastAPI(title="TinyStudio local endpoint gateway", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(GatewayJsonEnvelope,policy=http_policy)
+
+    def described_profile(profile):
+        return {**profile,'gateway_http':{'max_body_bytes':http_policy.max_bytes,'json_in_memory':True,
+                    'envelope_validation':'unique_keys_and_finite_json'},
+                'configuration_budget':{'max_file_bytes':policy.max_bytes}}
 
     def guard(permission):
         def authorize(authorization: Annotated[str | None, Header()] = None,
-                      endpoint_id_query: Annotated[str | None, Query(alias="endpoint_id", max_length=128)] = None):
+                      endpoint_id_query: Annotated[str | None, Query(alias="endpoint_id")] = None):
             scheme, separator, supplied = (authorization or "").partition(" ")
             if not separator or scheme.lower() != "bearer":
                 supplied = ""
-            hashed = hashlib.sha256(supplied.encode()).hexdigest() if len(supplied) <= 4096 else ""
+            hashed = hashlib.sha256(supplied.encode()).hexdigest()
             if not supplied or not hmac.compare_digest(hashed, token["token_sha256"]):
                 raise HTTPException(401, "invalid endpoint bearer token", headers={"WWW-Authenticate": "Bearer"})
             if permission not in permissions:
@@ -134,8 +191,9 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
             requires_recovery = app.state.gateway.snapshot()["state"] == "recovery_required"
         except GatewayError:
             requires_recovery = True
-        return JSONResponse(status_code=409, content={"detail": str(exc), "retry_allowed": False,
-                                                     "recovery_requires_operator": requires_recovery})
+        result={"detail": str(exc), "retry_allowed": False,"recovery_requires_operator": requires_recovery}
+        if getattr(exc,'delivery_receipt',None) is not None:result['delivery_receipt']=exc.delivery_receipt
+        return JSONResponse(status_code=410 if isinstance(exc,GatewayExpired) else 409,content=result)
 
     @app.exception_handler(TimeoutError)
     @app.exception_handler(ConnectionError)
@@ -143,52 +201,61 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
         return JSONResponse(status_code=503, content={"detail": "device reconciliation query unavailable",
                                                      "retry_allowed": False, "recovery_requires_operator": True})
 
-    @app.get("/state", dependencies=[guard("state")])
+    @app.get(PATHS.route('state'), dependencies=[guard("state")])
     def state():
-        return app.state.gateway.snapshot()
+        result=app.state.gateway.snapshot()
+        result['command_profile']=described_profile(result['command_profile'])
+        return result
 
-    @app.get("/journal", dependencies=[guard("journal")])
+    @app.get(PATHS.command_profile,dependencies=[guard('state')])
+    def command_profile():
+        return described_profile(app.state.gateway.snapshot()['command_profile'])
+
+    @app.get(PATHS.route('journal'), dependencies=[guard("journal")])
     def journal(offset: Annotated[int, Query(ge=0)] = 0,
                 limit: Annotated[int, Query(ge=1, le=1000)] = 100):
         rows = app.state.gateway.journal()
         return {"endpoint_id": endpoint_id, "items": rows[offset:offset+limit],
                 "next_offset": offset + limit if offset + limit < len(rows) else None}
 
-    @app.post("/acquire", dependencies=[guard("acquire")])
+    @app.post(PATHS.route('acquire'), dependencies=[guard("acquire")])
     def acquire(body: AcquireRequest):
         scope(body)
         return app.state.gateway.acquire(body.owner, ttl=body.ttl)
 
-    @app.post("/heartbeat", dependencies=[guard("heartbeat")])
+    @app.post(PATHS.route('heartbeat'), dependencies=[guard("heartbeat")])
     def heartbeat(body: HeartbeatRequest):
         scope(body)
         expires_at = app.state.gateway.heartbeat(body.owner, body.epoch, ttl=body.ttl)
         return {"endpoint_id": endpoint_id, "epoch": body.epoch, "expires_at": expires_at}
 
-    @app.post("/commands", dependencies=[guard("commands")])
+    @app.post(PATHS.route('commands'), dependencies=[guard("commands")])
     def command(body: CommandRequest):
         scope(body)
-        parameters = {name: value.model_dump() for name, value in body.parameters.items()}
+        parameters = {name: value.model_dump() for name, value in body.parameters.items()} if body.parameters is not None else None
         try:
-            _parameters(parameters, binding["limits"])
-        except GatewayError as exc:
+            if 'command_profile' in binding:
+                from .command_profiles import NativeCommandProfile
+                if parameters is not None:raise GatewayError('selected native profile requires payload')
+                NativeCommandProfile.from_binding(binding).validate_payload(body.payload)
+            else:
+                if body.payload is not None:raise GatewayError('selected legacy profile requires typed parameters')
+                _parameters(parameters, binding["limits"])
+        except (GatewayError,ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
-        # Reject expiry before admitting a journal entry. Gateway repeats its own
-        # trusted clock/lease checks at the actual transport-write boundary.
-        import time
-        if body.expires_at <= time.time():
-            raise HTTPException(410, "command has expired")
+        # Core returns a matching historical receipt before checking authority.
+        # New intents still require current ownership and unexpired dispatch.
         return app.state.gateway.dispatch(body.command_id, owner=body.owner, epoch=body.epoch,
-                                          parameters=parameters, expires_at=body.expires_at)
+                                          parameters=parameters,payload=body.payload, expires_at=body.expires_at)
 
-    @app.post("/stop", dependencies=[guard("stop")])
+    @app.post(PATHS.route('stop'), dependencies=[guard("stop")])
     def stop(body: StopRequest):
         scope(body)
         return app.state.gateway.local_stop(token["operator_id"], request_id=body.request_id)
 
-    @app.post("/reconcile", dependencies=[guard("reconcile")])
-    def reconcile(body: EndpointRequest):
+    @app.post(PATHS.route('reconcile'), dependencies=[guard("reconcile")])
+    def reconcile(body: ReconcileRequest):
         scope(body)
-        return app.state.gateway.reconcile(token["operator_id"])
+        return app.state.gateway.reconcile(token["operator_id"],evidence=body.evidence)
 
     return app
