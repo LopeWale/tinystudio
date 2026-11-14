@@ -177,3 +177,49 @@ def test_snapshot_identity_validation_rejects_rehashed_invalid_history(tmp_path,
     source.write_bytes(prefix+canonical(documents[-1])+b"\n")
     with pytest.raises(ValueError, match="identity|sequence|boundary|protocol|correction"):
         module().validate_snapshot(source)
+
+
+@pytest.mark.parametrize("conditions,groups", [
+    ([1.0, 2.0], [1, 2]), ([1, 2], [1.0, 2.0]),
+    ([{"dose": [1.0, True]}, {"dose": [2.0, False]}], [{"dose": [1, True]}, {"dose": [2, False]}]),
+])
+def test_numeric_condition_matching_uses_json_values_without_rewriting_retained_records(tmp_path, conditions, groups):
+    source, original = ledger(tmp_path, [("a", conditions[0], 3), ("b", conditions[1], 7)])
+    request = parameters(groups=groups)
+    selected = prepare(source, request, tmp_path / "analysis")
+    assert selected.group_a == [3] and selected.group_b == [7]
+    assert lines(selected.paths.observations) == original
+    assert selected.paths.observations.read_bytes() == b"".join(canonical(row)+b"\n" for row in original)
+    assert canonical(lines(selected.paths.selection)[0]["request"]["groups"]) == canonical(groups)
+    assert all(row["used"] for row in lines(selected.paths.selection) if row.get("kind") == "decision")
+
+
+@pytest.mark.parametrize("groups", [[1, 1.0], [-0.0, 0],
+    [{"dose": [1, {"flag": False}]}, {"dose": [1.0, {"flag": False}]}]])
+def test_numeric_equivalent_conditions_are_rejected_as_duplicate_groups(groups):
+    with pytest.raises(ValueError, match="distinct condition"):
+        module().normalize_request(parameters(groups=groups))
+
+
+@pytest.mark.parametrize("groups", [[True, 1], [False, 0], ["1", 1], [None, "null"],
+    [[1, 2], [2, 1]], [{"value": True}, {"value": 1}], [str(2**53), str(2**53+1)]])
+def test_selection_preserves_boolean_string_array_and_exact_integer_string_distinctions(tmp_path, groups):
+    source, _ = ledger(tmp_path, [("a", groups[0], 3), ("b", groups[1], 7)])
+    selected = prepare(source, parameters(groups=groups), tmp_path / "analysis")
+    assert selected.group_a == [3] and selected.group_b == [7]
+
+
+def test_numeric_unit_identity_matches_pairs_and_detects_repeated_measurements(tmp_path):
+    source, original = ledger(tmp_path, [(1, "A", 3), (1.0, "B", 7)])
+    selected = prepare(source, parameters(method="means.paired", groups=["A", "B"], incomplete_pairs="error"), tmp_path / "paired")
+    assert list(zip(selected.group_a, selected.group_b)) == [(3, 7)]
+    assert lines(selected.paths.observations) == original
+    source, _ = ledger(tmp_path, [(1, "A", 3), (1.0, "A", 7)])
+    with pytest.raises(ValueError, match="repeated"):
+        prepare(source, parameters(groups=["A", "B"]), tmp_path / "repeated")
+
+
+def test_boolean_units_remain_distinct_from_numeric_units(tmp_path):
+    source, _ = ledger(tmp_path, [(True, "A", 3), (1, "A", 7), (True, "B", 4), (1.0, "B", 8)])
+    selected = prepare(source, parameters(method="means.paired", groups=["A", "B"], incomplete_pairs="error"), tmp_path / "paired")
+    assert sorted(zip(selected.group_a, selected.group_b)) == [(3, 4), (7, 8)]

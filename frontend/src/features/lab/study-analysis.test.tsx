@@ -196,6 +196,183 @@ function fixture(
     },
   };
 }
+function trackingFixture(
+  overrides?: (
+    call: Call,
+    signal?: AbortSignal | null,
+  ) => unknown | Promise<unknown>,
+) {
+  return fixture((call, signal) => {
+    const path = call.path.replace("/api/p/alpha", "/api");
+    const document = (name: string, revision: number) => ({
+      schema_version: 1,
+      name,
+      description: `Protocol ${revision}`,
+      hypothesis: "",
+      independent_unit: "A declared device",
+      status: "draft",
+      conditions: [],
+      outcomes: [],
+      sampling_plan: {},
+      stopping_rules: {},
+      metadata: {},
+    });
+    if (path === "/api/lab/studies")
+      return ["Thermal study", "Other study"].map((name, index) => ({
+        id: `study-${index + 1}`,
+        name,
+        status: "draft",
+        revision: 2,
+        record_count: 12,
+      }));
+    const match = path.match(
+      /^\/api\/lab\/studies\/(study-[12])(?:\?revision=(\d+))?$/,
+    );
+    if (match) {
+      const revision = Number(match[2] ?? 2);
+      return {
+        id: match[1],
+        revision,
+        head_revision: 2,
+        study: document(
+          match[1] === "study-1" ? "Thermal study" : "Other study",
+          revision,
+        ),
+        digest: "a".repeat(64),
+        author_id: "researcher",
+        recorded_at: "2026-11-13T12:00:00Z",
+        summary: { records: 12, declared_unit_ids: 12 },
+        last_sequence: 12,
+      };
+    }
+    if (path.endsWith("/revisions"))
+      return [1, 2].map((revision) => ({
+        revision,
+        name: "Retained protocol",
+        status: "draft",
+        author_id: "researcher",
+        digest: "a".repeat(64),
+        recorded_at: "2026-11-13T12:00:00Z",
+      }));
+    if (path.includes("/records?"))
+      return { records: [], next_after: 0, latest_seq: 12, has_more: false };
+    return overrides?.(call, signal);
+  });
+}
+
+it.each(["study", "revision"] as const)(
+  "guards analysis-only drafts and retained snapshot associations during %s navigation",
+  async (destination) => {
+    const f = trackingFixture();
+    render(
+      <StudioContext.Provider value={f.runtime()}>
+        <Studies />
+      </StudioContext.Provider>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open study Thermal study" }),
+    );
+    await screen.findByRole("button", { name: "Open protocol revision 1" });
+    edit("Analysis name", "Unfinished analysis choices");
+    await choose("Analysis method", "Welch independent means");
+    edit("Confidence probability", ".");
+    const navigate = () =>
+      click(
+        destination === "study"
+          ? "Open study Other study"
+          : "Open protocol revision 1",
+      );
+    const keep =
+      destination === "study"
+        ? "Keep current study draft"
+        : "Keep current protocol draft";
+    const discard =
+      destination === "study"
+        ? "Discard draft and open study"
+        : "Discard draft and open protocol revision";
+    navigate();
+    expect(screen.getByRole("button", { name: keep })).toBeVisible();
+    expect(screen.getByLabelText("Analysis name")).toHaveValue(
+      "Unfinished analysis choices",
+    );
+    click(keep);
+    click("Retain analysis snapshot");
+    await screen.findByText(/Snapshot retained/);
+    navigate();
+    expect(screen.getByRole("button", { name: keep })).toBeVisible();
+    expect(screen.getByLabelText("Analysis name")).toHaveValue(
+      "Unfinished analysis choices",
+    );
+    expect(screen.getByLabelText("Confidence probability")).toHaveValue(".");
+    expect(screen.getByText(/Snapshot retained/)).toBeVisible();
+    click(keep);
+    expect(screen.queryByRole("button", { name: discard })).toBeNull();
+    navigate();
+    click(discard);
+    if (destination === "study")
+      await waitFor(() =>
+        expect(screen.getByLabelText("Study name")).toHaveValue("Other study"),
+      );
+    else await screen.findByText(/Pinned protocol revision 1/);
+    expect(screen.getByLabelText("Analysis name")).toHaveValue("");
+    expect(screen.queryByText(/Snapshot retained/)).toBeNull();
+    expect(
+      f.calls.filter((call) => call.method === "POST").map((call) => call.path),
+    ).toEqual(["/api/p/alpha/lab/studies/study-1/analysis-inputs"]);
+  },
+);
+
+it("guards an analysis snapshot request before any form choice is edited", async () => {
+  let finish!: (value: unknown) => void;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const f = trackingFixture((call) =>
+    call.path.endsWith("/analysis-inputs") ? pending : undefined,
+  );
+  render(
+    <StudioContext.Provider value={f.runtime()}>
+      <Studies />
+    </StudioContext.Provider>,
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Open study Thermal study" }),
+  );
+  await screen.findByRole("button", { name: "Open protocol revision 1" });
+  click("Retain analysis snapshot");
+  await waitFor(() =>
+    expect(f.calls.some((call) => call.path.endsWith("/analysis-inputs"))).toBe(
+      true,
+    ),
+  );
+  click("Open protocol revision 1");
+  expect(
+    screen.getByRole("button", { name: "Keep current protocol draft" }),
+  ).toBeVisible();
+  click("Keep current protocol draft");
+  await act(async () =>
+    finish({
+      id: "snapshot-op",
+      state: "succeeded",
+      kind: "study.analysis-input",
+      result: {
+        artifact: {
+          id: "snapshot-1",
+          name: "study.jsonl",
+          sha256: "b".repeat(64),
+        },
+        source: { ...source, revision: 2 },
+      },
+    }),
+  );
+  await screen.findByText(/Snapshot retained/);
+  click("Open study Other study");
+  expect(
+    screen.getByRole("button", { name: "Keep current study draft" }),
+  ).toBeVisible();
+  click("Keep current study draft");
+  expect(screen.getByText(/Snapshot retained/)).toBeVisible();
+});
 const edit = (label: string, value: string) =>
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const click = (name: string) =>

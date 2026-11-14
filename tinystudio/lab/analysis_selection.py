@@ -119,6 +119,24 @@ def _pointer(document, path):
     return current
 
 
+def _selection_key(value):
+    """JSON value identity for conditions and units, without numeric coercion.
+
+    Integral floats and integers denote the same JSON number. Normalize only
+    comparison keys; retain the authored request and source records unchanged.
+    Booleans, strings, array order and object field values keep their meanings.
+    """
+    def normalized(item):
+        if type(item) is float and item.is_integer():
+            return int(item)
+        if isinstance(item, list):
+            return [normalized(child) for child in item]
+        if isinstance(item, dict):
+            return {key: normalized(child) for key, child in item.items()}
+        return item
+    return canonical(normalized(value))
+
+
 def normalize_request(parameters):
     if not isinstance(parameters, dict):
         raise ValueError("analysis parameters must be an object")
@@ -161,7 +179,7 @@ def normalize_request(parameters):
         if request.get("alternative") not in ALTERNATIVES:
             raise ValueError("choose an explicit interval alternative")
         groups = request.get("groups")
-        if not isinstance(groups, list) or len(groups) != 2 or canonical(groups[0]) == canonical(groups[1]):
+        if not isinstance(groups, list) or len(groups) != 2 or _selection_key(groups[0]) == _selection_key(groups[1]):
             raise ValueError("the selected two-group method requires two distinct condition values")
         for key in ("outcome_path", "condition_path", "unit_path"):
             path = request.get(key)
@@ -308,7 +326,7 @@ def prepare_selection(snapshot, parameters, directory, cancelled=lambda: False):
                 if reason is None and not custom:
                     condition = _pointer(record, request["condition_path"])
                     group = next((name for name, value in zip(("a", "b"), request["groups"])
-                                  if condition is not _MISSING and canonical(condition) == canonical(value)), None)
+                                  if condition is not _MISSING and _selection_key(condition) == _selection_key(value)), None)
                     unit = _pointer(record, request["unit_path"])
                     outcome = _pointer(record, request["outcome_path"])
                     reason = "other_condition" if group is None else "missing_unit" if unit is _MISSING or unit is None or unit == "" else None
@@ -325,7 +343,7 @@ def prepare_selection(snapshot, parameters, directory, cancelled=lambda: False):
                     if reason is not None and reason != "other_condition" and request["missing"] == "error":
                         raise ValueError(f"record {identity} has a {reason.replace('_', ' ')}")
                     if reason is None:
-                        unit_key = canonical(unit).decode()
+                        unit_key = _selection_key(unit).decode()
                         entries = groups[group].setdefault(unit_key, [])
                         if entries and request["repeated"] == "error":
                             raise ValueError("repeated observations require an explicit reduction choice")

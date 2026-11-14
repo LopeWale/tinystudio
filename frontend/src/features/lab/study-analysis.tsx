@@ -78,6 +78,7 @@ function useAnalysisAction() {
 export interface StudyAnalysisPanelProps {
   study: StudyAnalysisStudy;
   currentHead?: StudyAnalysisHead;
+  onDirty?: (dirty: boolean) => void;
   onRunCreated?: (run: LabRun) => void;
   onResultLinked?: () => void;
 }
@@ -95,6 +96,7 @@ export function StudyAnalysisPanel(props: StudyAnalysisPanelProps) {
 function AnalysisAuthor({
   study,
   currentHead,
+  onDirty,
   onRunCreated,
   onResultLinked,
 }: StudyAnalysisPanelProps) {
@@ -119,6 +121,7 @@ function AnalysisAuthor({
   >(studyAnalysisPaths.targets);
   const inputs = useResource<LabInput[]>(studyAnalysisPaths.inputs);
   const [storedDraft, setDraft] = useState(() => createAnalysisDraft(study));
+  const pristineDraft = useRef(storedDraft);
   const [boundarySelected, setBoundarySelected] = useState(false);
   // Fresh collection/protocol props can arrive after this panel first mounts.
   // Only an untouched boundary follows them; every explicit choice stays pinned.
@@ -147,6 +150,25 @@ function AnalysisAuthor({
   const [run, setRun] = useState<LabRun>();
   const [runError, setRunError] = useState("");
   const action = useAnalysisAction();
+  // Saved definitions do not restore this panel's snapshot/target/run context.
+  // Protect that local work as well as invalid or unfinished authored choices.
+  const dirty =
+    Object.entries(storedDraft).some(
+      ([key, value]) =>
+        key !== "revision" &&
+        key !== "throughSeq" &&
+        value !== pristineDraft.current[key as keyof AnalysisDraft],
+    ) ||
+    boundarySelected ||
+    !!target ||
+    !!snapshot ||
+    !!saved ||
+    !!compatibility ||
+    !!run ||
+    action.busy;
+  const dirtyCallback = useRef(onDirty);
+  dirtyCallback.current = onDirty;
+  useEffect(() => dirtyCallback.current?.(dirty), [dirty]);
   const keys = useRef(new Map<string, string>());
   const keyFor = (key: string) => {
     if (!keys.current.has(key)) keys.current.set(key, crypto.randomUUID());

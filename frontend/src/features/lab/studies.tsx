@@ -259,8 +259,9 @@ function StudyDirectory() {
       {pending && (
         <div role="alert">
           <p>
-            Your current protocol or collection draft has unsaved changes. It
-            remains available until you choose to discard it.
+            Your current protocol, collection or analysis work has unsaved
+            changes. Drafts and local analysis context remain available until
+            you choose to discard them.
           </p>
           <Button onClick={() => setPending(null)}>
             Keep current study draft
@@ -400,6 +401,7 @@ function StudyEditor({
   const [conflict, setConflict] = useState(false);
   const [latest, setLatest] = useState<Study | null>(null);
   const [recordDirty, setRecordDirty] = useState(false);
+  const [analysisDirty, setAnalysisDirty] = useState(false);
   const [exported, setExported] = useState<ExportManifest | null>(null);
   const draft = useDraftValidity();
   const action = useStudyAction();
@@ -411,7 +413,8 @@ function StudyEditor({
     !!draft.invalid.size ||
     json(doc) !== json(base?.study ?? blankStudy()) ||
     !!createAttempt ||
-    recordDirty;
+    recordDirty ||
+    analysisDirty;
   const dirtyCallback = useRef(onDirty);
   dirtyCallback.current = onDirty;
   useEffect(() => dirtyCallback.current(dirty), [dirty]);
@@ -706,6 +709,7 @@ function StudyEditor({
           <StudyAnalysisPanel
             key={base.id}
             study={base}
+            onDirty={setAnalysisDirty}
             currentHead={{
               revision:
                 header.data?.id === base.id
