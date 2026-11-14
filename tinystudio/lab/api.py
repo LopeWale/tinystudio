@@ -7,9 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
@@ -18,11 +18,19 @@ from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
 from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
+from .client_paths import RunnerApiPaths, RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
+from .study_import_paths import StudyImportPaths
+from .transfer_configuration import AttemptArtifactApiPaths, TransferPolicy
+from .finalization_configuration import FinalizationApiPaths
+from .operation_runtime import require_operation_runtime, require_pending_operation_runtime
+from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
+from .recovered_evidence import RecoveryPreviewRequest, RecoveryAttachRequest, RecoveryParserLimits
 
 router = APIRouter()
 project_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory"])
-runner_routes = APIRouter(prefix="/api/lab/runner/{target_id}", tags=["laboratory runner"])
+runner_api_paths = RunnerApiPaths()
+runner_routes = APIRouter(prefix=runner_api_paths.target_route, tags=["laboratory runner"])
 data_bridge_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory data bridges"])
 DB = Annotated[Session, Depends(get_db)]
 ProjectDep = Annotated[Project, Depends(project_dep)]
@@ -60,6 +68,30 @@ class TargetEnrollment(BaseModel):
 class Preflight(BaseModel):
     definition: dict
     target_id: str = "local"
+
+
+class CaptureAnalysisInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt | None = Field(default=None, ge=1, le=2**53-1)
+    through_seq: StrictInt | None = Field(default=None, ge=0, le=2**53-1)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class SaveAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    snapshot_artifact_id: str
+    parameters: dict
+    execution: dict
+    custom_code_artifact_id: str | None = None
+    extra_artifact_ids: list[str] = Field(default_factory=list)
+
+
+class RecordAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    notes: str = ""
 
 
 class SnapshotInput(BaseModel):
@@ -157,6 +189,22 @@ def create_study_record(id_: str, body: dict, db: DB, project: ProjectDep, autho
     return append_record(db, project.id, id_, body, author.user.id)
 
 
+@project_routes.post(StudyImportPaths.preview_route)
+def preview_study_observations(id_: str, body: ObservationImportPreview, db: DB, project: ProjectDep):
+    from .study_import import preview_import
+    return preview_import(db, project.id, id_, body.model_dump())
+
+
+@project_routes.post(StudyImportPaths.apply_route, status_code=201)
+def import_study_observations(id_: str, body: ObservationImport, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_import import apply_import
+    result = apply_import(db, project.id, id_, body.model_dump(), author.user.id)
+    # Request-scoped dependency finalizers may run after the response is sent.
+    # A successful import receipt must follow the outer transaction commit.
+    db.commit()
+    return result
+
+
 @project_routes.get('/studies/{id_}/manifest')
 def study_manifest(id_: str, db: DB, project: ProjectDep):
     from .studies import tracking_manifest
@@ -189,6 +237,44 @@ def catalog(project: ProjectDep):
 def statistics_methods(project: ProjectDep):
     from .statistics_selection import method_catalog
     return method_catalog()
+
+
+@project_routes.get("/statistics/analysis-methods")
+def analysis_methods(project: ProjectDep):
+    from .analysis import method_catalog
+    return method_catalog()
+
+
+@project_routes.get(RuntimeApiPaths(base="").methods)
+def runtime_methods(project: ProjectDep):
+    from .runtime_probe import method_catalog
+    return method_catalog()
+
+
+@project_routes.get(HardwareApiPaths(base="").discovery_methods)
+def hardware_discovery_methods(project: ProjectDep):
+    from .hardware_discovery_engine import method_catalog
+    return method_catalog()
+
+
+@project_routes.post('/studies/{id_}/analysis-inputs', status_code=202)
+def capture_analysis_input(id_: str, body: CaptureAnalysisInput, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import request_input
+    from .operations import operation_dict
+    return operation_dict(request_input(db, project.id, id_, body.idempotency_key,
+                                       revision=body.revision, through_seq=body.through_seq))
+
+
+@project_routes.post('/statistics/analyses', status_code=201)
+def save_analysis(body: SaveAnalysis, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import save_analysis_definition
+    return save_analysis_definition(db, project.id, body.model_dump())
+
+
+@project_routes.post('/studies/{id_}/analysis-results', status_code=201)
+def record_analysis_result(id_: str, body: RecordAnalysis, db: DB, project: ProjectDep, author: AuthorDep):
+    from .study_analysis import record_result
+    return record_result(db, project.id, id_, body.run_id, author.user.id, body.idempotency_key, notes=body.notes)
 
 
 @project_routes.post("/preflight")
@@ -237,7 +323,9 @@ def enroll_target(body: TargetEnrollment, db: DB, project: ProjectDep):
 
 @project_routes.post("/targets/{id_}/recover")
 def recover_target(id_: str, db: DB, project: ProjectDep):
-    return {"recovered": svc.recover(db, svc.resolve_target(db, project.id, id_))}
+    result = {"recovered": svc.recover(db, svc.resolve_target(db, project.id, id_))}
+    db.commit()
+    return result
 
 
 @project_routes.get("/runs")
@@ -255,6 +343,27 @@ def submit(body: Submission, db: DB, project: ProjectDep):
 @project_routes.get("/runs/{id_}")
 def run(id_: str, db: DB, project: ProjectDep):
     return svc.run_dict(db, svc.get_run(db, project.id, id_))
+
+
+@project_routes.get(RecoveredEvidencePaths(base='').references_route)
+def recovered_evidence(id_:str,db:DB,project:ProjectDep):
+    from .recovered_evidence import recovery_references, CLASSIFICATION
+    svc.get_run(db,project.id,id_)
+    return {'classification':CLASSIFICATION,'references':recovery_references(db,id_)}
+
+
+@project_routes.post(RecoveredEvidencePaths(base='').preview_route)
+def preview_recovered_evidence(id_:str,body:RecoveryPreviewRequest,db:DB,project:ProjectDep):
+    from .recovered_evidence import preview_recovered_evidence as preview
+    return preview(db,project.id,id_,body,limits=RecoveryParserLimits.from_environment())
+
+
+@project_routes.post(RecoveredEvidencePaths(base='').attach_route,status_code=201)
+def attach_recovered_evidence(id_:str,body:RecoveryAttachRequest,db:DB,project:ProjectDep,author:AuthorDep):
+    from .recovered_evidence import attach_recovered_evidence as attach
+    result=attach(db,project.id,id_,body,author.user.id,limits=RecoveryParserLimits.from_environment())
+    db.commit()
+    return result
 
 
 @project_routes.get("/runs/{id_}/events")
@@ -386,17 +495,17 @@ def inputs(db: DB, project: ProjectDep):
 def import_run(db: DB, project: ProjectDep, file: UploadFile = File(...)):
     from .portable import import_bundle
     with tempfile.TemporaryDirectory(prefix="ts-lab-import-") as root:
-        path = copy_upload(file, Path(root), 512 * 1024**2)
+        path = copy_upload(file, Path(root), TransferPolicy.from_environment().per_file.max_bytes)
         return import_bundle(db, project.id, path, Path(root))
 
 
-def copy_upload(file: UploadFile, root: Path, maximum: int) -> Path:
+def copy_upload(file: UploadFile, root: Path, maximum: int | None) -> Path:
     path = root / "upload"
     size = 0
     with path.open("wb") as stream:
         while block := file.file.read(1024**2):
             size += len(block)
-            if size > maximum:
+            if maximum is not None and size > maximum:
                 raise svc.LabError(f"upload exceeds {maximum} byte limit", 413)
             stream.write(block)
     return path
@@ -405,8 +514,13 @@ def copy_upload(file: UploadFile, root: Path, maximum: int) -> Path:
 @project_routes.post("/inputs", status_code=201)
 def upload_input(db: DB, project: ProjectDep, file: UploadFile = File(...)):
     with tempfile.TemporaryDirectory(prefix="ts-lab-upload-") as root:
-        path = copy_upload(file, Path(root), 512 * 1024**2)
-        return svc.artifact_dict(svc.store_artifact(db, project.id, path, file.filename or "input.bin", file.content_type or "application/octet-stream"))
+        path = copy_upload(file, Path(root), TransferPolicy.from_environment().per_file.max_bytes)
+        result = svc.artifact_dict(svc.store_artifact(db, project.id, path, file.filename or "input.bin", file.content_type or "application/octet-stream"))
+        # A recovery client persists this identity before its attach request.
+        # Commit before acknowledging it, so that identity is already visible
+        # to independent verification and a failed commit cannot return 201.
+        db.commit()
+        return result
 
 
 @data_bridge_routes.post("/inputs/from-snapshot", status_code=201)
@@ -520,7 +634,10 @@ def operation_retry(id_: str, db: DB, project: ProjectDep):
 
 @runner_routes.post("/claim")
 def claim(body: Claim, db: DB, target: TargetDep):
-    return {"attempt": svc.claim(db, target, body.capabilities, run_id=body.run_id)}
+    result = {"attempt": svc.claim(db, target, body.capabilities, run_id=body.run_id)}
+    # The response conveys execution authority. Commit before transmitting it.
+    db.commit()
+    return result
 
 
 @runner_routes.post("/advertise")
@@ -529,59 +646,118 @@ def advertise(body: Claim, db: DB, target: TargetDep):
     if len(svc.canonical(body.capabilities)) > 65536:
         raise svc.LabError("capability manifest too large")
     target.capabilities, target.last_seen = body.capabilities, svc.now()
+    db.commit()
     return {"accepted": True, "target_id": target.id}
 
 
-@runner_routes.post("/attempts/{id_}/heartbeat")
+@runner_routes.post(runner_api_paths.attempt_route + '/heartbeat')
 def heartbeat(id_: str, body: Heartbeat, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
-    return svc.heartbeat(db, target, id_, x_lab_lease, body.events)
+    result = svc.heartbeat(db, target, id_, x_lab_lease, body.events)
+    db.commit()
+    return result
 
 
-@runner_routes.post("/attempts/{id_}/finish")
+@runner_routes.post(FinalizationApiPaths().legacy_finish)
 def finish(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target
     # Credential authentication takes a target lock. Release it before storage
     # readback; the service reacquires attempt authority to publish completion.
+    target = _snapshot_target(target)
     db.commit()
-    return svc.finish(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    result = svc.finish(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    db.commit()
+    return result
 
 
-@runner_routes.post("/attempts/{id_}/artifacts", status_code=201)
+@runner_routes.post(FinalizationApiPaths().collection_route, status_code=202)
+def request_finalization(id_: str, body: Completion, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .contracts import checksum
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization, request_finalization as admit
+    target = _snapshot_target(target)
+    db.commit()
+    try:
+        previous = get_finalization(db, target, id_, x_lab_lease, payload_digest=checksum(body.model_dump()))
+    except svc.LabError as error:
+        if error.status != 404:
+            raise
+    else:
+        if previous.state not in {'queued', 'running'}:
+            return finalization_dict(previous)
+    require_operation_runtime(request.app)
+    row = admit(db, target, id_, x_lab_lease, body.state, body.result, body.error)
+    db.commit()  # Durable admission precedes its 202 descriptor.
+    return finalization_dict(row)
+
+
+@runner_routes.get(FinalizationApiPaths().digest_route)
+def finalization_by_digest(id_: str, payload_digest: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization
+    target = _snapshot_target(target)
+    db.commit()
+    row = get_finalization(db, target, id_, x_lab_lease, payload_digest=payload_digest)
+    require_pending_operation_runtime(request.app, row)
+    return finalization_dict(row)
+
+
+@runner_routes.get(FinalizationApiPaths().operation_route)
+def finalization_by_id(id_: str, operation_id: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization
+    target = _snapshot_target(target)
+    db.commit()
+    row = get_finalization(db, target, id_, x_lab_lease, operation_id=operation_id)
+    require_pending_operation_runtime(request.app, row)
+    return finalization_dict(row)
+
+
+@runner_routes.post(AttemptArtifactApiPaths.at_runner(runner_api_paths.attempt_route).output_proxy, status_code=201)
 def upload_output(id_: str, db: DB, target: TargetDep, file: UploadFile = File(...),
                   role: str = Query("evidence", max_length=64), visibility: str = Query("model", pattern=r"^(model|evaluation|truth)$"),
                   sha256: str = Query(pattern=r"^[0-9a-f]{64}$"), x_lab_lease: str = Header(default="")):
     from .engine import digest
+    from .execution_configuration import ExecutionBudget, ExecutionBudgetExceeded
+    from .finalization_service import _snapshot_target
     name = svc.validate_artifact_name(file.filename or "output.bin")
     run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
-    maximum = run.spec["definition"]["execution"]["max_output_bytes"]
+    budget = ExecutionBudget.from_execution(run.spec["definition"]["execution"])
     existing = db.scalar(select(LabArtifact).where(LabArtifact.attempt_id == id_, LabArtifact.name == name))
     if existing and (existing.sha256, existing.role, existing.visibility) != (sha256, role, visibility):
         raise svc.LabError("artifact name already published with different content or role", 409)
     prior = sum(db.scalars(select(LabArtifact.size).where(LabArtifact.attempt_id == attempt.id)))
     # A lost response may be redelivered after this artifact consumed the entire
     # budget. Bound its body by the retained size without charging it twice.
-    allowance = existing.size if existing else maximum - prior
+    try:
+        allowance = existing.size if existing else budget.remaining_output(prior)
+    except ExecutionBudgetExceeded:
+        raise svc.LabError("attempt output budget exceeded", 413) from None
     # Release target/run locks while transferring large objects. The publication
     # transaction below reacquires authority and rechecks both lease and budget.
+    target = _snapshot_target(target)
     db.commit()
     with tempfile.TemporaryDirectory(prefix="ts-lab-output-") as root:
         path = copy_upload(file, Path(root), allowance)
         if digest(path) != sha256:
             raise svc.LabError("uploaded output checksum mismatch", 409)
         verified = svc.persist_verified(path, target.project_id, file.content_type or "application/octet-stream")
-        svc.attempt_authority(db, target, id_, x_lab_lease)
+        run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
         existing = db.scalar(select(LabArtifact).where(LabArtifact.attempt_id == id_, LabArtifact.name == name))
         if existing:
             if (existing.sha256, existing.role, existing.visibility, existing.size) == (sha256, role, visibility, path.stat().st_size):
-                return svc.artifact_dict(existing)
+                result = svc.artifact_dict(existing)
+                db.commit()
+                return result
             raise svc.LabError("artifact name already published with different content or role", 409)
         prior = sum(db.scalars(select(LabArtifact.size).where(LabArtifact.attempt_id == attempt.id)))
-        if prior + path.stat().st_size > maximum:
-            raise svc.LabError("attempt output budget exceeded", 413)
-        return svc.artifact_dict(svc.store_artifact(db, target.project_id, path, name,
+        try:
+            ExecutionBudget.from_execution(run.spec["definition"]["execution"]).check_output(prior + path.stat().st_size)
+        except ExecutionBudgetExceeded:
+            raise svc.LabError("attempt output budget exceeded", 413) from None
+        result = svc.artifact_dict(svc.store_artifact(db, target.project_id, path, name,
                    file.content_type or "application/octet-stream", role, id_, verified=verified, visibility=visibility))
+        db.commit()
+        return result
 
 
-@runner_routes.get("/attempts/{id_}/inputs/{artifact_id}")
+@runner_routes.get(AttemptArtifactApiPaths.at_runner(runner_api_paths.attempt_route).input_proxy_route)
 def runner_input(id_: str, artifact_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
     run, _ = svc.attempt_authority(db, target, id_, x_lab_lease)
     if artifact_id not in {item["artifact_id"] for item in run.spec["definition"]["inputs"]}:
@@ -590,6 +766,9 @@ def runner_input(id_: str, artifact_id: str, db: DB, target: TargetDep, x_lab_le
     db.commit()
     return download_artifact(artifact)
 
+
+from .transfer_api import install as install_transfers
+install_transfers(project_routes, runner_routes)
 
 router.include_router(project_routes)
 router.include_router(runner_routes)

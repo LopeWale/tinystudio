@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -12,7 +13,8 @@ import typer
 from tinystudio.config import ClientConfig
 
 from .runner import run as run_runner, validate_url
-from .client_paths import path_identifier
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths, path_identifier, runtime_definition
+from .study_import_paths import StudyImportPaths
 
 app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evidence and execution targets.")
 
@@ -50,10 +52,154 @@ def show(value):
     typer.echo(json.dumps(value, indent=2))
 
 
+@app.command("runtime-methods")
+def runtime_methods(project: str = typer.Option(..., "--project", "-p")):
+    """Inspect runtime qualification methods and required authored settings."""
+    show(call("GET", project, RuntimeApiPaths(base="").methods))
+
+
+@app.command('hardware-methods')
+def hardware_discovery_methods(project: str = typer.Option(..., '--project', '-p')):
+    """Inspect discovery schemas without contacting instruments; use define/preflight/run explicitly."""
+    show(call('GET', project, HardwareApiPaths(base='').discovery_methods))
+
+
+def _local_spool(root):
+    from .evidence_spool import EvidenceSpool,SpoolPolicy
+    from .spool_configuration import SpoolConfiguration
+    try:
+        if root is None:
+            selected=SpoolConfiguration.resolve(None,'hardware.discover','native')
+            selected.require_ready()
+            policy=selected.policy
+        else:policy=SpoolPolicy(True,root)
+        if not policy.root.exists():raise ValueError('no evidence spool exists at the selected location')
+        return EvidenceSpool(policy)
+    except (ValueError,OSError) as error:raise typer.BadParameter(str(error)) from error
+
+
+@app.command('spool-list')
+def spool_list(root:Path|None=typer.Option(None,'--root')):
+    """Inspect host-local evidence manifests using the operator's filesystem account."""
+    show(_local_spool(root).list_attempts())
+
+
+@app.command('spool-inspect')
+def spool_inspect(key:str,root:Path|None=typer.Option(None,'--root')):
+    """Read a retained manifest; this does not refresh files or contact the origin."""
+    show(_local_spool(root).open_attempt(key).inspect())
+
+
+@app.command('spool-snapshot')
+def spool_snapshot(key:str,root:Path|None=typer.Option(None,'--root')):
+    """Hash current retained bytes and preserve partial tails without inferring completion."""
+    show(_local_spool(root).open_attempt(key).snapshot())
+
+
+@app.command('spool-export')
+def spool_export(key:str,output:Path,manifest_sha256:str=typer.Option(...,'--manifest-sha256'),
+                 root:Path|None=typer.Option(None,'--root')):
+    """Export the exact selected snapshot; user API credentials are unnecessary."""
+    show(_local_spool(root).open_attempt(key).export(output,expected_manifest_digest=manifest_sha256))
+
+
+@app.command('recovered-evidence')
+def recovered_evidence(run_id:str,project:str=typer.Option(...,'--project','-p')):
+    """Inspect independently attached recovery receipts and source-attempt provenance."""
+    show(call('GET',project,RecoveredEvidencePaths(base='').references(run_id)))
+
+
+@app.command('recover-evidence-preview')
+def recovered_evidence_preview(run_id:str,file:Path,project:str=typer.Option(...,'--project','-p')):
+    """Verify uploaded manifest/file references without publishing a recovery association."""
+    show(call('POST',project,RecoveredEvidencePaths(base='').preview(run_id),json.loads(file.read_text())))
+
+
+@app.command('recover-evidence')
+def attach_recovered_evidence(run_id:str,file:Path,project:str=typer.Option(...,'--project','-p')):
+    """Attach an exact preview/key request; retain this request when retrying an uncertain response."""
+    show(call('POST',project,RecoveredEvidencePaths(base='').attach(run_id),json.loads(file.read_text())))
+
+
+@app.command('recover-archive')
+def recover_archive(file:Path,project:str=typer.Option(...,'--project','-p'),
+                    idempotency_key:str=typer.Option(...,'--idempotency-key'),
+                    request_file:Path|None=typer.Option(None,'--request-file'),
+                    preview_only:bool=typer.Option(False,'--preview-only')):
+    """Import an operator-exported spool on the researcher client; preserve the request file for retries.
+
+    Device hosts can export without holding a user project credential. This
+    command uses the researcher's ordinary authenticated project transport.
+    """
+    from .evidence_recovery_client import RecoveryArchiveClient,RecoveryImportPaths
+    journal=request_file if request_file is not None else RecoveryImportPaths(file).request
+    try:
+        with client() as http:
+            result=RecoveryArchiveClient(http,path(project,'')).import_archive(file,
+                idempotency_key=idempotency_key,request_path=journal,preview_only=preview_only)
+    except (ValueError,OSError,httpx.HTTPError) as error:
+        raise typer.BadParameter(f'{error}; retain {journal} and retry with the same request and idempotency key') from error
+    show(result)
+
+
+@app.command("runtime-define")
+def runtime_define(file: Path, project: str = typer.Option(..., "--project", "-p")):
+    """Save JSON name/parameters/execution/optional inputs; does not start qualification.
+
+    Inspect runtime-methods for required choices. Use check, submit and inspect
+    to execute on a selected target and inspect retained evidence.
+    """
+    document = json.loads(file.read_text())
+    if not isinstance(document, dict):
+        raise typer.BadParameter("runtime definition file must contain an object")
+    try:
+        definition = runtime_definition(**document)
+    except TypeError as error:
+        raise typer.BadParameter(str(error)) from error
+    show(call("POST", project, RuntimeApiPaths(base="").definitions, {"definition": definition}))
+
+
 @app.command("statistics-methods")
 def statistics_methods(project: str = typer.Option(..., "--project", "-p")):
     """Inspect statistical methods, goals, assumptions and required planning inputs."""
     show(call("GET", project, "/statistics/methods"))
+
+
+@app.command("analysis-methods")
+def analysis_methods(project: str = typer.Option(..., "--project", "-p")):
+    """Inspect observed-data analysis methods and required researcher choices."""
+    show(call("GET", project, "/statistics/analysis-methods"))
+
+
+@app.command("analysis-define")
+def analysis_define(file: Path, project: str = typer.Option(..., "--project", "-p")):
+    """Save authored analysis JSON with retained snapshot/optional code inputs; does not execute.
+
+    Inspect analysis-methods for explicit settings. Use check, submit and inspect
+    for the existing execution workflow.
+    """
+    show(call("POST", project, "/statistics/analyses", json.loads(file.read_text())))
+
+
+@app.command("study-analysis-input")
+def study_analysis_input(study_id: str, project: str = typer.Option(..., "--project", "-p"),
+                         idempotency_key: str = typer.Option(...), revision: int | None = None,
+                         through_seq: int | None = None):
+    """Queue a retained study snapshot; inspect its durable operation for the input artifact."""
+    body = {"idempotency_key": idempotency_key}
+    if revision is not None:
+        body["revision"] = revision
+    if through_seq is not None:
+        body["through_seq"] = through_seq
+    show(call("POST", project, f"/studies/{identifier(study_id)}/analysis-inputs", body))
+
+
+@app.command("study-analysis-result")
+def study_analysis_result(study_id: str, run_id: str, project: str = typer.Option(..., "--project", "-p"),
+                          idempotency_key: str = typer.Option(...), notes: str = ""):
+    """Append a verified completed analysis link and notes at its historical study revision."""
+    show(call("POST", project, f"/studies/{identifier(study_id)}/analysis-results",
+              {"run_id": identifier(run_id), "idempotency_key": idempotency_key, "notes": notes}))
 
 
 @app.command('studies')
@@ -100,6 +246,30 @@ def study_record(study_id: str, file: Path, project: str = typer.Option(..., '--
 def study_records(study_id: str, project: str = typer.Option(..., '--project', '-p'), after: int = 0, limit: int = 100):
     """Read collection records with durable sequence pagination."""
     show(call('GET', project, f'/studies/{identifier(study_id)}/records?after={after}&limit={limit}'))
+
+
+@app.command('study-import-preview')
+def study_import_preview(study_id: str, file: Path, project: str = typer.Option(..., '--project', '-p')):
+    """Preview authored artifact rows and mappings without appending records or retaining artifacts.
+
+    FILE supplies artifact_id, revision and projection. Explicitly choose rows,
+    unit_id, condition, outcome data and number_encoding (json or decimal_strings).
+    Inspect the preview before separately choosing study-import.
+    """
+    paths = StudyImportPaths(identifier(study_id), base='')
+    show(call('POST', project, paths.preview, json.loads(file.read_text())))
+
+
+@app.command('study-import')
+def study_import(study_id: str, file: Path, project: str = typer.Option(..., '--project', '-p')):
+    """Append explicitly chosen artifact rows using an inspected preview and stable import key.
+
+    FILE supplies artifact_id, revision, projection, preview_digest and
+    idempotency_key. Preserve authored unit, condition, outcome and numeric
+    encoding choices; row counts do not establish independent samples.
+    """
+    paths = StudyImportPaths(identifier(study_id), base='')
+    show(call('POST', project, paths.apply, json.loads(file.read_text())))
 
 
 @app.command('study-export')
@@ -184,6 +354,51 @@ def upload(file: Path, project: str = typer.Option(..., "--project", "-p")):
         response = http.post(path(project, "/inputs"), files={"file": (file.name, stream)})
         response.raise_for_status()
         show(response.json())
+
+
+@app.command('transfer-upload')
+def transfer_upload(file: Path, project: str = typer.Option(..., '--project', '-p'),
+                    name: str | None = typer.Option(None, '--name'),
+                    role: str = typer.Option('source', '--role'),
+                    visibility: str = typer.Option('model', '--visibility'),
+                    media_type: str = typer.Option('application/octet-stream', '--media-type'),
+                    sha256: str | None = typer.Option(None, '--sha256'),
+                    idempotency_key: str | None = typer.Option(None, '--idempotency-key'),
+                    request_file: Path | None = typer.Option(None, '--request-file'),
+                    deadline_seconds: float | None = typer.Option(None, '--deadline-seconds', min=0)):
+    """Stream a private R2 input; repeat the same request to resume accepted parts.
+
+    Optional request-file state contains identifiers, never signed URLs or
+    credentials. Failed verification requires explicit operation recovery.
+    Local storage continues to use the existing upload command.
+    """
+    from .transfer_client import ArtifactTransferError, ResumableTransferClient
+    from .transfer_configuration import TransferApiPaths
+    try:
+        paths = TransferApiPaths.at_lab(path(project, ''))
+        with client() as http:
+            transfer = ResumableTransferClient(http, paths,
+                deadline=None if deadline_seconds is None else time.monotonic() + deadline_seconds)
+            show(transfer.upload(file, name=name, media_type=media_type, role=role, visibility=visibility,
+                expected_sha256=sha256, idempotency_key=idempotency_key, state_path=request_file))
+    except (ArtifactTransferError, ValueError) as cause:
+        raise typer.BadParameter(str(cause)) from None
+
+
+@app.command('transfer-status')
+def transfer_status(session_id: str, project: str = typer.Option(..., '--project', '-p')):
+    """Read a durable input transfer; this never retries its verifier."""
+    from .transfer_configuration import TransferApiPaths
+    paths = TransferApiPaths.at_lab('')
+    show(call('GET', project, paths.session(session_id)))
+
+
+@app.command('transfer-abort')
+def transfer_abort(session_id: str, project: str = typer.Option(..., '--project', '-p')):
+    """Explicitly abort an input transfer and cancel unpublished verification."""
+    from .transfer_configuration import TransferApiPaths
+    paths = TransferApiPaths.at_lab('')
+    show(call('POST', project, paths.abort(session_id), {}))
 
 
 @app.command("snapshot-input")
@@ -353,16 +568,39 @@ def runner(credential_file: Path = typer.Option(...), once: bool = False):
                profile_config=credential.get("profile_config"), access=credential.get("access"))
 
 
+@app.command("runner-resume")
+def runner_resume(root: Path = typer.Argument(..., exists=True, file_okay=False),
+                  credential_file: Path = typer.Option(...)):
+    """Resume retained publication without executing the experiment again.
+
+    Enter the existing attempt lease token at the private prompt. An expired
+    lease can inspect an accepted completion; it cannot publish a new outcome.
+    Missing credentials or retained sources require operator evidence recovery.
+    """
+    from .rq_adapter import load_credentials
+    from .runner import Runner
+    try:
+        credential = load_credentials(credential_file)
+        selected = Runner(credential["server"], credential["target_id"], credential["token"],
+                          profile_config=credential.get("profile_config"), access=credential.get("access"))
+        try:
+            lease = typer.prompt("Existing attempt lease token", hide_input=True)
+            result = selected.resume_publication(root, lease_token=lease)
+        finally:
+            selected.client.close()
+    except (ValueError, OSError, RuntimeError, httpx.HTTPError):
+        raise typer.BadParameter("Publication is unconfirmed; inspect the retained attempt and its scoped credentials.") from None
+    show(result)
+
+
 @app.command("dispatch")
 def dispatch(once: bool = False):
     """Deliver committed evidence operations and configured RQ runs; PostgreSQL owns state."""
-    import time
-    from .dispatch import tick
-    while True:
-        show(tick())
-        if once:
-            return
-        time.sleep(2)
+    from .dispatch import run_foreground, tick
+    if once:
+        show(tick())  # Delivery only; this command owns no background capacity.
+        return
+    run_foreground()
 
 
 def register(root: typer.Typer, *, include_data_bridges: bool = False):
@@ -374,3 +612,4 @@ def register(root: typer.Typer, *, include_data_bridges: bool = False):
                                       if include_data_bridges or command.name not in bridge_commands]
     root.add_typer(registered, name="lab")
     root.command("runner")(runner)
+    root.command("runner-resume")(runner_resume)

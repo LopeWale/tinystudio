@@ -39,13 +39,17 @@ class TrainingPlacement:
         table = {"fp32": torch.float32, "float32": torch.float32,
                  "bf16": torch.bfloat16, "bfloat16": torch.bfloat16}
         if dtype is not None and dtype not in table:
-            raise ValueError("requested training dtype is unavailable; supported: float32 and CUDA bfloat16")
+            raise ValueError("requested training dtype is unavailable; this trainer implements float32 and bfloat16")
         chosen = table[dtype] if dtype is not None else pick_dtype(device)
-        if chosen not in ({torch.float32, torch.bfloat16} if target.type == "cuda" else {torch.float32}):
-            raise ValueError(f"requested dtype is unavailable on {target.type}; use float32")
-        if chosen == torch.bfloat16 and not torch.cuda.is_bf16_supported():
-            raise ValueError("requested CUDA bfloat16 is unavailable on this device")
+        if chosen not in {torch.float32, torch.bfloat16}:
+            raise ValueError("requested training dtype is unavailable on this trainer")
         canonical = f"cuda:{target.index or 0}" if target.type == "cuda" else target.type
+        if chosen == torch.bfloat16 and target.type == "cuda":
+            # Capability belongs to the selected accelerator, which may differ
+            # from the caller's current/default CUDA device.
+            with torch.cuda.device(canonical):
+                if not torch.cuda.is_bf16_supported():
+                    raise ValueError("requested CUDA bfloat16 is unavailable on this device")
         return cls(canonical, chosen)
 
     @property

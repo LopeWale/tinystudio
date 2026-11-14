@@ -511,3 +511,134 @@ it("initially shows source mapping and keeps secondary preparation modules compa
   expect(screen.getByLabelText("Stage 1 factor")).toHaveValue("-");
   expect(screen.getByLabelText("Stage 1 factor")).toBeVisible();
 });
+
+it("edits structured selectors without coercing other mappings or advanced keys", () => {
+  const definition = makeDefinition("data.pipeline");
+  definition.parameters.schema = {
+    time: { pointer: "/acquisition/decoded_payload/time" },
+    value: {
+      pointer: "/acquisition/decoded_payload/channels/0",
+      missing: "null",
+    },
+    units: { literal: "V" },
+    current: { pointer: "/acquisition/decoded_payload/channels/1" },
+    metadata: { literal: { enabled: false, tags: ["authored"] } },
+  };
+  definition.parameters.vendor = { retained: true };
+  render(<Harness initial={definition} />);
+  expect(screen.getByLabelText("time field")).toHaveValue(
+    JSON.stringify((definition.parameters.schema as any).time, null, 2),
+  );
+  edit("time field", '{"pointer":"/acquisition/decoded_payload/event/tick"}');
+  edit("episode id field", "capture_id");
+  expect(current().parameters).toMatchObject({
+    schema: {
+      ...(definition.parameters.schema as object),
+      time: { pointer: "/acquisition/decoded_payload/event/tick" },
+      episode_id: "capture_id",
+    },
+    vendor: { retained: true },
+  });
+  edit("value field", '{"pointer":');
+  expect(screen.getByLabelText("value field")).toHaveValue('{"pointer":');
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  expect((current().parameters.schema as any).value).toEqual(
+    (definition.parameters.schema as any).value,
+  );
+  edit("value field", '{"literal":0.125}');
+  expect((current().parameters.schema as any).value).toEqual({
+    literal: 0.125,
+  });
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+});
+
+it("accepts positive sampling and resample intervals below the old floors", async () => {
+  const definition = makeDefinition("data.pipeline");
+  definition.pipeline = [{ kind: "resample", parameters: { dt: 1 } }];
+  render(<Harness initial={definition} />);
+  edit("Sampling interval (only for missing times)", ".5e-12");
+  await open("Ordered transformations");
+  edit("Stage 1 dt", ".5e-12");
+  expect(current().parameters.sampling_interval).toBe(0.5e-12);
+  expect(current().pipeline).toEqual([
+    { kind: "resample", parameters: { dt: 0.5e-12 } },
+  ]);
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+  edit("Stage 1 dt", "0");
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  expect(current().pipeline).toEqual([
+    { kind: "resample", parameters: { dt: 0.5e-12 } },
+  ]);
+  edit("Stage 1 dt", ".5e-12");
+  edit("Sampling interval (only for missing times)", "-1");
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  edit("Sampling interval (only for missing times)", ".5e-12");
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+});
+
+it("authors new nested outcomes explicitly and validates selectors without replacing valid mappings", async () => {
+  render(<Harness />);
+  await open("Structured source mappings");
+  const schema = {
+    time: "timestamp",
+    value: { pointer: "/acquisition/decoded_payload/voltage" },
+    current: { pointer: "/acquisition/decoded_payload/current" },
+    metadata: {
+      literal: { enabled: false, note: "0007", tags: ["authored", null] },
+    },
+  };
+  edit("Advanced field mapping JSON", JSON.stringify(schema));
+  expect(current().parameters.schema).toEqual(schema);
+  edit("value field", '{"pointer":"not-a-pointer"}');
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  expect(current().parameters.schema).toEqual(schema);
+  edit(
+    "value field",
+    '{"pointer":"/acquisition/decoded_payload/voltage","missing":"null"}',
+  );
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+  expect((current().parameters.schema as any).metadata).toEqual(
+    schema.metadata,
+  );
+  edit("Advanced field mapping JSON", '{"value":{"literal":9007199254740993}}');
+  expect(
+    screen.getByRole("button", { name: "Save definition" }),
+  ).toBeDisabled();
+  expect((current().parameters.schema as any).metadata).toEqual(
+    schema.metadata,
+  );
+});
+
+it("accepts positive dataset fractions below the old floor and more than eight codecs", async () => {
+  const definition = makeDefinition("data.pipeline");
+  definition.parameters.representations = Array.from(
+    { length: 8 },
+    (_, index) => ({
+      kind: "numeric_text",
+      name: `authored_${index}`,
+    }),
+  );
+  render(<Harness initial={definition} />);
+  await open("Dataset construction");
+  await select("Output purpose", "Construct train / validation / test dataset");
+  edit("Training fraction", ".5e-12");
+  edit("Validation fraction", ".5e-12");
+  expect(current().parameters.partition_policy).toMatchObject({
+    train: 0.5e-12,
+    validation: 0.5e-12,
+  });
+  expect(screen.getByRole("button", { name: "Save definition" })).toBeEnabled();
+  await open("Matched representations");
+  await userEvent.click(
+    screen.getByRole("button", { name: "Add matched representation" }),
+  );
+  expect(current().parameters.representations).toHaveLength(9);
+});

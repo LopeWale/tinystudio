@@ -1,4 +1,4 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useLayoutEffect, useRef, useState } from "react";
 import {
   act,
   cleanup,
@@ -529,6 +529,287 @@ describe("confirmation lifecycle", () => {
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
       view.unmount();
       vi.unstubAllGlobals();
+    },
+  );
+});
+
+describe("confirmation scope ownership", () => {
+  let previousProject: string | null;
+  beforeEach(() => {
+    previousProject = localStorage.getItem("tinystudio.project");
+    localStorage.setItem("tinystudio.project", "a");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (previousProject === null) localStorage.removeItem("tinystudio.project");
+    else localStorage.setItem("tinystudio.project", previousProject);
+  });
+  function gatedSession() {
+    const gate = () => {
+      let release!: (response: Response) => void;
+      return {
+        response: new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+        resolve(value: unknown) {
+          release(
+            new Response(JSON.stringify(value), {
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        },
+      };
+    };
+    const auth = gate(),
+      projects = gate();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) =>
+        path === "/api/auth/status"
+          ? auth.response
+          : path === "/api/projects"
+            ? projects.response
+            : new Response(JSON.stringify(path.includes("/tasks") ? [] : {}), {
+                headers: { "content-type": "application/json" },
+              }),
+      ),
+    );
+    return { auth, projects };
+  }
+  async function ready(gates: ReturnType<typeof gatedSession>) {
+    await act(async () =>
+      gates.auth.resolve({ authenticated: true, user: { id: "u" } }),
+    );
+    await act(async () =>
+      gates.projects.resolve([
+        { slug: "a", name: "A" },
+        { slug: "b", name: "B" },
+      ]),
+    );
+  }
+
+  it.each([true, false])(
+    "ignores a replaced prompt's retained renderer result %s",
+    async (staleValue) => {
+      const { MemoryRouter } = await import("react-router-dom");
+      const { StudioProvider, useStudio } =
+        await import("../src/app/StudioContext");
+      const gates = gatedSession(),
+        first = vi.fn(),
+        second = vi.fn();
+      let oldResolve!: (value: boolean) => void;
+      const callbacks = new Map<string, (value: boolean) => void>();
+      function Consumer() {
+        const studio = useStudio();
+        return (
+          <>
+            <button
+              onClick={() => void studio.confirm("First fixture?").then(first)}
+            >
+              First Ask
+            </button>
+            <button
+              onClick={() =>
+                void studio.confirm("Second fixture?").then(second)
+              }
+            >
+              Second Ask
+            </button>
+          </>
+        );
+      }
+      const view = render(
+        <MemoryRouter>
+          <StudioProvider
+            authView={({ phase }) => <p>{phase}</p>}
+            taskView={() => null}
+            confirmation={({ message, onResolve }) => {
+              callbacks.set(message, onResolve);
+              if (message === "First fixture?" && !oldResolve)
+                oldResolve = onResolve;
+              return <p role="alertdialog">{message}</p>;
+            }}
+          >
+            <Consumer />
+          </StudioProvider>
+        </MemoryRouter>,
+      );
+      await ready(gates);
+      fireEvent.click(screen.getByText("First Ask"));
+      expect(screen.getByRole("alertdialog")).toHaveTextContent(
+        "First fixture?",
+      );
+      fireEvent.click(screen.getByText("Second Ask"));
+      await act(async () => {});
+      expect(first).toHaveBeenCalledExactlyOnceWith(false);
+      expect(second).not.toHaveBeenCalled();
+      await act(async () => oldResolve(staleValue));
+      expect(second).not.toHaveBeenCalled();
+      expect(screen.getByRole("alertdialog")).toHaveTextContent(
+        "Second fixture?",
+      );
+      await act(async () => callbacks.get("Second fixture?")!(!staleValue));
+      expect(second).toHaveBeenCalledExactlyOnceWith(!staleValue);
+      view.unmount();
+    },
+  );
+
+  it("does not expose confirmation actions before held authentication and projects settle", async () => {
+    const { MemoryRouter } = await import("react-router-dom");
+    const { StudioProvider, useStudio } =
+      await import("../src/app/StudioContext");
+    const gates = gatedSession(),
+      resolve = vi.fn();
+    function Consumer() {
+      const studio = useStudio();
+      return (
+        <>
+          <output data-testid="held-scope">{studio.scopeKey}</output>
+          <button
+            onClick={() => void studio.confirm("Held fixture?").then(resolve)}
+          >
+            Held Ask
+          </button>
+          <button onClick={() => studio.selectProject("b")}>Held change</button>
+        </>
+      );
+    }
+    const view = render(
+      <MemoryRouter>
+        <StudioProvider
+          authView={({ phase }) => <p>{phase}</p>}
+          confirmation={({ message }) => <p role="alertdialog">{message}</p>}
+          taskView={() => null}
+        >
+          <Consumer />
+        </StudioProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("Held Ask")).not.toBeInTheDocument();
+    await act(async () =>
+      gates.auth.resolve({ authenticated: true, user: { id: "u" } }),
+    );
+    expect(screen.queryByText("Held Ask")).not.toBeInTheDocument();
+    await act(async () =>
+      gates.projects.resolve([
+        { slug: "a", name: "A" },
+        { slug: "b", name: "B" },
+      ]),
+    );
+    expect(screen.getByTestId("held-scope")).toHaveTextContent("u:a");
+    fireEvent.click(screen.getByText("Held Ask"));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Held fixture?");
+    expect(resolve).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Held change"));
+    await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(false));
+    view.unmount();
+  });
+
+  it("keeps a ready-scope layout prompt when the previous scope's passive cleanup runs", async () => {
+    const { MemoryRouter } = await import("react-router-dom");
+    const { StudioProvider, useStudio } =
+      await import("../src/app/StudioContext");
+    const gates = gatedSession(),
+      resolve = vi.fn();
+    function Consumer() {
+      const studio = useStudio(),
+        asked = useRef(false);
+      useLayoutEffect(() => {
+        if (!asked.current) {
+          asked.current = true;
+          void studio.confirm("Ready scope fixture?").then(resolve);
+        }
+      }, [studio.scopeKey]);
+      return <output data-testid="layout-scope">{studio.scopeKey}</output>;
+    }
+    const view = render(
+      <MemoryRouter>
+        <StudioProvider
+          authView={({ phase }) => <p>{phase}</p>}
+          confirmation={({ message }) => <p role="alertdialog">{message}</p>}
+          taskView={() => null}
+        >
+          <Consumer />
+        </StudioProvider>
+      </MemoryRouter>,
+    );
+    await ready(gates);
+    expect(screen.getByTestId("layout-scope")).toHaveTextContent("u:a");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "Ready scope fixture?",
+    );
+    view.unmount();
+    await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(false));
+  });
+
+  it.each(["project roundtrip", "unmount"])(
+    "refuses a stale async confirmation callback after %s",
+    async (reason) => {
+      const { MemoryRouter } = await import("react-router-dom");
+      const { StudioProvider, useStudio } =
+        await import("../src/app/StudioContext");
+      const gates = gatedSession();
+      let captured!: StudioRuntime["confirm"];
+      function Consumer() {
+        const studio = useStudio();
+        return (
+          <>
+            <button
+              onClick={() => {
+                captured = studio.confirm;
+              }}
+            >
+              Capture callback
+            </button>
+            <button
+              onClick={() => {
+                studio.selectProject("b");
+                studio.selectProject("a");
+              }}
+            >
+              Round trip
+            </button>
+            <button onClick={() => void studio.confirm("Current fixture?")}>
+              Current Ask
+            </button>
+          </>
+        );
+      }
+      const view = render(
+        <MemoryRouter>
+          <StudioProvider
+            authView={({ phase }) => <p>{phase}</p>}
+            confirmation={({ message }) => <p role="alertdialog">{message}</p>}
+            taskView={() => null}
+          >
+            <Consumer />
+          </StudioProvider>
+        </MemoryRouter>,
+      );
+      await ready(gates);
+      fireEvent.click(screen.getByText("Capture callback"));
+      if (reason === "unmount") view.unmount();
+      else {
+        fireEvent.click(screen.getByText("Round trip"));
+        fireEvent.click(screen.getByText("Current Ask"));
+        expect(screen.getByRole("alertdialog")).toHaveTextContent(
+          "Current fixture?",
+        );
+      }
+      let settled: boolean | undefined;
+      await act(async () => {
+        void captured("Stale fixture?").then((value) => {
+          settled = value;
+        });
+      });
+      expect(settled).toBe(false);
+      expect(screen.queryByText("Stale fixture?")).not.toBeInTheDocument();
+      if (reason !== "unmount")
+        expect(screen.getByRole("alertdialog")).toHaveTextContent(
+          "Current fixture?",
+        );
+      view.unmount();
     },
   );
 });

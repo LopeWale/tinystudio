@@ -106,11 +106,72 @@ def test_kubernetes_security_context_resources_and_default_deny_policy(request_,
     assert job['spec']['backoffLimit']==0 and job['spec']['activeDeadlineSeconds']==300
     assert policy['spec']['egress']==[] and policy['spec']['ingress']==[]
     assert all('hostPath' not in volume for volume in pod['volumes'])
+    assert [mount['subPath'] for mount in runtime['volumeMounts']]==['attempt','attempt/output']
     assert plan.required_attestations==('CNI NetworkPolicy enforcement',)
     with pytest.raises(RuntimeError,match='unqualified backend prerequisites'):
         ProfileExecution(plan,command_runner=lambda *_:pytest.fail('must not call cluster')).start()
     with pytest.raises(ValueError,match='PID limits'):
         build_profile(replace(request,require_hard_resources=True),RunnerGrants(network_policy_enforced=True))
+
+
+@pytest.mark.parametrize('relative_root', ['direct-attempt','selected/spool/session/execution'])
+def test_kubernetes_shared_volume_preserves_nested_attempt_and_output_identity(request_,tmp_path,relative_root):
+    shared=tmp_path/'shared';shared.mkdir()
+    root=shared/relative_root
+    source=root/'runtime/tinystudio';source.mkdir(parents=True)
+    inputs=root/'inputs';inputs.mkdir()
+    output=root/'artifacts/rendered';output.mkdir(parents=True)
+    request=replace(kube(request_,tmp_path),shared_work_root=shared,attempt_root=root,
+                    source_root=source,inputs_root=inputs,output_root=output)
+    plan=build_profile(request)
+    job=json.loads(plan.manifests_json)['items'][1]
+    mounts=job['spec']['template']['spec']['containers'][0]['volumeMounts']
+    assert [mount['subPath'] for mount in mounts]==[relative_root,relative_root+'/artifacts/rendered']
+    assert [mount['mountPath'] for mount in mounts]==[str(root),str(output)]
+    assert [mount['readOnly'] for mount in mounts]==[True,False]
+
+
+def test_kubernetes_shared_volume_rejects_outside_or_volume_root_attempts(request_,tmp_path):
+    outside=tmp_path/'different-volume';outside.mkdir()
+    request=kube(request_,tmp_path)
+    for shared in (outside,request.attempt_root):
+        with pytest.raises(ValueError,match='descendants.*shared storage'):
+            build_profile(replace(request,shared_work_root=shared))
+
+
+def test_kubernetes_shared_volume_normalizes_operator_selected_ancestor_aliases(request_,tmp_path):
+    alias=tmp_path/'host-alias';alias.symlink_to(tmp_path,target_is_directory=True)
+    root=tmp_path/'volume/session';root.mkdir(parents=True)
+    for relative in ('runtime/tinystudio','inputs','output'):
+        (root/relative).mkdir(parents=True)
+    selected=alias/'volume'
+    request=replace(kube(request_,tmp_path),shared_work_root=selected,attempt_root=selected/'session',
+                    source_root=selected/'session/runtime/tinystudio',
+                    inputs_root=selected/'session/inputs',output_root=selected/'session/output')
+    job=json.loads(build_profile(request).manifests_json)['items'][1]
+    mounts=job['spec']['template']['spec']['containers'][0]['volumeMounts']
+    assert [mount['subPath'] for mount in mounts]==['session','session/output']
+    assert [mount['mountPath'] for mount in mounts]==[str(root),str(root/'output')]
+
+
+def test_kubernetes_shared_volume_rejects_traversal_and_internal_links(request_,tmp_path):
+    request=replace(kube(request_,tmp_path),shared_work_root=tmp_path)
+    with pytest.raises(ValueError,match='without traversal'):
+        build_profile(replace(request,attempt_root=request.attempt_root/'..'/'attempt'))
+    with pytest.raises(ValueError,match='without traversal'):
+        build_profile(replace(request,shared_work_root=tmp_path/'other'/'..'))
+    alias=tmp_path/'alias';alias.symlink_to(request.attempt_root,target_is_directory=True)
+    with pytest.raises(ValueError,match='symlink'):
+        build_profile(replace(request,shared_work_root=alias))
+    with pytest.raises(ValueError,match='symlink'):
+        build_profile(replace(request,source_root=alias/'runtime/tinystudio',
+                              inputs_root=alias/'inputs',output_root=alias/'output',
+                              attempt_root=alias/'.'))
+    # An intermediate link is also rejected even when it resolves within the PVC.
+    output_alias=request.attempt_root/'linked';output_alias.symlink_to(request.output_root,target_is_directory=True)
+    (request.output_root/'child').mkdir()
+    with pytest.raises(ValueError,match='symlink'):
+        build_profile(replace(request,output_root=output_alias/'child'))
 
 
 def test_kubernetes_explicit_network_and_secrets_do_not_grant_service_tokens(request_,tmp_path):

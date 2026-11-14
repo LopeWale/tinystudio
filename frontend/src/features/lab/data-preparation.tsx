@@ -5,7 +5,7 @@ import { Button } from "../../components/studio/primitives";
 import { WorkspaceDisclosure } from "../../components/studio/workspace";
 import { LabChoice } from "./inputs";
 import type { ExperimentDefinition } from "./definition";
-import type { JsonCodec } from "../../api/scientific-json";
+import { scientificJson, type JsonCodec } from "../../api/scientific-json";
 
 type Options = Record<string, unknown>;
 const stageDefaults: Options = {
@@ -43,6 +43,33 @@ const codecKinds = [
 ];
 type Validity = (key: string, valid: boolean) => void;
 
+function validateSelector(value: unknown) {
+  const selected = object(value);
+  const keys = Object.keys(selected);
+  if (keys.length === 1 && keys[0] === "literal") return;
+  if (
+    keys.length >= 1 &&
+    keys.length <= 2 &&
+    keys.every((key) => key === "pointer" || key === "missing") &&
+    typeof selected.pointer === "string" &&
+    (selected.pointer === "" || selected.pointer.startsWith("/")) &&
+    !/~(?![01])/.test(selected.pointer) &&
+    (selected.missing === undefined ||
+      selected.missing === "error" ||
+      selected.missing === "null")
+  )
+    return;
+  throw new Error(
+    "Use a literal selector or an RFC 6901 JSON Pointer selector with an optional error or null missing policy.",
+  );
+}
+
+function validateSchema(value: unknown) {
+  for (const selected of Object.values(object(value))) {
+    if (typeof selected !== "string") validateSelector(selected);
+  }
+}
+
 /** Preserve incomplete edits locally while explicitly blocking definition actions. */
 export function DraftField({
   label,
@@ -53,8 +80,10 @@ export function DraftField({
   kind = "number",
   optional = false,
   minimum,
+  positive = false,
   integer = false,
   jsonCodec,
+  validate,
 }: {
   label: string;
   value: unknown;
@@ -64,8 +93,10 @@ export function DraftField({
   kind?: "number" | "object" | "array" | "list";
   optional?: boolean;
   minimum?: number;
+  positive?: boolean;
   integer?: boolean;
   jsonCodec?: JsonCodec;
+  validate?: (value: unknown) => void;
 }) {
   const formatJson = (value: unknown) =>
     jsonCodec ? jsonCodec.stringify(value, 2) : JSON.stringify(value, null, 2);
@@ -98,12 +129,17 @@ export function DraftField({
           if (
             !Number.isFinite(parsed) ||
             (minimum !== undefined && Number(parsed) < minimum) ||
+            (positive && Number(parsed) <= 0) ||
             (integer && !Number.isInteger(parsed))
           )
             throw new Error(
               "Enter a finite" +
                 (integer ? " integer" : " number") +
-                (minimum !== undefined ? ` ≥ ${minimum}` : "") +
+                (positive
+                  ? " > 0"
+                  : minimum !== undefined
+                    ? ` ≥ ${minimum}`
+                    : "") +
                 ".",
             );
         }
@@ -121,6 +157,7 @@ export function DraftField({
         )
           throw new Error(`Enter a JSON ${kind}.`);
       }
+      validate?.(parsed);
       setError("");
       report(fieldKey, true);
       committed.current =
@@ -251,7 +288,12 @@ export function DataPreparation({
     label: string,
     value: unknown,
     change: (value: unknown) => void,
-    extras: { optional?: boolean; minimum?: number; integer?: boolean } = {},
+    extras: {
+      optional?: boolean;
+      minimum?: number;
+      positive?: boolean;
+      integer?: boolean;
+    } = {},
   ) => (
     <DraftField
       key={key}
@@ -316,14 +358,28 @@ export function DataPreparation({
             "units",
             "observed",
             "quality",
-          ].map((key) => (
-            <Input
-              key={key}
-              label={`${key.replaceAll("_", " ")} field`}
-              value={String(schema[key] ?? key)}
-              onChange={(value) => nested("schema", key, value)}
-            />
-          ))}
+          ].map((key) =>
+            schema[key] && typeof schema[key] === "object" ? (
+              <DraftField
+                key={key}
+                fieldKey={`schema-${key}`}
+                label={`${key.replaceAll("_", " ")} field`}
+                kind="object"
+                value={schema[key]}
+                onChange={(value) => nested("schema", key, value)}
+                report={report}
+                jsonCodec={scientificJson}
+                validate={validateSelector}
+              />
+            ) : (
+              <Input
+                key={key}
+                label={`${key.replaceAll("_", " ")} field`}
+                value={String(schema[key] ?? key)}
+                onChange={(value) => nested("schema", key, value)}
+              />
+            ),
+          )}
           <LabChoice
             label="Source format"
             value={String(p.format ?? "auto")}
@@ -338,13 +394,36 @@ export function DataPreparation({
             "Sampling interval (only for missing times)",
             p.sampling_interval,
             (value) => patch("sampling_interval", value),
-            { optional: true, minimum: 1e-12 },
+            { optional: true, positive: true },
           )}
         </div>
         <p>
           Missing availability defaults to event time and is marked assumed.
           Missing event time requires a sampling interval.
         </p>
+        <WorkspaceDisclosure title="Structured source mappings">
+          <p>
+            Flat strings name literal source keys. Nested fields require an
+            explicit JSON Pointer selector, such as{" "}
+            <code>
+              {'{"pointer":"/acquisition/decoded_payload/channels/0"}'}
+            </code>
+            . Literal selectors retain authored values. Missing pointers error
+            unless the selector explicitly sets{" "}
+            <code>{'"missing":"null"'}</code>. Add other named outcomes in the
+            mapping JSON.
+          </p>
+          <DraftField
+            fieldKey="schema"
+            label="Advanced field mapping JSON"
+            value={p.schema}
+            kind="object"
+            onChange={(value) => patch("schema", value)}
+            report={report}
+            jsonCodec={scientificJson}
+            validate={validateSchema}
+          />
+        </WorkspaceDisclosure>
       </WorkspaceDisclosure>
       <WorkspaceDisclosure
         title="Clock coordinates"
@@ -366,9 +445,6 @@ export function DataPreparation({
           Source column mappings and affine alignment remain explicit advanced
           settings.
         </p>
-        {json("schema", "Advanced field mapping JSON", p.schema, (value) =>
-          patch("schema", value),
-        )}
         {json(
           "clocks",
           "Affine clock alignments JSON",
@@ -542,7 +618,7 @@ export function DataPreparation({
                     key === "window"
                       ? { minimum: 1, integer: true }
                       : key === "dt"
-                        ? { minimum: 1e-9 }
+                        ? { positive: true }
                         : {},
                   ),
                 )}
@@ -699,14 +775,14 @@ export function DataPreparation({
                 "Training fraction",
                 policy.train ?? 0.6,
                 (value) => nested("partition_policy", "train", value),
-                { minimum: 1e-12 },
+                { positive: true },
               )}
               {numeric(
                 "validation-fraction",
                 "Validation fraction",
                 policy.validation ?? 0.2,
                 (value) => nested("partition_policy", "validation", value),
-                { minimum: 1e-12 },
+                { positive: true },
               )}
               <p>
                 Test fraction:{" "}
@@ -811,7 +887,7 @@ export function DataPreparation({
           );
         })}
         <Button
-          disabled={representations.length >= 8 || !!invalid.size}
+          disabled={!!invalid.size}
           onClick={() =>
             patch("representations", [
               ...representations,

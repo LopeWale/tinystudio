@@ -1,4 +1,5 @@
-# Qualified target overlay: Linux aarch64, Python 3.12, CPU float32.
+# Optional reproducible baseline overlay: Linux aarch64, Python 3.12, CPU float32.
+# Target eligibility does not depend on matching this file; use runtime.qualify.
 # Framework stack is pinned; the qualification fixture also records its image
 # digest, which fixes inherited application and transitive dependencies.
 # Install into the execution environment (pip --no-user), not a user site:

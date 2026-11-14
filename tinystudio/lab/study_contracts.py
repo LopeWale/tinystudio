@@ -14,21 +14,22 @@ MAX_DOCUMENT_BYTES = 2 * 1024**2
 MAX_EXACT_INTEGER = 2**53 - 1
 
 
-def _numbers(value):
+def finite_numbers(value):
+    """Validate portable scientific numbers without imposing a document size."""
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError('study data requires finite numbers; use null and an explicit missingness reason')
     if type(value) is int and abs(value) > MAX_EXACT_INTEGER:
         raise ValueError('integer exceeds exact JSON representation; use a decimal string to preserve its value')
     if isinstance(value, dict):
         for child in value.values():
-            _numbers(child)
+            finite_numbers(child)
     elif isinstance(value, (list, tuple)):
         for child in value:
-            _numbers(child)
+            finite_numbers(child)
 
 
 def finite_document(value):
-    _numbers(value)
+    finite_numbers(value)
     if len(canonical(value)) > MAX_DOCUMENT_BYTES:
         raise ValueError('study document or record exceeds2MiB; retain bulk data as an artifact')
 
@@ -88,6 +89,6 @@ class StudyRecordRequest(BaseModel):
             raise ValueError('supersedes must identify an earlier record')
         # JSON-mode serialization can turn NaN/Infinity in Any fields into null.
         # Reject them while their original values are still available.
-        _numbers(self.data)
+        finite_numbers(self.data)
         finite_document(self.model_dump(mode='json'))
         return self

@@ -8,6 +8,7 @@ Run with --noconftest.
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import time
 import uuid
@@ -43,9 +44,11 @@ def integrated(database, tmp_path, monkeypatch):
             for key in ("TINYSTUDIO_CF_ACCESS_REQUIRED", "CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD"):
                 monkeypatch.setenv(key, "0" if key.endswith("REQUIRED") else "")
             reload_config(); db_module.reset(); worker.reset(); forget_secret()
-            monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "objects"))
+            monkeypatch.setattr(svc, "storage", lambda: ArtifactStorage(root=tmp_path / "data" / "artifacts"))
             monkeypatch.setattr(app_module, "prepare_database", lambda *args: None)
             app = app_module.create_app(run_migrations=False, ui=False, laboratory_dispatch=False)
+            from tinystudio.lab.dispatch import Dispatcher
+            from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
             def sessions():
                 with database() as db:
                     try:
@@ -62,8 +65,13 @@ def integrated(database, tmp_path, monkeypatch):
                 db.add_all([user, project, other]); db.flush()
                 token = issue_service_token(ensure_instance(db).secret_key, user.id)
                 prefix, other_prefix = f"/api/p/{project.slug}/lab", f"/api/p/{other.slug}/lab"
-            with TestClient(app, headers={"Authorization": "Bearer "+token}) as client:
-                yield client, prefix, other_prefix, app, connection, tmp_path, database
+            runtime=Dispatcher(configuration=OperationRuntimeConfiguration(delivery_enabled=False)).start()
+            register_operation_runtime(app,runtime)
+            try:
+                with TestClient(app, headers={"Authorization": "Bearer "+token}) as client:
+                    yield client, prefix, other_prefix, app, connection, tmp_path, database
+            finally:
+                asyncio.run(runtime.close())
         finally:
             db_module.reset(); worker.reset(); forget_secret()
             monkeypatch.undo()

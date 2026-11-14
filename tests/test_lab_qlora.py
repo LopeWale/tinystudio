@@ -1,7 +1,7 @@
-"""Linux ARM64 CPU NF4 qualification using the real HF/PEFT/TRL path.
+"""Selected CPU NF4 qualification using the real HF/PEFT/TRL path.
 
-Run ``python -m unittest tests.test_lab_qlora -v`` in the pinned optional pack.
-An unavailable pack is explicitly skipped, never recorded as qualification.
+Run ``python -m unittest tests.test_lab_qlora -v`` in a candidate optional runtime.
+Unavailable prerequisites are skipped; eligibility alone never records qualification.
 """
 import gc
 from contextlib import contextmanager
@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tinystudio.training.quantization import cpu_pack_compatible
+from tinystudio.training.runtime_compatibility import RuntimeCompatibility
 
 
 class LegacyQuantizedBoundaries(unittest.TestCase):
@@ -84,7 +84,7 @@ class LegacyQuantizedBoundaries(unittest.TestCase):
                     loader.assert_not_called()
 
 
-@unittest.skipUnless(cpu_pack_compatible(), "requires the pinned Linux ARM64 CPU NF4 pack")
+@unittest.skipUnless(RuntimeCompatibility.inspect("cpu", "float32").eligible, "requires discoverable CPU QLoRA prerequisites; actual qualification runs in the tests")
 class QLoRAQualification(unittest.TestCase):
     def setUp(self):
         import torch
@@ -102,7 +102,7 @@ class QLoRAQualification(unittest.TestCase):
         tokenizer.save_pretrained(self.source)
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(31)
-            LlamaForCausalLM(LlamaConfig(vocab_size=len(tokens), hidden_size=16, intermediate_size=32,
+            LlamaForCausalLM(LlamaConfig(vocab_size=len(tokens), hidden_size=64, intermediate_size=128,
                 num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2, max_position_embeddings=64,
                 attention_dropout=0, bos_token_id=1, eos_token_id=1, pad_token_id=0)).save_pretrained(self.source)
         self.archive = self.root / "source.tar"
@@ -124,7 +124,8 @@ class QLoRAQualification(unittest.TestCase):
         return {"definition": {"seed": 42, "learning": {"initialization": "pretrained", "objective": objective,
             "update_strategy": "qlora", "device": "cpu", "dtype": "float32"},
             "parameters": {"steps": 3, "context": 32, "learning_rate": 0.03, "batch_size": 1,
-                "lora_r": 2, "lora_alpha": 4, "lora_dropout": 0, "lora_targets": ["q_proj", "v_proj"]},
+                "lora_r": 2, "lora_alpha": 4, "lora_dropout": 0, "lora_targets": ["q_proj", "v_proj"],
+                "nf4_execution": {"cpu_inference": "portable"}},
             "inputs": [{"artifact_id": "model", "role": "pretrained_model", "sha256": self.model_hash},
                        {"artifact_id": "data", "role": "snapshot", "sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest()}]},
             "input_paths": {"model": str(self.archive), "data": str(snapshot)}}

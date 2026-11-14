@@ -56,7 +56,7 @@ def update_project(db: Session, project: Project, name: str | None = None, goal:
 def delete_project(db: Session, project: Project) -> None:
     """Delete idle project rows before removing their external artifacts."""
     from tinystudio import vectors
-    from tinystudio.lab.models import LabAttempt, LabOperation, LabRun
+    from tinystudio.lab.models import LabAttempt, LabOperation, LabRun, LabTransfer
     from tinystudio.storage import project_key, storage
 
     # The project lock fences new project-scoped inserts through their FK;
@@ -72,12 +72,14 @@ def delete_project(db: Session, project: Project) -> None:
         ("laboratory run", LabRun, LabRun.project_id == project_id, terminal_lab),
         ("laboratory attempt", LabAttempt, LabAttempt.run_id.in_(run_scope), terminal_lab),
         ("laboratory operation", LabOperation, LabOperation.project_id == project_id, terminal_lab),
+        ("laboratory transfer", LabTransfer, LabTransfer.project_id == project_id, {"verified", "aborted"}),
     )
     identities: dict[type[Any], list[str]] = {}
     for label, model, scope, terminal in work:
         rows = list(db.execute(select(model.id, model.state).where(scope).with_for_update()))
         if any(row.state not in terminal for row in rows):
-            raise ProjectError(f"project has active {label} work; stop or finish it before deleting the project")
+            action = "settle or abort it" if model is LabTransfer else "stop or finish it"
+            raise ProjectError(f"project has active {label} work; {action} before deleting the project")
         identities[model] = [row.id for row in rows]
 
     collections = list(db.scalars(select(Repository.collection).where(Repository.project_id == project_id)))
@@ -86,6 +88,10 @@ def delete_project(db: Session, project: Project) -> None:
     prefixes.extend(f"tasks/{task_id}" for task_id in identities[Task])
     artifact_dir = config().project_dir(project_id)
 
+    # Settled transfers restrict artifact deletion, including attempt cascades.
+    # Aborted transfers may leave unreferenced immutable objects; only the
+    # existing project-scoped lab prefix is removed after relational checks.
+    db.execute(delete(LabTransfer).where(LabTransfer.id.in_(identities[LabTransfer])))
     # Attempts restrict target deletion, and runs restrict definitions/targets.
     # A single run DELETE also handles same-project parent_run_id references at
     # PostgreSQL's statement boundary; cross-project references must still fail.

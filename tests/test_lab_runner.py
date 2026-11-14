@@ -67,7 +67,7 @@ def attempt(source, *, payload=None, runtime=None):
             "execution":{"profile":"trusted_native","backend":"native","max_seconds":10,"max_output_bytes":1024**2}},
             "implementation":manifest(source),"runtime":runtime or {"fixture-runtime":"1"},
             "input_manifest":[] if payload is None else [{"id":"input-one","name":"source.jsonl","sha256":sha(payload),"size":len(payload)}]}
-    return {"attempt_id":"attempt-one","lease_token":"never-child-secret","spec":spec,"spec_digest":checksum(spec)}
+    return {"run_id":"run-one","attempt_id":"attempt-one","lease_token":"never-child-secret","spec":spec,"spec_digest":checksum(spec)}
 
 
 class SlowStream:
@@ -105,6 +105,9 @@ class Transport:
     def stream(self, *args, **kwargs):
         return SlowStream(self)
 
+    def get(self, path, **kwargs):
+        return httpx.Response(404,request=httpx.Request('GET','http://localhost'+path))
+
     def post(self, path, *, json=None, files=None, params=None, headers=None):
         if path.endswith('/heartbeat'):
             self.beats.append((self.downloading.is_set(),self.uploading.is_set()))
@@ -113,7 +116,7 @@ class Transport:
             body={'cancel_requested':(self.cancel_download and self.downloading.is_set()) or (self.cancel_upload and self.uploading.is_set())}
         elif path.endswith('/finish'):
             self.finish=copy.deepcopy(json)
-            body={}
+            body={'accepted':True,'state':json['state']}
         elif path.endswith('/artifacts'):
             self.uploading.set()
             self.upload_params.append(params)
@@ -125,7 +128,8 @@ class Transport:
                     if not block:break
                     data+=block
                 self.uploads.append(data)
-                body={'id':'published-'+str(len(self.uploads)), 'name':files['file'][0], 'sha256':sha(data),'size':len(data),'visibility':params.get('visibility','model')}
+                body={'id':'published-'+str(len(self.uploads)), 'name':files['file'][0], 'sha256':sha(data),'size':len(data),'visibility':params.get('visibility','model'),
+                      'role':params.get('role','evidence'),'media_type':files['file'][2]}
             finally:
                 self.uploading.clear()
         else:
@@ -354,12 +358,13 @@ def test_http_testclient_transport_supports_heartbeat_and_real_multipart(source,
         beats.append(body)
         return {'cancel_requested':False}
     @app.post(prefix+'/artifacts')
-    async def artifact(file:UploadFile,visibility:str="model"):
+    async def artifact(file:UploadFile,visibility:str="model",role:str="evidence"):
         data=await file.read();uploaded.append(data)
-        return {'id':'http-artifact','name':file.filename,'sha256':sha(data),'size':len(data),'visibility':visibility}
+        return {'id':'http-artifact','name':file.filename,'sha256':sha(data),'size':len(data),'visibility':visibility,
+                'role':role,'media_type':file.content_type}
     @app.post(prefix+'/finish')
     def finish(body:dict):
-        finished.append(body);return {}
+        finished.append(body);return {'accepted':True,'state':body['state']}
     root=tmp_path/'attempt';root.mkdir()
     with TestClient(app) as client:
         runner(source,client,monkeypatch).execute_attempt(attempt(source),root)
@@ -489,7 +494,8 @@ def claim_loop_fixture(monkeypatch, actions):
             return httpx.Response(item, text='credential-and-server-payload-must-not-be-logged')
         return httpx.Response(200, json={'attempt': item})
     client = httpx.Client(base_url='https://private-host-must-not-be-logged.invalid', transport=httpx.MockTransport(handle))
-    instance = module.Runner('https://unused.invalid', 'target', 'target-secret-must-not-be-logged', client=client)
+    instance = module.Runner('https://unused.invalid', 'target', 'target-secret-must-not-be-logged', client=client,
+        profile_config={'schema_version':1,'backends':{},'evidence_spool':{'enabled':False}})
     def execute(attempt, root):
         assert root.is_dir()
         executed.append(attempt['attempt_id'])
@@ -502,7 +508,7 @@ def claim_loop_fixture(monkeypatch, actions):
 
 def claimed_attempt():
     return {'attempt_id': 'attempt-once', 'lease_token': 'lease-secret',
-            'spec': {'definition': {'execution': {'backend': 'native'}}}}
+            'spec': {'definition': {'engine':'synthetic.signal','execution': {'backend': 'native'}}}}
 
 
 def test_claim_loop_recovers_502_then_executes_received_authority_once(monkeypatch, caplog):

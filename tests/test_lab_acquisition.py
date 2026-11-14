@@ -14,6 +14,7 @@ import pytest
 
 from tinystudio.lab.acquisition import SerialReader,ModbusReader,MQTTReader,execute_acquisition
 from tinystudio.lab.engine import ExecutionCancelled,digest
+from tinystudio.lab.execution_outcome import RetainedExecutionError
 
 
 class Clock:
@@ -112,17 +113,20 @@ def test_transport_error_always_closes_owned_reader(tmp_path):
     clock=Clock();reader=Reader(clock,[])
     def fail(timeout):raise TimeoutError('controlled protocol failure')
     reader.read=fail
-    with pytest.raises(TimeoutError,match='controlled protocol'):
+    with pytest.raises(RetainedExecutionError,match='controlled protocol') as caught:
         execute_acquisition(spec(),tmp_path,lambda _:None,lambda:False,transport_factory=lambda *a,**k:reader,clock=clock)
     assert reader.closed
+    assert isinstance(caught.value.__cause__,TimeoutError)
+    assert caught.value.evidence_result['qualification']['complete'] is False
 
 
 def test_real_pyserial_method_path_through_fake_library_has_no_control_writes():
     calls=[]
     class Serial:
-        def __init__(self,**kwargs):calls.append(('construct',kwargs));self.port=None
+        def __init__(self,**kwargs):calls.append(('construct',kwargs));self.port=None;self.payload=bytearray(b'-0.125\r\n')
         def open(self):calls.append(('open',self.port))
-        def read_until(self,**kwargs):calls.append(('read_until',kwargs));return b'-0.125\r\n'
+        def read(self,size):
+            calls.append(('read',size));value=bytes(self.payload[:size]);del self.payload[:size];return value
         def close(self):calls.append(('close',))
         def write(self,*args):pytest.fail('serial writes forbidden')
         def setDTR(self,*args):pytest.fail('control line writes forbidden')
@@ -132,7 +136,7 @@ def test_real_pyserial_method_path_through_fake_library_has_no_control_writes():
     assert reader.read(.1)['wire']==b'-0.125\r\n';reader.close()
     assert calls[0][1]['port'] is None
     assert calls[1]==('open','/dev/fixture-not-a-real-device')
-    assert calls[2]==('read_until',{'expected':b'\n','size':128})
+    assert calls[2]==('read',1)
     assert calls[-1]==('close',)
 
 
@@ -155,8 +159,11 @@ def test_real_modbus_read_invocation_keeps_request_response_and_register_decode(
     row=json.loads((tmp_path/'processed.jsonl').read_text());raw=json.loads((tmp_path/'raw.jsonl').read_text())
     assert row['value']==-.125
     assert raw['raw_values']==[0xbe00,0]
-    assert base64.b64decode(raw['wire_base64'])==b'RX-response'
-    assert base64.b64decode(raw['protocol_request_base64'])==b'READ-request'
+    assert raw['wire_base64']==raw['protocol_request_base64']==''
+    traces=raw['transport_metadata']['trace_packets']
+    assert [base64.b64decode(item['prefix_base64']) for item in traces]==[b'READ-request',b'RX-response']
+    assert all(item['capture_scope']=='pymodbus_trace_callback_buffer' for item in traces)
+    assert raw['transport_metadata']['trace_capture']['transport_wire_reconstruction'] is False
     assert ('read',10,2,1) in calls and calls[-1]==('close',)
     assert result['metrics']['actuator_writes']==0
 

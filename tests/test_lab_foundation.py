@@ -41,7 +41,7 @@ def database():
         raise RuntimeError("lab integration tests need PostgreSQL CREATE DATABASE access; no shared database was modified") from None
     engine = create_engine(admin.url.set(database=name), connect_args={"options": "-c lock_timeout=3000 -c statement_timeout=15000"})
     try:
-        from tinystudio.db.migrate import downgrade, upgrade
+        from tinystudio.db.migrate import downgrade, head_revision, upgrade
         from sqlalchemy import inspect
         upgrade("e8a0b4c32d16", engine.url.render_as_string(hide_password=False))
         legacy_tables = inspect(engine).get_table_names()
@@ -58,7 +58,7 @@ def database():
         upgrade("head", engine.url.render_as_string(hide_password=False))
         with engine.begin() as conn:
             assert conn.execute(select(Project.name).where(Project.id == "migration-sentinel")).scalar() == "Preserved"
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "i2e4f8067b50"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == head_revision()
         assert legacy_schema() == before
         assert {table.name for table in TABLES} <= set(inspect(engine).get_table_names())
         downgrade("e8a0b4c32d16", engine.url.render_as_string(hide_password=False))
@@ -91,6 +91,8 @@ def setup(database, tmp_path, monkeypatch):
         project_id, slug, other_id = project.id, project.slug, other.id
     app = FastAPI()
     install(app, include_data_bridges=True)
+    from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
+    register_operation_runtime(app, OperationRuntimeConfiguration(mode='external'))
     def sessions():
         with database() as db:
             try:
@@ -231,6 +233,7 @@ def test_project_and_runner_scope(setup):
 
 
 def test_actual_http_subprocess_evidence_and_bundle_restore(setup, tmp_path):
+    from tests.support.lab_finalization import finalization_worker
     factory, project, other, client, prefix, app = setup
     target = client.post(prefix+"/targets", json={"name": "local"}).json()
     created = client.post(prefix+"/definitions", json={"definition": definition(pipeline=[{"kind": "offset", "parameters": {"offset": -2}}])})
@@ -238,7 +241,7 @@ def test_actual_http_subprocess_evidence_and_bundle_restore(setup, tmp_path):
     submitted = client.post(prefix+"/runs", json={"definition_id": created.json()["id"], "revision": 1, "idempotency_key": "roundtrip"})
     assert submitted.status_code == 202, submitted.text
     run_id = submitted.json()["id"]
-    with TestClient(app, headers={"Authorization": "Bearer "+target["token"]}) as machine:
+    with finalization_worker(factory), TestClient(app, headers={"Authorization": "Bearer "+target["token"]}) as machine:
         runner = Runner("http://localhost", target["id"], target["token"], client=machine)
         assert runner.run_once()
     finished = client.get(prefix+f"/runs/{run_id}").json()

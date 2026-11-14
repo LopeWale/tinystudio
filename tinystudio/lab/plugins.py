@@ -12,9 +12,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import Contract, ExperimentDefinition, InputRef
+from .hardware_emulator_selection import EmulatorSelection
 
 
 SCHEMAS = {
+    "tinystudio.lab.hardware-emulator-selection.v1": EmulatorSelection.json_schema(),
     "tinystudio.lab.definition.v1": ExperimentDefinition.model_json_schema(),
     "tinystudio.lab.input-ref.v1": InputRef.model_json_schema(),
     "tinystudio.lab.published-artifacts.v1": {
@@ -26,7 +28,56 @@ SCHEMAS = {
             "properties": {"messages": {"type": "array", "minItems": 1, "items": {
                 "type": "object", "required": ["role", "content"], "properties": {
                     "role": {"enum": ["system", "user", "assistant", "tool"]}, "content": {"type": "string"}}}}}}},
+    "tinystudio.lab.hardware-session-parameters.v1": {
+        "type": "object", "required": ["binding_id", "supervisor"], "additionalProperties": False,
+        "properties": {
+            "binding_id": {"type": "string", "minLength": 1,
+                           "description": "Exact public binding_id advertised by the selected execution host."},
+            "supervisor": {"oneOf": [
+                {"type": "object", "required": ["kind", "artifact_id"], "additionalProperties": False,
+                 "properties": {"kind": {"const": "recorded"}, "artifact_id": {"type": "string", "minLength": 1}}},
+                {"type": "object", "required": ["kind", "artifact_id", "callable"], "additionalProperties": False,
+                 "properties": {"kind": {"const": "python"}, "artifact_id": {"type": "string", "minLength": 1},
+                                "callable": {"type": "string", "minLength": 1,
+                                             "description": "Qualified Python identifier validated by the engine without importing it."}}}],
+                "description": "Select one SHA-256-bound definition input by artifact_id; no input-role inference."},
+            "supervisor_parameters": {"type": "object", "additionalProperties": True, "default": {},
+                                      "description": "Authored finite JSON passed unchanged to the selected supervisor."},
+            "evidence": {"type": "object", "additionalProperties": False, "properties": {
+                "flush_records": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"},
+                                             {"const": "on_close"}], "default": 1},
+                "fsync": {"type": "boolean", "default": True}},
+                "description": "Selected file write policy; fsync acknowledgement is not physical power-loss verification."},
+            "ipc_timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": None},
+            "artifact_visibility": {"enum": ["model", "evaluation", "truth"], "default": "evaluation"},
+            "emulator": {"oneOf": [{"type": "null"}, EmulatorSelection.json_schema()]}}},
+    "tinystudio.lab.hardware-session-provenance.v1": {
+        "type": "object", "required": ["format", "implementation_sha256", "files"], "additionalProperties": False,
+        "properties": {"format": {"const": "tinystudio.lab.hardware-session-provenance.v1"},
+                       "implementation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                       "files": {"type": "object", "additionalProperties": {
+                           "type": "string", "pattern": "^[0-9a-f]{64}$"}}}},
 }
+
+
+def hardware_session_provenance() -> dict:
+    """Hash listed package sources without importing SDKs or opening bindings."""
+    names = (
+        "hardware_session_engine.py", "hardware_session_client.py", "session_protocol.py",
+        "hardware_session_configuration.py", "hardware_session_bridge.py",
+        "hardware_session_runtime.py", "hardware_emulator_selection.py", "emulator_workspace.py",
+        "managed_emulator.py", "managed_process_configuration.py", "native_process.py",
+        "attempt_control.py", "attempt_bound_transport.py", "command_profiles.py",
+        "native_command_transports.py", "gateway.py", "gateway_lifecycle.py",
+        "gateway_lease_policy.py", "gateway_watchdog.py", "evidence_io.py",
+    )
+    combined, files = hashlib.sha256(), {}
+    for name in names:
+        source = Path(__file__).with_name(name).read_bytes()
+        combined.update(name.encode() + b"\0" + source)
+        files[name] = hashlib.sha256(source).hexdigest()
+    return {"format": "tinystudio.lab.hardware-session-provenance.v1",
+            "implementation_sha256": combined.hexdigest(), "files": files}
 
 
 class PortContract(BaseModel):
@@ -146,6 +197,10 @@ METHODS = {
     "data.pipeline": (["transformation", "representation"], "data.py", "data"),
     "evaluation.compare": (["evaluator"], "research.py", "evaluation"),
     "statistics.plan": (["evaluator"], "statistics.py", "statistics"),
+    "statistics.analyze": (["evaluator"], "analysis.py", "analysis_integration"),
+    "runtime.qualify": (["evaluator"], "runtime_probe.py", "runtime_integration"),
+    "hardware.discover": (["source", "evaluator"], "hardware_discovery_engine.py", "hardware_discovery_engine"),
+    "hardware.session": (["source", "evaluator"], "hardware_session_engine.py", "hardware_session_engine"),
     "deployment.benchmark": (["deployment"], "deployment.py", "deployment"),
 }
 
@@ -159,6 +214,17 @@ def manifest_for(row: dict) -> dict:
         if id_ == "statistics.plan" and implemented:
             version = "sha256:" + hashlib.sha256(b"".join(Path(__file__).with_name(name).read_bytes()
                 for name in ("statistics_selection.py", "statistics.py"))).hexdigest()
+        if id_ == "statistics.analyze" and implemented:
+            from .analysis_selection import implementation_sha256
+            version = "sha256:" + implementation_sha256()
+        if id_ == "runtime.qualify" and implemented:
+            from .runtime_probe import implementation_sha256
+            version = "sha256:" + implementation_sha256()
+        if id_ == "hardware.discover" and implemented:
+            from .hardware_discovery_engine import implementation_sha256
+            version = "sha256:" + implementation_sha256()
+        if id_ == "hardware.session" and implemented:
+            version = "sha256:" + hardware_session_provenance()["implementation_sha256"]
     else:
         kinds = ["source"] if id_ in {"synthetic.signal", "recorded.replay"} or id_.startswith("acquisition.") else ["simulation"]
         fixture = ("engine" if id_ in {"synthetic.signal", "recorded.replay", "simulation.plant"} else
@@ -173,14 +239,21 @@ def manifest_for(row: dict) -> dict:
                          "network.mininet", "network.ns3", "robotics.gazebo", "simulation.matlab"}
     target_notes = ["Execution host must advertise the selected backend, profile and exact runtime."]
     if id_ == "learning.pretrained":
-        target_notes.append("Each objective/update strategy requires separate qualification; QLoRA requires compatible CUDA or the pinned Linux ARM64 Python 3.12 CPU NF4 pack.")
+        target_notes.append("Each objective/update strategy requires actual target-side qualification; use runtime.qualify for measured NF4 training and reload evidence on the selected runtime.")
     if row.get("requires_operator_binding") or executable:
         target_notes.append("Exact operator grants/bindings and provisioned dependencies are required; definitions cannot grant authority.")
+    if id_ == "hardware.session":
+        target_notes.append("Only native/trusted_native execution is implemented. The parent bridge binds run, attempt, target and spec authority; same-UID supervisors are trusted native code, not isolated sources.")
+        target_notes.append("Native command-profile declarations and delivery receipts are operator/adapter claims; they do not establish physical outcomes, device attestation or hard real-time guarantees.")
     ports = input_contracts(id_)
     fixtures = [FixtureRequirement(path=f"tests/test_lab_{fixture}.py", evidence_required=[
         "Exact plugin source hash, input hashes and dependency/target versions.",
         "Actual execution of the selected operation on the compatible target; skipped/mocked execution remains unqualified.",
         "Independent outcome checks, cancellation and retained output manifest."])] if implemented else []
+    if implemented and id_ == "hardware.session":
+        fixtures.append(FixtureRequirement(path="tests/test_lab_hardware_session_preflight.py", evidence_required=[
+            "Explicit host native_execution grant, exact selected public binding, frozen supervisor input and native/trusted_native admission.",
+            "Private-fixture admission and catalog checks do not establish device execution or physical outcomes; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "retrieval.index":
         fixtures.append(FixtureRequirement(path="tests/test_lab_retained_retrieval_workflow.py", evidence_required=[
             "Authenticated registered-route/native-child build and retained query for lexical, structured, episode, semantic and hybrid modes.",
@@ -231,7 +304,7 @@ def manifest_for(row: dict) -> dict:
             "Each selected target requires its actual receipt; skipped/mocked execution remains unqualified."]))
     if implemented and id_ == "learning.pretrained":
         fixtures.append(FixtureRequirement(path="tests/test_lab_qlora.py", evidence_required=[
-            "Real SFT, raw causal LM and DPO adapter optimization on the pinned Linux ARM64 CPU NF4 stack.",
+            "Real SFT, raw causal LM and DPO adapter optimization on the explicitly selected CPU NF4 runtime and execution policy.",
             "Packed/nested quantization state, adapter precision, frozen reference and optimizer membership checks.",
             "Live-policy versus extracted-bundle reload equality and wrong-float-base/missing-state counterexamples.",
             "Actual compatible-target execution is required; skipped/mocked execution remains unqualified."]))
@@ -295,6 +368,15 @@ def input_contracts(id_: str) -> list[PortContract]:
         for role in ("source", "dataset", "recorded"):
             add(role, maximum=128, visibility=["model", "evaluation", "truth"],
                 media=["application/json", "application/x-ndjson", "text/csv", "application/vnd.apache.parquet"])
+    elif id_ == "statistics.analyze":
+        add("study_snapshot", required=True, visibility=["model", "evaluation", "truth"], media=["application/x-ndjson"])
+        add("analysis_code", when="method=custom.python", visibility=["model", "evaluation", "truth"],
+            media=["text/plain", "text/x-python", "application/octet-stream"])
+        add("analysis_auxiliary", maximum=128, when="method=custom.python", visibility=["model", "evaluation", "truth"],
+            media=["*/*"])
+    elif id_ == "runtime.qualify":
+        add("pretrained_model", when="fixture=retained", media=["application/x-tar", "application/zip"])
+        add("snapshot", when="fixture=retained", media=["application/x-ndjson"])
     elif id_.startswith("acquisition."):
         add("telemetry", when="retained replay")
         add("shadow_model", when="operating_mode=shadow")

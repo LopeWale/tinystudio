@@ -55,6 +55,7 @@ function mount(
   read: (path: string, signal?: AbortSignal) => Promise<any>,
   state = "succeeded",
   artifacts?: { id: string; name: string; role?: string }[],
+  engine = "synthetic.signal",
 ) {
   const runs: LabRun[] = ["first-run", "second-run"].map(
     (id) =>
@@ -62,7 +63,7 @@ function mount(
         id,
         definition_id: "definition",
         state,
-        spec: { definition: makeDefinition() },
+        spec: { definition: makeDefinition(engine) },
         result: {
           artifacts,
           baseline_comparison: { retained_label: "Retained measured baseline" },
@@ -74,6 +75,11 @@ function mount(
     get: vi.fn(async (path: string, signal?: AbortSignal): Promise<any> => {
       if (path.includes("/records?")) return read(path, signal);
       if (path === "/api/lab/runs") return runs;
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?")) return { events: [], next_after: 0 };
       const run = runs.find((run) => path === `/api/lab/runs/${run.id}`);
       if (run) return run;
@@ -99,13 +105,17 @@ function mount(
   );
   return { api, view };
 }
-async function selectRun(id = "first-run", state = "succeeded") {
+async function selectRun(
+  id = "first-run",
+  state = "succeeded",
+  name = "Synthetic signal",
+) {
   const selector = await screen.findByRole("button", { name: /Retained run/ });
   await waitFor(() => expect(selector).toBeEnabled());
   fireEvent.click(selector);
   fireEvent.click(
     await screen.findByRole("option", {
-      name: `Synthetic signal · ${id} · ${state}`,
+      name: `${name} · ${id} · ${state}`,
     }),
   );
 }
@@ -120,6 +130,71 @@ function noReplayData() {
   ).not.toBeInTheDocument();
   expect(screen.queryByText(/Loaded window:/)).not.toBeInTheDocument();
 }
+
+it.each([
+  [
+    "runtime.qualify",
+    "Runtime probe",
+    "Open runtime probe report",
+    "runtime_probe",
+  ],
+  [
+    "statistics.analyze",
+    "Analysis",
+    "Open analysis report",
+    "statistical_analysis",
+  ],
+])(
+  "explains report and artifact evidence in Records for %s without waiting for replay rows",
+  async (engine, reportTab, action, role) => {
+    const read = vi.fn(async () => {
+      throw new Error("Report engines must not request replay records");
+    });
+    const { api } = mount(
+      read,
+      "succeeded",
+      [
+        { id: "report", name: "retained-report.json", role },
+        {
+          id: "support",
+          name: "supporting-evidence.jsonl",
+          role: "supporting_evidence",
+        },
+      ],
+      engine,
+    );
+    await selectRun("first-run", "succeeded", makeDefinition(engine).name);
+    fireEvent.click(screen.getByRole("tab", { name: "Records" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "Results use reports and supporting artifacts",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "Records are not available yet" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Record artifact$/ }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next records" })).toBeNull();
+    expect(
+      within(
+        screen.getByRole("table", {
+          name: "Report and supporting artifact identities",
+        }),
+      ).getByText("supporting-evidence.jsonl"),
+    ).toBeVisible();
+    expect(read).not.toHaveBeenCalled();
+    expect(
+      api.get.mock.calls.some(([path]) => path.includes("/records?")),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    expect(screen.getByRole("tab", { name: reportTab })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  },
+);
 
 it("waits for a running run to finish instead of claiming retained artifacts are empty", async () => {
   const { api } = mount(async () => ({ records: [] }), "running");

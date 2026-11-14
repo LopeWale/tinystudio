@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tinystudio.lab.data import execute_data
+from tinystudio.lab.data import arrival_records, execute_data, normalize
 
 
 def rows_fixture():
@@ -28,6 +28,30 @@ def spec(rows=None, stages=None, **parameters):
 
 def read_rows(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+@pytest.mark.parametrize('projection', ['causal', {'pointer': '/causal'}, {'literal': False}])
+@pytest.mark.parametrize('inherited', [True, 'true', '1'])
+def test_schema_projection_cannot_erase_inherited_future_awareness(projection, inherited):
+    source = {'time': 0, 'available_at': 0, 'value': 42, 'future_aware': inherited, 'causal': False}
+    acquired = [{'source': 'inline', 'source_sha256': 'a' * 64, 'position': 0, 'record': source}]
+    records, _ = normalize(acquired, {'schema': {'future_aware': projection}}, {})
+    assert records[0]['future_aware'] is True
+    assert source['future_aware'] == inherited
+    with pytest.raises(ValueError, match='future-aware source'):
+        arrival_records(records, {})
+
+
+def test_schema_can_add_future_awareness_without_restricting_causal_sources():
+    acquired = [{'source': 'inline', 'source_sha256': 'a' * 64, 'position': 0,
+                 'record': {'time': 0, 'available_at': 0, 'value': 42, 'future_aware': False, 'derived': True}}]
+    records, _ = normalize(acquired, {'schema': {'future_aware': 'derived'}}, {})
+    assert records[0]['future_aware'] is True
+    with pytest.raises(ValueError, match='future-aware source'):
+        arrival_records(records, {})
+    causal, _ = normalize(acquired, {}, {})
+    assert causal[0]['future_aware'] is False
+    assert len(arrival_records(causal, {})) == 1
 
 
 def test_causal_resampling_has_analytic_values_and_no_future_availability(tmp_path):
