@@ -14,7 +14,16 @@ from .signals import generate, integer, number
 
 
 class ExecutionCancelled(RuntimeError):
-    """The caller cancelled execution; partial output must not be published."""
+    """Cancelled execution; only explicit evidence may enter the audit path.
+
+    Ordinary partial engine files remain ineligible for publication. An engine
+    may attach a result describing cancellation evidence; the execution bootstrap
+    and runner must verify its dedicated cancelled outcome before retaining it.
+    """
+
+    def __init__(self, message="execution cancelled", *, evidence_result=None):
+        super().__init__(message)
+        self.evidence_result = evidence_result
 
 
 def digest(path: Path) -> str:
@@ -106,16 +115,26 @@ def _episodes(records: Iterable[dict]) -> Iterator[dict]:
         yield record
 
 
-def _transform(records: Iterable[dict], stage: dict, mode: str, seed: int) -> Iterator[dict]:
+def _transform(records: Iterable[dict], stage: dict, mode: str, seed: int, *,
+               max_window: int | None = None, max_records: int | None = None) -> Iterator[dict]:
     kind = stage["kind"]
     p = stage.get("parameters", {})
     if kind not in {"scale", "offset", "scale_offset", "moving_average", "filter", "impute", "features", "split", "representation", "resample"}:
         raise ValueError(f"unsupported pipeline operation: {kind}")
-    window = integer(p.get("window", 5), "window", 1, 100000)
+    from .experiment_resources import count
+    window = count(p.get("window", 5), "window")
+    if window < 1:
+        raise ValueError("window must be a positive integer")
+    max_window = count(max_window, "max_window", optional=True)
+    max_records = count(max_records, "max_records", optional=True)
+    if kind in {"moving_average", "filter", "features"} and max_window is not None and window > max_window:
+        raise ValueError("window_records exceeds configured data resource budget")
     factor = number(p.get("factor", p.get("scale", 1)), "factor")
     offset = number(p.get("offset", 0), "offset")
     threshold = number(p.get("threshold", 0), "threshold")
-    interval = number(p.get("dt", 0.1), "resample dt", minimum=1e-9)
+    interval = number(p.get("dt", 0.1), "resample dt")
+    if interval <= 0:
+        raise ValueError("resample dt must be positive")
     method = p.get("method", "forward_fill")
     if kind in {"filter", "moving_average"} and p.get("method", "moving_average") != "moving_average":
         raise ValueError("only causal moving_average filtering is supported")
@@ -194,13 +213,19 @@ def _transform(records: Iterable[dict], stage: dict, mode: str, seed: int) -> It
         elif kind == "resample":
             if previous is None:
                 previous = row
+                output_count += 1
+                if max_records is not None and output_count > max_records:
+                    raise ValueError("max_rows exceeds configured data resource budget")
                 yield row
-                next_grid += interval
+                advanced = next_grid + interval
+                if not math.isfinite(advanced) or advanced <= next_grid:
+                    raise ValueError("resample dt cannot advance representable event time")
+                next_grid = advanced
                 continue
             while next_grid <= row["time"] + interval * 1e-9:
                 output_count += 1
-                if output_count > 1_000_000:
-                    raise ValueError("resampling exceeds 1000000 records")
+                if max_records is not None and output_count > max_records:
+                    raise ValueError("max_rows exceeds configured data resource budget")
                 if abs(next_grid - row["time"]) <= interval * 1e-9:
                     result = dict(row)
                 else:
@@ -216,11 +241,17 @@ def _transform(records: Iterable[dict], stage: dict, mode: str, seed: int) -> It
                     else:
                         result["available_at"] = max(next_grid, previous["available_at"])
                 yield result
-                next_grid += interval
+                advanced = next_grid + interval
+                if not math.isfinite(advanced) or advanced <= next_grid:
+                    raise ValueError("resample dt cannot advance representable event time")
+                next_grid = advanced
             previous = row
             continue
         if row.get("value") is not None and not math.isfinite(row["value"]):
             raise ValueError("transformation produced a nonfinite value")
+        output_count += 1
+        if max_records is not None and output_count > max_records:
+            raise ValueError("max_rows exceeds configured data resource budget")
         yield row
 
 

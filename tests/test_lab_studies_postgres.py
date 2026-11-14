@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
-from tinystudio.db.migrate import downgrade, upgrade
+from tinystudio.db.migrate import downgrade, head_revision, upgrade
 from tinystudio.db.models import Project, User
 from tinystudio.lab import service as svc, studies
 from tinystudio.lab.models import LabDefinition, LabStudy, LabStudyRecord
@@ -37,7 +37,7 @@ def postgres():
         before = {table: inspect(engine).get_columns(table) for table in ('projects','lab_definitions','lab_runs','lab_artifacts')}
         upgrade('head', owned_url)
         with engine.connect() as connection:
-            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == 'i2e4f8067b50'
+            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == head_revision()
             assert connection.execute(select(Project.name).where(Project.id=='study-migration-sentinel')).scalar() == 'Preserved project'
             assert connection.execute(select(LabDefinition.name).where(LabDefinition.id=='prior-definition')).scalar() == 'Preserved definition'
         for table, columns in before.items():
@@ -122,7 +122,7 @@ def test_postgres_downgrade_preserves_nonempty_tracking_history(postgres):
         downgrade('h1d3e7f65a49',p.url)
     with p.factory() as db:
         assert studies.get_study(db,p.project,study['id'])['summary']['records']==1
-        assert db.execute(text('SELECT version_num FROM alembic_version')).scalar()=='i2e4f8067b50'
+        assert db.execute(text('SELECT version_num FROM alembic_version')).scalar()==head_revision()
 
 
 def test_postgres_empty_tracking_migration_round_trips_without_legacy_loss(postgres):

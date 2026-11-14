@@ -132,7 +132,7 @@ def _dispatch_limits(db, deadline, cancelled):
     return _dispatch_active(deadline, cancelled)
 
 
-def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_seconds=20) -> list[str]:
+def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_seconds=20, excluded_kinds=()) -> list[str]:
     """Deliver committed IDs with bounded DB waits and cooperative stop/deadline.
 
     Returns IDs whose callbacks completed, including deliveries made before a
@@ -153,6 +153,7 @@ def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_s
         if not _dispatch_limits(reader, deadline, cancelled):
             return []
         ids = list(reader.scalars(select(LabOperation.id).where(LabOperation.state == "queued",
+            LabOperation.kind.not_in(tuple(excluded_kinds)),
             (LabOperation.dispatch_after.is_(None)) | (LabOperation.dispatch_after <= svc.now())).limit(100)))
     sent = []
     for id_ in ids:
@@ -181,13 +182,21 @@ class _Lease:
         return (LabOperation.id == self.id, LabOperation.state == "running", LabOperation.claim_token == self.token,
                 LabOperation.generation == self.generation, LabOperation.lease_until > svc.now())
 
+    def _locked_row(self, db):
+        row = db.scalar(select(LabOperation).where(*self.predicate()).with_for_update().execution_options(populate_existing=True))
+        # The predicate's timestamp was bound before a possibly blocking lock.
+        # Neither renewal nor publication may revive authority that expired
+        # while waiting, even when its token and generation still match.
+        if row is None or svc.aware(row.lease_until) <= svc.now():
+            raise svc.LabError("operation authority expired or was cancelled", 409)
+        return row
+
     def _heartbeat(self):
         while not self.stop.wait(HEARTBEAT_SECONDS):
             try:
                 with self.factory() as db, db.begin():
-                    result = db.execute(update(LabOperation).where(*self.predicate()).values(lease_until=svc.now()+timedelta(seconds=LEASE_SECONDS)))
-                    if result.rowcount != 1:
-                        return
+                    row = self._locked_row(db)
+                    row.lease_until = svc.now()+timedelta(seconds=LEASE_SECONDS)
             except Exception:
                 # No guessed authority after a failed heartbeat: final publication
                 # still checks the persisted lease and may reject this attempt.
@@ -200,9 +209,13 @@ class _Lease:
                 raise svc.LabError("operation authority expired or was cancelled", 409)
 
     def finish(self, db, result):
-        row = db.scalar(select(LabOperation).where(*self.predicate()).with_for_update().execution_options(populate_existing=True))
-        if row is None:
-            raise svc.LabError("operation authority expired or was cancelled", 409)
+        row = self._locked_row(db)
+        if row.kind == 'artifact_verify':
+            from .transfer_service import check_verify_publication_authority
+            check_verify_publication_authority(db, row, result)
+        elif row.kind == 'attempt_finalize':
+            from .finalization_service import check_finalization_publication_authority
+            check_finalization_publication_authority(db, row, result)
         row.state, row.result, row.finished = "succeeded", result, svc.now()
         row.claim_token, row.lease_until, row.error = None, None, None
         return operation_dict(row)
@@ -253,9 +266,19 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
                     if payload.get("intent", {}).get("action") == "capture_repository":
                         from .repository_capture import execute_capture
                         result = execute_capture(db, project, payload, directory, check_authority=lease.check)
+                    elif payload.get("intent", {}).get("action") == "capture_study":
+                        from .study_analysis import execute_capture
+                        result = execute_capture(db, project, payload, directory, check_authority=lease.check)
                     else:
                         from .data_bridge_operations import execute
                         result = execute(db, project, payload, directory)
+                elif kind == 'artifact_verify':
+                    from .transfer_service import execute_verify
+                    result = execute_verify(db, project, payload, directory, check_authority=lease.check)
+                elif kind == 'attempt_finalize':
+                    from .finalization_service import execute_finalization
+                    result = execute_finalization(db, project, payload, directory,
+                                                  check_authority=lease.check, session_factory=session_factory)
                 else:
                     raise svc.LabError("unsupported operation kind")
                 # Read back persisted bytes before publishing references. This also
@@ -272,8 +295,10 @@ def run_operation(operation_id: str, session_factory=None) -> dict | None:
     except Exception as exc:
         # Import rows roll back before recording failure in an independent txn.
         with session_factory() as db, db.begin():
+            error = (f"Attempt finalization failed ({type(exc).__name__}); completion was not acknowledged."
+                     if kind == 'attempt_finalize' else f"{type(exc).__name__}: {str(exc)[:1800]}")
             db.execute(update(LabOperation).where(*lease.predicate()).values(state="failed", finished=svc.now(),
-                error=f"{type(exc).__name__}: {str(exc)[:1800]}", claim_token=None, lease_until=None,
+                error=error, claim_token=None, lease_until=None,
                 error_detail={"status": getattr(exc, "status", 500), "code": "limit_exceeded" if getattr(exc, "status", None) == 413 else "operation_failed"}))
         return None
     finally:

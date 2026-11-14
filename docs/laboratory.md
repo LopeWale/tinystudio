@@ -22,7 +22,7 @@ Rows D–G describe future acceptance boundaries, including any existing experim
 | LAB-A02 | Existing training identities survive | Additive laboratory tables and optional Job/Experiment foreign keys; pretrained wrapper calls the existing trainer |
 | LAB-A03 | Capability portfolio stays visible | Adapter/method catalog reports implementation, dependencies and qualification separately |
 | LAB-B01 | Durable submit, claim, events, cancellation, retry | PostgreSQL transactional dispatch, target-first lease locking, run/attempt separation; no Redis credentials on runners |
-| LAB-B02 | Raw and derived evidence remain distinct | Content-addressed objects; manifests published after uploads; original hashes and record identities retained |
+| LAB-B02 | Raw and derived evidence remain distinct | Hash-verified objects; manifests published after uploads; original hashes and record identities retained |
 | LAB-B03 | Portable outbound execution | Scoped target token, HTTPS except loopback, frozen source package, runtime receipt, transfer heartbeats and complete process-group cleanup |
 | LAB-C01 | Data preparation preserves scientific meaning | Explicit units, missingness, estimated values, observation availability, causal versus future-aware transforms |
 | LAB-C02 | Independent partitions and retrieval | Grouped/temporal split contracts, final-test exclusion, immutable retrieval indexes and lineage audits |
@@ -46,7 +46,7 @@ Ports reference versioned schemas exposed in the catalog's `contract_schemas` re
 
 The runner owns attempt preparation, process cancellation and output publication. A plugin cannot grant itself filesystem, network, credential or device access. Pause is unsupported. Checkpoint-specific continuation requires the selected method's compatible checkpoint; a declaration never establishes exact continuation. Qualification requires an actual receipt for the exact method selections, source, dependencies and target. The matrix deliberately remains unqualified when only fixture requirements are present.
 
-The operational database and laboratory share one SQLAlchemy metadata registry. Migration `f9b1c5d43e27` adds laboratory tables after `e8a0b4c32d16`; `g0c2d6e54f38` adds durable evidence operations. Revision `h1d3e7f65a49` adds the data-bridge operation kind and structured operation errors without changing existing identities. Downgrade refuses to discard historical data-bridge operations. Later schema changes require new revisions. Legacy Job/Experiment links identify source experiments, preserve their identities and metric semantics, and freeze referenced configuration without writing their training state.
+The operational database and laboratory share one SQLAlchemy metadata registry. Migration `f9b1c5d43e27` adds laboratory tables after `e8a0b4c32d16`; `g0c2d6e54f38` adds durable evidence operations. Revision `h1d3e7f65a49` adds the data-bridge operation kind and structured operation errors without changing existing identities. `i2e4f8067b50` adds study tracking, and `j3f5a9078c61` adds durable transfer sessions and artifact verification operations. Downgrade refuses to discard retained operation/transfer identities. Later schema changes require new revisions. Legacy Job/Experiment links identify source experiments, preserve their identities and metric semantics, and freeze referenced configuration without writing their training state.
 
 Definition revisions are saved separately; submission commits the resolved specification, run and dispatch row together. An execution host advertises its installed implementation and dependency versions, then claims a leased attempt. It receives only that attempt's input artifacts and publication authority. Every event has a durable run sequence; clients reconnect using `events --after LAST_SEQUENCE` (HTTP responses include `next_after` and `has_more`). Optional timezone-aware `not_before` is frozen in the submission schedule, normalized to UTC, and enforced before claim; a client disconnect does not remove it.
 
@@ -57,6 +57,90 @@ A cancelled running attempt stays running until the worker acknowledges terminat
 Terminal results supplied to completion, including failed or cancelled partial results, resolve artifact references to canonical metadata from the same project and attempt. Referenced bytes must pass SHA256 and size verification before publication. Each retained attempt outcome is an `attempt-outcome.json` artifact; the reserved `server.outcome` event carries its small identity/checksum reference rather than embedding the full result in the timeline.
 
 Content-addressed publication reads back and verifies stored bytes before publishing metadata. An already valid object is reused without rewriting it; missing or verified-corrupt objects may be repaired. Redelivery of an identical active-attempt upload preserves its artifact identity and does not charge its bytes twice, even when the original upload exhausted the output budget. Different content, role, visibility or size under the same attempt filename is rejected.
+
+### Resumable private object transfers
+
+With R2 storage, the Lab input picker hashes the selected file incrementally,
+uploads missing parts directly to signed object-store URLs, and attaches the
+artifact only after a durable background operation has verified its full linear
+SHA-256 and size. Verification uses the dispatcher's independent operation
+capacity; if that capacity is unavailable, committed work remains inspectable.
+The Studio API carries authenticated metadata and controls;
+object requests omit Studio/Access credentials and cookies and reject redirects.
+ETags and multipart composite checksums do not establish a whole-file SHA-256.
+Each session owns a unique object key; completion seals its parts, and verified
+bytes are retained at that key without a large server-side CAS copy.
+
+Network failure preserves the session. Explicitly retry or reselect the same
+file to reconcile accepted parts. Browser recovery state contains the immutable
+request and session identity, scoped to the origin and project. It contains no
+signed URLs or credentials. Failed, lost or cancelled verification requires
+explicit operation recovery. Abort is a separate action and never deletes an
+already verified artifact. Project-authorized cleanup can abort an unpublished
+session after its Runner lease expires; stale execution cannot publish it.
+
+The CLI uses the same contracts:
+
+```sh
+tinystudio lab transfer-upload weights.safetensors --project research --request-file weights-transfer.json
+tinystudio lab transfer-status SESSION_ID --project research
+tinystudio lab transfer-abort SESSION_ID --project research
+```
+
+Repeating the same immutable upload resumes its accepted parts. An optional
+`--deadline-seconds` selects a client deadline; omission selects no overall
+client deadline. `--name`, `--role`, `--visibility`, `--media-type`, `--sha256`
+and `--idempotency-key` remain explicit choices. Local storage uses the existing
+`lab upload` command and ordinary input picker.
+
+`TransferPolicy`, multipart geometry and client/object paths are importable from
+`tinystudio.lab.transfer_configuration`. Host settings use
+`TINYSTUDIO_TRANSFER_MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_FILES`, `PART_BYTES`,
+`CONCURRENCY`, `SIGNED_URL_SECONDS` and `VERIFIER_TIMEOUT_SECONDS`, with the same
+`TINYSTUDIO_TRANSFER_` prefix for each name. File, aggregate and verification
+budgets default to `None`; zero remains a real zero budget. Aggregate reservations
+cover non-aborted transfer sessions in the project, counting an already verified
+artifact once. The ordinary proxy input/import upload uses the file budget.
+Per-run execution, worker execution and archive-extraction settings apply separately. SDK socket
+timeouts and retries remain those of the supplied storage client; no adapter
+retry loop turns an uncertain mutation into a new upload or completion.
+
+Geometry defaults to 16 MiB parts and a concurrency budget of four. It reports
+the required larger part size rather than silently changing a selected geometry
+that would exceed 10,000 parts. R2's exact provider limits, including its rounded
+size-limit footnotes, are exposed separately from resource budgets. See the
+[R2 limits](https://developers.cloudflare.com/r2/platform/limits/),
+[multipart contract](https://developers.cloudflare.com/r2/objects/multipart-objects/)
+and [presigned URL contract](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
+Browser transfers require bucket CORS for the configured Studio origin, methods
+and signed headers; presigned URLs use the S3 endpoint. Owned software fixtures
+and SDK signing tests do not qualify a live bucket, deployment, or CORS setup.
+
+The outbound Runner selects the authenticated per-attempt transfer protocol
+before artifact mutation. R2 inputs use signed downloads checked against the
+frozen input identity, and outputs use resumable transfers. Object requests
+carry no Studio or Access credentials. Local storage retains authenticated proxy
+transfer. A confirmed old-server capability 404/405 selects the legacy protocol;
+an uncertain request never triggers an automatic protocol fallback.
+
+Execution budgets are separate from transfer and provider limits. In the frozen
+execution definition, `max_seconds` and `max_output_bytes` accept a nonnegative
+integer or `null` for no authored cap. Zero remains exact. Omission retains the
+compatibility defaults of 300 seconds and 512 MiB. The time budget covers staging
+and execution; the output monitor counts the work directory, including logs,
+results and parent receipts. Post-stop audit publication still needs a live
+attempt lease, but does not restart an exhausted execution clock or device
+authority. The shared RQ job timeout remains a separate seven-day envelope.
+
+Completion uses a durable `attempt_finalize` operation. A 202 ticket is pending,
+not a terminal acknowledgement. Independent dispatcher workers stream-verify evidence
+outside attempt locks, then recheck authority before committing the outcome and
+operation together. Exact canonical request text preserves numeric values across
+database JSON projections. Lost acknowledgements can be inspected by the same
+attempt identity and request digest; failed, lost or cancelled operations are
+never automatically requeued. Known loss of operation capacity returns 503 for
+new attempt publication and pending runner polls; terminal acknowledgements and
+project diagnostics remain readable.
 
 ## Operator workflow
 
@@ -72,6 +156,21 @@ tinystudio runner --credential-file runner.json
 The remote runner uses outbound HTTPS and its scoped token; it needs no PostgreSQL, Redis or object-store credentials. Plain HTTP is permitted only on loopback. Enrollment requires an administrator and creates a new mode `0600` file. The loader requires an owned regular nonsymlink file. Keep it outside research bundles. Its optional `access` object contains `client_id`, `client_secret` and `public_url` for Cloudflare Access; the existing Studio client sends those credentials only to the matching approved HTTPS origin. Without that object, the normal `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and `TINYSTUDIO_PUBLIC_URL` environment guard applies.
 
 The long-lived runner reconnects after transient claim transport errors and HTTP 408/429/500/502/503/504, with delays from one to thirty seconds. A successful claim resets the delay. Authentication, configuration and active-attempt failures remain explicit; `--once` reports the original claim failure. A lost claim response conveys no execution authority to the client. Inspect and recover the retained attempt before explicitly retrying its run.
+
+Resume retained publication without executing the child again:
+
+```sh
+tinystudio runner-resume /operator/chosen/attempt-root --credential-file runner.json
+```
+
+The private prompt accepts the existing attempt lease token; no token is stored
+in a publication journal or passed as a command-line argument. Recovery validates
+the selected server, target, frozen identity and saved receipts. Before new
+publication it also checks retained source bytes while maintaining the lease.
+An expired lease may inspect an accepted terminal receipt, but cannot publish a
+new outcome. If new publication lacks credentials or sources, use the separate
+host evidence recovery workflow. Explicit resume may resubmit the same immutable
+completion request; it never replays the experiment or retries a failed operation.
 
 Attempt roots must be existing absolute directories, with no symlink at the final
 component. The runner resolves ancestor aliases before constructing input paths,
@@ -99,7 +198,20 @@ Cancellation requests termination; a running attempt remains running until ackno
 
 ### Dispatch and RQ workers
 
-The API owns a separate laboratory dispatcher process for its lifetime. It polls committed work, uses bounded database/delivery waits, and shuts down its owned process group. A separate `tinystudio worker` consumes the existing RQ queue; the dispatcher does not execute experiments or bundle transfers itself. PostgreSQL owns run/attempt/operation truth, while Redis carries IDs. Queue outages leave committed work pending. Killing an RQ job alone does not prove experiment-process cleanup; use laboratory cancellation and inspect the lease/recovery state.
+The API owns a separate laboratory dispatcher process for its lifetime. It polls committed work, uses bounded database/delivery waits, and shuts down its owned process group. Inside that process, bounded workers claim `artifact_verify` and `attempt_finalize` directly from PostgreSQL using the existing operation token, generation and publication checks. This capacity remains available when every generic RQ worker is waiting for its experiment to finish publishing. A separate `tinystudio worker` consumes the existing RQ queue for experiments and bundle import/export. PostgreSQL owns run/attempt/operation truth, while Redis carries delivery IDs. Queue outages leave committed delivery work pending. Killing an RQ job alone does not prove experiment-process cleanup; use laboratory cancellation and inspect the lease/recovery state.
+
+`OperationRuntimeConfiguration` in `tinystudio.lab.operation_runtime` centralizes
+these settings. `TINYSTUDIO_LAB_OPERATION_MODE` defaults to `managed`, with
+`TINYSTUDIO_LAB_OPERATION_CAPACITY=1`; capacity zero or mode `disabled` disables
+the dependency executor. `POLL_SECONDS`, `SHUTDOWN_GRACE` and
+`STARTUP_TIMEOUT_SECONDS` use the same environment prefix and default to 0.25,
+3 and 10 seconds. `DELIVERY_ENABLED=0` runs operation capacity without RQ
+delivery. Mode `external` declares separately operated capacity, such as a
+long-lived `tinystudio lab dispatch` process configured in managed mode against
+the same database. Its readiness is an operator declaration, not an observation
+or an inference from the number of generic RQ workers. The capability response
+reports that distinction. `tinystudio lab dispatch --once` only performs a
+delivery pass; it does not own background operation capacity.
 
 Evidence import/export operations use that worker without an RQ target credential. To also deliver experiment runs whose frozen backend is `rq`, set `TINYSTUDIO_LAB_RQ_CREDENTIAL_FILE` on the API/dispatcher and RQ worker hosts to an enrolled credential for that exact target. These store-connected hosts need their normal deployment PostgreSQL/Redis settings. The RQ worker loads credentials locally; job arguments and results contain no credentials or credential-file paths. Its only supported RQ profile is trusted native host execution; RQ is delivery, not isolation. Configure the target explicitly:
 
@@ -169,6 +281,673 @@ Example definition:
 
 Uploads become immutable `{artifact_id, sha256, role}` references. Replay inputs use `source`; pretrained runs use `pretrained_model` and `snapshot`; retrieval uses `embedding_model` for a dense backend; checkpoints use `resume`, `teacher`, `model` or `checkpoint` according to the selected executor. Model directories are transported as bounded tar/zip artifacts with verified inner file manifests. Authored host paths and credentials are rejected.
 
+## Hardware discovery and acquisition
+
+Install `tinystudio[hardware]` on the execution host for the optional pySerial,
+PyModbus, python-can and Paho clients. The origin API and Cloudflare transport do
+not need device access. Configure endpoints and device authority in the enrolled
+runner's `profile_config.engine_grants`, using a `bindings` object keyed by the
+operator's binding IDs. Definitions select `parameters.binding_id`; copying a
+definition cannot grant device access or replace that host configuration.
+
+`hardware.discover` runs an explicitly selected `serial.enumerate`,
+`can.enumerate` or `sunspec.scan` method in operating mode `acquisition`. The
+definition editor exposes these choices and a retained report view. Inspect the
+parameter schemas through `tinystudio lab hardware-methods --project PROJECT`,
+the assistant's read-only `lab_hardware_discovery_methods`, or
+`GET /api/p/{slug}/lab/hardware/discovery-methods`. Reading this catalog performs
+no device discovery. Submit an authored definition through the ordinary Lab
+workflow to execute discovery on the chosen host.
+
+Serial enumeration reads port metadata without opening a port. CAN detection
+queries only the chosen, operator-authorized providers; some providers send
+discovery traffic and provider threads can finish after a detection timeout.
+SunSpec scanning requires explicit candidate base addresses, register kind and
+TCP unit identifier. It follows the actual ID/length chain and end marker,
+preserving unknown and repeated models. No fixed paper register address, model
+schema, scale factor or writable-point assumption is supplied. The report keeps
+complete, partial, not-found, unavailable, failed and cancelled outcomes distinct
+from whether Lab execution itself ended successfully.
+
+The discovery report retains requested and effective settings, dependency/source
+identities, clocks and model addresses. Its trace sidecar records each SDK
+callback buffer's direction, length, SHA256 and selected byte prefix. Receive
+buffers can overlap as the SDK accumulates a fragmented response; they are not
+disjoint socket receive chunks, physical wire packets, or proof of successful
+sends. No transport stream is reconstructed from them. A truncated or zero-byte
+prefix is disclosed. Neither a checksum nor structural discovery establishes
+physical device identity, electrical suitability, safety or control stability.
+
+Read-only acquisition engines are `acquisition.serial`, `acquisition.modbus`,
+`acquisition.mqtt` and `acquisition.can`. Each requires an exact host binding with
+matching `engine` and `read_only: true`. Serial opening additionally requires
+`serial_open: true`; opening and closing a port can toggle control lines. Native
+serial names and explicit `socket://`, `rfc2217://` and `loop://` endpoints are
+supported. CAN requires an explicit interface and channel, including a native
+SocketCAN interface when configured externally. MQTT requires an exact topic
+and explicit TLS choice. No acquisition client issues actuator commands.
+
+Serial bindings optionally select `framing: {"kind": "delimiter",
+"delimiter_hex": "0a"}` (the newline default) or
+`framing: {"kind": "fixed_bytes", "frame_bytes": 32}`. The size is authored,
+rather than a platform frame-size rule. Prefix retention consumes the logical
+frame boundary independently of its byte budget. Native timeouts can split a
+frame into segments, retaining frame identity, offsets, byte hashes and explicit
+continuation flags. A partial frame's tail cannot become a valid new measurement.
+
+Modbus bindings select `tcp` or `rtu_over_tcp` framing. A direct `read` declares
+`kind`, `device_id`, `address` and `count`. Alternatively it declares `kind`,
+`device_id` and `sunspec: {scan: {...}, point: {...}}`. The scan explicitly supplies
+`base_addresses` and `device_id`; the point supplies `model_id`, zero-based
+`instance`, payload-relative `offset` and `count`. The scan's register kind and
+device must match the read binding. A complete, unambiguous observed chain
+resolves the measurement address at transport opening. The retained
+`source-binding.json` records that resolution and discovery evidence. It does
+not infer engineering units, scaling, writability or stability. A trace prefix
+budget does not modify protocol traffic or replace decoded register values.
+Measurement trace budgets apply across SDK callback receipts per direction for
+each observation operation; discovery reports disclose their per-callback
+prefix budget separately. These scopes count retained callback bytes, including
+overlapping buffer content, rather than unique bytes on a socket.
+
+Acquisition retains separate raw and processed JSONL and Parquet artifacts.
+Raw rows preserve available wire bytes, scope, source identities and transport
+metadata; processed rows distinguish numeric observations, frame-only captures,
+missing data and decoding errors. `decode: "json_object"` retains structured
+payloads for later field mapping without inventing a scalar. CAN defaults to
+frame-only capture; numeric decoding requires an explicit payload mapping.
+MQTT evidence is an application payload, and CAN evidence is a received frame's
+payload and metadata, rather than a physical wire/CRC measurement.
+
+Explicitly failed or cancelled acquisition can retain raw JSONL, a source-binding
+report and an acquisition audit through the runner's verified audit-outcome path.
+Raw observations are written before optional shadow inference. A receive result
+that fails clock validation before normalization remains separately retained as
+unprocessed evidence. The audit distinguishes raw and processed record counts
+and reports native close errors; it does not establish complete collection or a
+physical stop. Forced termination, lease loss and host failure can prevent normal
+publication. The host spool described below retains available bytes for separate
+recovery; arbitrary partial outputs never establish a successful experiment.
+
+Acquisition parameters may select `evidence: {flush_records: 1, fsync: true}`
+(the default). A positive `flush_records` selects a batch boundary; `null` or
+`"on_close"` flushes at close, and `fsync: false` omits explicit file sync. The
+audit distinguishes completed newline writes, Python-buffer flushes and actual
+file-descriptor `fsync` acknowledgements, including pending records and failures.
+These acknowledgements do not qualify storage hardware against power loss.
+Observation availability marks decoding and validation before evidence commit
+and optional inference; native read completion and prediction availability have
+separate timestamps.
+
+### Retained host evidence and archive recovery
+
+Native execution retains a host evidence spool by default, including computational
+attempts. Other backends can opt in. The operator profile selects
+`evidence_spool: {enabled: true, root: "/operator/chosen/location", max_bytes: null,
+retention: "keep"}`. `enabled: false` explicitly selects temporary execution.
+`root` defaults to the configured host evidence location; shared path resolution
+uses `RuntimePaths.laboratory_evidence_spool`, and the environment override is
+`TINYSTUDIO_LAB_EVIDENCE_DIR`. With R2 storage, hardware capture requires an explicit
+persistent location through this override, the operator profile, or the runner
+work root. Computational Native attempts may retain their publication state in
+the disposable host cache when no persistent root is selected; this does not
+establish crash durability. Explicitly disabled retention remains temporary and
+cannot promise publication recovery after its sources are removed. A container or Kubernetes
+location also needs persistent operator-managed storage; configuring its name
+does not verify a mount's durability.
+
+`max_bytes` is an optional logical-file-byte admission budget, not a filesystem
+quota or sample-size limit. Existing oversized evidence remains inspectable and
+exportable. Retention is recorded metadata (`"keep"` or nonnegative seconds);
+this implementation does not automatically prune evidence. The private spool
+also retains execution inputs and source files, so monitor its disk usage.
+
+The initial public manifest is committed before execution. Confirmed process
+cleanup removes the private execution context; unknown cleanup keeps it private.
+A confirmed server acknowledgement is recorded separately from local cleanup.
+Snapshots retain file hashes, byte lengths, newline counts and partial-tail byte
+counts without repairing JSONL or interpreting those counts as observations.
+An unreadable or interrupted entry appears as a listing diagnostic and does not
+hide other retained attempts. A spool entry never grants authority to replay an
+attempt.
+
+Inspect and export on the device host without a user project credential:
+
+```sh
+tinystudio lab spool-list --root /operator/chosen/location
+tinystudio lab spool-inspect SPOOL_KEY --root /operator/chosen/location
+tinystudio lab spool-snapshot SPOOL_KEY --root /operator/chosen/location
+tinystudio lab spool-export SPOOL_KEY capture.zip --manifest-sha256 SNAPSHOT_SHA256 --root /operator/chosen/location
+```
+
+Export checks the selected snapshot and fails if files change. It contains only
+`manifest.json` and the declared `evidence/` files, preserving exact bytes.
+It excludes private context, execution source, staged inputs and runtime logs.
+Treat evidence content itself according to the experiment's data policy.
+
+On the researcher client, use the ordinary project API credential and transport
+(including configured Cloudflare Access settings):
+
+```sh
+tinystudio lab recover-archive capture.zip --project research --idempotency-key recovery-1 --preview-only
+tinystudio lab recover-archive capture.zip --project research --idempotency-key recovery-1
+tinystudio lab recovered-evidence RUN_ID --project research
+```
+
+The client verifies the archive and streams its files to project artifact storage.
+The current project input endpoint accepts at most 512 MiB per file; larger
+uploads return HTTP 413. The client obtains a server preview and saves an exact
+attach request in a private durable journal beside the archive
+(`.recovery-request.json`). `--request-file` selects
+another journal location. Retain it and retry the same command and key after an
+uncertain response. A prepared request is retried unchanged; a completed journal
+returns the previously acknowledged receipt even if the archive is unavailable.
+It is not a fresh check of server object availability. For an intentional
+additional association, choose a different key and a separate `--request-file`;
+an existing journal remains bound to its original request.
+
+The server independently checks project/run/attempt/target/specification identity,
+artifact hashes, sizes and JSONL byte facts before committing an append-only
+`server.evidence_recovered` association. Recovery is labelled
+`operator_recovered_evidence`; it does not renew a lease, change run state or
+results, attest the runtime, establish a physical stop, or register a model.
+The run page displays these receipts separately, including hashes, original
+producer claims and verified byte downloads. Portable bundles carry the receipts,
+producer manifests and evidence as historical operator-supplied material.
+
+Collection choices `samples`, `duration`, `timeout`, `interval`, `stale_after`,
+`max_frame_bytes` and `max_queue_frames` are authored parameters. A null sample
+count or duration removes that stopping bound; zero samples or duration produces
+empty evidence without opening a transport. Host `limits` can impose explicit
+resource budgets. Requests exceeding those budgets fail before opening a device;
+they are never silently cropped or treated as a statistical sample-size rule.
+The run retains the selected plan and operator budgets separately.
+
+These adapters support local protocol and emulator verification. Wokwi RFC2217
+and Renode SocketCAN still require the simulator's own bridge/session setup;
+their cloud/runtime availability is separate from a successful local transport
+test. The `hardware.session` bridge below connects an authored supervisor to
+parent-owned command authority; acquisition streams are not automatically joined
+to a controller or model.
+
+## Standalone command gateway
+
+The operator-provisioned gateway runs separately from the Lab API and read-only
+acquisition adapters. Lab `hardware.session` uses the parent-owned bridge
+described below; neither route establishes end-to-end control qualification.
+Standalone release,
+cancellation and observed lease expiry follow an operator-selected lease policy;
+an optional host watchdog checks that policy in the background. Host scheduling
+and SDK waits provide no hard real-time, control-stability or physical-stop
+guarantee.
+
+The existing fenced protocol 1 remains available when the binding omits
+`command_profile`. It uses typed `parameters` with operator-selected units and
+limits. Its device application must implement persistent epochs, command-ID
+deduplication, expiry checks and matching application acknowledgements. A serial
+write, ordinary Modbus response or MQTT PUBACK cannot substitute for that
+application protocol. Neither profile qualifies physical effects or device
+fencing merely by accepting a binding.
+
+Native profiles explicitly select `tinystudio.native-command-profile.v1` and
+accept serial/SCPI or TCP writes and queries, ordinary Modbus register/coil
+operations, MQTT publications, CAN frames or an operator-installed custom
+adapter. Serial/TCP queries require selected delimiter or fixed-byte read framing.
+Native payloads are validated against the selected operation and protocol ranges;
+values are never clamped or converted into typed engineering controls. Byte data
+uses explicit `utf8`, `hex` or `base64` encoding, with no appended delimiter or
+newline. Device JSON/text inside `data.value` remains literal, including malformed
+JSON for fault-injection experiments; the HTTP envelope itself rejects duplicate
+keys and nonfinite numbers.
+
+For an operator-chosen local MQTT broker and topic, a native binding can be:
+
+```json
+{
+  "endpoint_id": "bench-mqtt",
+  "operator_id": "bench-operator",
+  "transport": {
+    "kind": "mqtt", "host": "127.0.0.1", "port": 1883,
+    "topic": "owned-bench/commands", "allow_dns": false, "tls": false
+  },
+  "command_profile": {
+    "format": "tinystudio.native-command-profile.v1",
+    "allowed_operations": ["mqtt.publish"],
+    "max_request_bytes": null, "max_response_bytes": null,
+    "max_capture_bytes": null, "max_identity_chars": null
+  },
+  "send_timeout": 2,
+  "max_lease_seconds": null,
+  "local_stop": null,
+  "lease_policy": {
+    "on_release": "revoke_only",
+    "on_expiry": "revoke_only",
+    "on_cancel": "local_stop",
+    "watchdog_interval_seconds": null
+  }
+}
+```
+
+These values select one example endpoint and wait, rather than a recommended
+device configuration. Profile byte budgets and identity-length budgets default to
+`null` (Python `None`); there is no implicit scientific or sample-count ceiling.
+Byte budgets can be zero. Request/response bounds reject excess traffic or
+results; capture bounds retain a disclosed prefix and hash without changing the
+authored command. `GET /command-profile` reports their precise byte scopes.
+An optional positive `max_lease_seconds` bounds requested lease durations;
+`null` still requires a positive acquired lease and an unexpired command.
+`capability_claims` and any `ownership_key` remain operator claims.
+
+The optional top-level `lease_policy` shown above gives the defaults: release
+and expiry revoke host authority without a device write, while cancellation
+selects `local_stop`, preserving the previous cancellation behavior. Each action
+selects exactly `revoke_only` or `local_stop`; the latter uses the fixed
+operator-configured stop payload, never a payload supplied by a release caller.
+For a native binding with `local_stop: null`, a selected stop records
+`not_configured` and sends nothing. Successful host revocation or stop delivery
+does not establish the equipment's physical state.
+
+Provision binding and token-descriptor files as operator-owned regular files,
+mode `0600`, without symbolic or hard links, and the canonical journal root as
+operator-owned mode `0700`. The token descriptor contains exactly `endpoint_id`,
+`operator_id`, `token_sha256` and an explicit `permissions` list. Keep the bearer
+secret with the calling operator. Use one canonical local journal root for an
+endpoint; locks in that root do not coordinate copied journals on other roots or
+hosts. With operator-chosen paths, start the standalone listener using:
+
+```sh
+python -m tinystudio.lab.gateway_cli \
+  --binding-file ./gateway/binding.json \
+  --token-file ./gateway/token.json \
+  --journal-root ./gateway/state
+```
+
+The default listener is loopback. Other listeners require `--binding-mode tls`
+with certificate/key, or `reverse-proxy` with trusted proxy addresses and
+external TLS termination; endpoint bearer authentication still applies.
+`--config-max-bytes N` and `--request-max-bytes N` select optional private-file
+and HTTP-body budgets; absent explicit selections, the corresponding
+`TINYSTUDIO_GATEWAY_CONFIG_BYTES` and `TINYSTUDIO_GATEWAY_HTTP_BYTES` environment
+settings apply, defaulting to `None`. Zero is a valid budget; no fixed 64 KiB
+configuration or request limit is imposed. Importable `GatewayFilePolicy`,
+`GatewayRequestPolicy`, `GatewayStoragePaths` and `GatewayApiPaths` live in
+`tinystudio.lab.gateway_configuration`; `NativeCommandProfile` lives in
+`tinystudio.lab.command_profiles`. Lease policy and watchdog classes are
+`GatewayLeasePolicy` in `tinystudio.lab.gateway_lease_policy` and
+`GatewayWatchdog` in `tinystudio.lab.gateway_watchdog`.
+
+Device credentials belong in a separate private `--runtime-secrets-file`, not the
+public binding or payload. MQTT supports `username`/`password` and TLS fields
+`ca_certs`, `certfile`, `keyfile`, `key_password`; TCP supports those TLS fields
+plus `server_hostname`. TLS credentials require selecting TLS in the binding.
+Other built-in native drivers and the default legacy driver reject nonempty
+runtime secrets. An injected transport factory used with a credentials file must
+explicitly accept the `runtime_secrets` keyword; custom native adapter
+constructors receive `binding` and `runtime_secrets` separately. An incompatible
+factory signature fails before listener startup.
+
+Authenticated `GET /state`, `/journal` and `/command-profile` inspect the host
+journal and selected profile; `/command-profile` requires the token's `state`
+permission and exposes the read-only payload schema, digest, budgets and
+qualification scope. State also exposes the effective `lease_policy` and
+`lease_watchdog` status. `GET /lease-events` uses `journal` permission and
+`offset`/`limit` paging to inspect lease actions and their retained receipts. `POST /acquire`
+selects `endpoint_id`, `owner` and positive `ttl`; retain its returned `epoch` and
+lease expiry. `POST /heartbeat` renews that owner/epoch. Each `POST /commands`
+supplies `endpoint_id`, `owner`, `epoch`, a new `command_id`, absolute wall-clock
+`expires_at` within the lease, and exactly one of legacy `parameters` or native
+`payload`. For the binding above, one payload is:
+
+```json
+{
+  "operation": "mqtt.publish",
+  "data": {"encoding": "base64", "value": "AAH/DQo="},
+  "qos": 1,
+  "retain": false
+}
+```
+
+| Native receipt status | Recorded scope |
+| --- | --- |
+| `delivered_unverified` | Transport/adapter reports delivery; application outcome unverified |
+| `protocol_accepted` | Protocol acceptance report, such as MQTT QoS acknowledgement |
+| `response_received` | A protocol response was received, without proving the requested physical effect |
+| `application_reported` | Custom adapter application claim, retained as `adapter_claim` |
+
+Built-in receipts keep `device_application_confirmed: false`; every native
+receipt keeps `physical_outcome: "unverified"`. Custom-adapter file hashes describe
+module bytes observed after import; they do not attest the executed code.
+A matching completed command ID
+returns its retained receipt without another delivery, even after its lease or
+command expiry. This authenticated lookup requires the same immutable request,
+including owner, epoch, expiry and payload. Reusing the ID for different intent
+fails. Pending, unknown or consumed IDs never authorize automatic replay.
+
+`POST /release` requires an explicit token `release` permission and a body with
+`endpoint_id`, stable `request_id`, `owner` and positive, strictly integer `epoch`
+(not a boolean). New releases require the exact current lease. An identical
+completed request returns its immutable lifecycle receipt without revoking or stopping a
+later owner; a changed owner/epoch under the same request ID fails. A clean
+release can return the host to `idle` only after in-flight work has settled and
+there are no pending/unknown commands or unresolved lease actions. Inspect the
+receipt's `host_state`; a completed action alone does not imply availability.
+Expiry, cancellation and uncertain outcomes remain `recovery_required`.
+
+Lifecycle receipts use `tinystudio.gateway-lease-event.v1`, retain the exact
+lease identity and termination action, and reference the stop command and its
+delivery receipt when one exists. They keep `physical_outcome: "unverified"`.
+Ownership revocation commits together with its lifecycle intent; the action is
+durably claimed before a stop can be sent. After restart, a committed but
+unclaimed pending action can be resumed by a watchdog tick. An action already
+marked executing becomes unknown and is never automatically replayed.
+
+`POST /stop` uses the bound operator and a stable `request_id`, revokes host
+authority and attempts the exact configured `local_stop` payload. With
+`local_stop: null`, it records `not_configured` and sends no device stop.
+Neither outcome proves that equipment stopped. In `recovery_required`, explicit
+`POST /reconcile` evidence must include `acknowledge_unverified_outcomes: true`.
+Native reconciliation records an `operator_attestation`, advances the host epoch
+and consumes uncertain command IDs while preserving receipts and unknown
+physical outcomes. It supersedes old unresolved lease actions before a new
+lease can be acquired. It performs no command replay or physical-state
+verification.
+
+A positive finite `watchdog_interval_seconds` starts an ASGI-owned watchdog;
+`null` creates no background thread. With the watchdog disabled, gateway calls
+can still observe expiry, and library callers can invoke `watchdog_tick()` to
+process pending actions. The worker waits the selected interval before its first
+tick and after each completed tick. This is a host polling cadence, not a
+hard deadline, SDK timeout guarantee or hardware timer that survives a gateway
+process outage. Default expiry behavior still performs no device stop unless
+the operator selects `on_expiry: "local_stop"`. That action selection alone does
+not enable a background worker; a watchdog or explicit library tick must run it.
+
+Library `GatewayWatchdog.close(timeout=None)` requests shutdown and joins the
+worker before returning. An optional nonnegative caller-selected timeout bounds
+that join; the returned status reports `alive: true` if a tick is still running.
+The API uses the default join before closing the gateway journal. A blocked
+native call can therefore delay shutdown; a requested shutdown is not evidence
+of physical stopping.
+
+Verification uses owned software endpoints, native loopback/emulator fixtures and
+controlled failures. It establishes no physical-device, Wokwi/Renode session,
+mounted-volume power-loss or end-to-end Lab control qualification.
+
+## Hardware session supervisors
+
+`hardware.session` runs a recorded decision stream or an authored Python
+supervisor through an attempt-scoped IPC client. It requires native POSIX
+execution with profile `trusted_native`. This is trusted code under the same
+host UID, not process or credential isolation. The parent owns the gateway,
+lease renewal, attempt fencing and cleanup. The child receives an attempt-scoped
+submission capability, without operator gateway credentials or lease-management
+APIs in its supervisor context.
+
+Submitted native operations are sent to the selected binding in every operating
+mode. The authored supervisor controls which proposals it submits or retains
+without sending; the mode label itself does not redirect traffic to a simulator.
+
+On the execution host, provision `profile_config.engine_grants.hardware.session`
+with `native_execution: true` and a `bindings` map. Each binding contains a
+native `gateway_binding` from the standalone reference and an absolute
+operator-chosen `state_directory`. Optional `lease_seconds` and
+`renew_interval_seconds` default to 30 and 5 seconds; they are host choices,
+not scientific requirements. `max_request_bytes` and `max_response_bytes` are
+optional IPC frame-body budgets, defaulting to `null`. `evidence` selects the
+parent's `RecordWritePolicy`. For example, with operator-chosen identities,
+broker and state directory:
+
+```json
+{
+  "native_execution": true,
+  "bindings": {
+    "chosen-session": {
+      "gateway_binding": {
+        "endpoint_id": "bench-mqtt",
+        "operator_id": "bench-operator",
+        "transport": {
+          "kind": "mqtt", "host": "127.0.0.1", "port": 1883,
+          "topic": "owned-bench/commands", "allow_dns": false, "tls": false
+        },
+        "command_profile": {"format": "tinystudio.native-command-profile.v1"},
+        "local_stop": null
+      },
+      "state_directory": "/operator/chosen/session-state",
+      "lease_seconds": 30,
+      "renew_interval_seconds": 5,
+      "max_request_bytes": null,
+      "max_response_bytes": null,
+      "evidence": {"flush_records": 1, "fsync": true}
+    }
+  }
+}
+```
+
+Keep SDK credentials in the separate host configuration
+`profile_config.engine_secrets.hardware.session`, shaped as
+`{"bindings": {"chosen-session": {"username": "OPERATOR_SUPPLIED", "password": "OPERATOR_SUPPLIED"}}}`
+for MQTT authentication when selected. `HardwareSessionBinding.select_runtime_secrets`
+selects only that binding's credentials for the parent transport. They are not
+authored definition parameters and are not supplied in the child context.
+Gateway and IPC byte budgets cover different scopes; neither is a dataset or
+decision-count limit.
+
+In the Lab authoring view choose **Hardware session**, enter the operator binding
+ID and attach the supervisor source in Inputs. The optional `supervisor` role
+fills a genuinely new unique attachment into the selector; the backend accepts
+the explicit artifact ID regardless of its role. Generic parameter JSON remains
+editable for both supervisor kinds. A Python selection uses:
+
+```json
+{
+  "binding_id": "chosen-session",
+  "supervisor": {
+    "kind": "python", "artifact_id": "UPLOADED_SOURCE_ID", "callable": "program"
+  },
+  "supervisor_parameters": {},
+  "evidence": {"flush_records": 1, "fsync": true},
+  "ipc_timeout_seconds": null,
+  "artifact_visibility": "evaluation"
+}
+```
+
+Replace the source ID with its attached frozen input reference and SHA-256.
+Recorded supervisors instead select
+`{"kind": "recorded", "artifact_id": "UPLOADED_SOURCE_ID"}` and consume JSONL
+rows containing exactly `decision_id`, native `payload` and positive finite
+`valid_for_seconds`. There is no fixed row count. Python source can have a
+downloaded filename without `.py`; the engine copies and verifies its bytes
+before loading the selected callable, without timestamp-based bytecode reuse.
+It invokes `program(session, context)`. The public context contains authored
+`definition`, `seed`, arbitrary `supervisor_parameters`, frozen `inputs`, a
+hash-verified `input_paths` map, `output_dir` and the public `profile`.
+
+The supervisor can load a chosen frozen model from `context["input_paths"]`, run
+rules, model inference or software-in-the-loop logic, and issue native queries
+for observations through `session.submit(decision_id, payload,
+valid_for_seconds=...)`. Commands use that same method; `.profile` is a defensive
+public description. The client exposes no acquire, heartbeat, release,
+reconciliation or stop authority. There is no implicit controller, prompt
+priority, prose-to-JSON conversion, model retry, value clamp or stability
+guarantee. Python returns `None` or a finite JSON object; its report and any
+returned records/metrics are retained without inferring observation validity.
+
+`evidence` selects local submission/receipt flush and fsync policy independently
+of the parent's policy; `ipc_timeout_seconds` is positive finite or `null` for
+no selected client timeout. Success artifacts use the authored
+`artifact_visibility` (`model`, `evaluation` or `truth`, default `evaluation`).
+Failed/cancelled local outputs remain audit-only evaluation evidence for later
+explicit curation. Visibility never rewrites raw source, decisions or receipts.
+The engine rechecks the retained supervisor source after execution. A changed
+regular file is failure evidence with its actual hash and `verified: false`;
+missing or nonregular source is recorded, with unsafe replacements removed only
+from the engine's known source slot so other audit files remain exportable.
+The engine retains the source, raw supervisor report, local timed
+submission/receipt JSONL and manifest. The parent independently retains admission,
+delivery and lease metadata and freezes its evidence after child cleanup.
+Parent cleanup preserves the first observed termination cause: normal completion
+selects `on_release`, server/manual cancellation and the selected wall deadline
+select `on_cancel`, and lost lease authority selects `on_expiry`. Known elapsed
+deadlines are observed before accepting a normal-exit cause. Cleanup uses the
+exact owner and lease epoch, including an ordinary command's durably recorded
+revocation; it never replays an uncertain stop or stops a newer owner's lease.
+File fsync acknowledgements and transport receipts do not prove physical effects,
+power-loss durability or stopping.
+
+The original bridge verification exercised serial loopback, the actual native
+Runner child and local IPC. That verification establishes no physical-device,
+Wokwi/Renode session or CUDA qualification. The same definition remains
+authorable through existing Lab JSON, CLI and tools; target capabilities and
+explicit operator bindings still apply.
+
+### Managed emulator sessions
+
+An optional `parameters.emulator` lets the parent manage a software process for
+the same hardware session. Omitting it or selecting `null` preserves the existing
+session. The experiment chooses portable assets, argument tokens, readiness and
+exit policy. The execution host chooses the executable through a separate
+`emulator_bindings` map beside its existing gateway `bindings`:
+
+```json
+{
+  "native_execution": true,
+  "emulator_bindings": {
+    "chosen-emulator": {
+      "executable": {"argv_prefix": ["/operator/chosen/emulator-launcher"]},
+      "public_env": {"EXPERIMENT_LABEL": "owned-software-fixture"}
+    }
+  }
+}
+```
+
+This is a fragment of `profile_config.engine_grants.hardware.session`; retain the
+gateway binding required by the session. An explicit prefix can select any
+operator-provisioned executable and literal arguments. Alternatively,
+`"executable": {"runtime_tool": "renode"}` or
+`"executable": {"runtime_tool": "wokwi_cli"}` selects a central `RuntimeTools`
+alias, configured with `TINYSTUDIO_RENODE` or
+`TINYSTUDIO_WOKWI_CLI`. These aliases select programs; they neither install them
+nor choose a board, firmware, device model or command-line arguments.
+
+The target advertises `hardware_session_emulator_bindings` containing each
+configured `binding_id`, its public configuration `binding_sha256` and explicitly
+unverified qualification fields. It publishes no executable arguments,
+environment values or private paths. Preflight requires the exact emulator
+binding ID only when an emulator is selected, in addition to the native grant
+and gateway binding. A matching declaration establishes configured availability;
+it performs no binary lookup, readiness probe or firmware verification.
+
+Attach the asset files as ordinary frozen Inputs with their SHA-256 values, then
+add a selection such as this to the existing session parameters:
+
+```json
+{
+  "emulator": {
+    "binding_id": "chosen-emulator",
+    "assets": [
+      {"name": "project", "artifact_id": "UPLOADED_PROJECT_ID", "destination": "project/config.json"},
+      {"name": "firmware", "artifact_id": "UPLOADED_FIRMWARE_ID", "destination": "project/firmware.bin"}
+    ],
+    "argv": [{"asset": "project"}, {"asset": "firmware"}, {"workspace": "output"}],
+    "cwd": ".",
+    "readiness": {"kind": "process_running"},
+    "startup_timeout_seconds": null,
+    "shutdown_grace_seconds": 3,
+    "max_log_bytes": null,
+    "poll_interval_seconds": 0.02,
+    "raw_log_visibility": null,
+    "on_exit": "record"
+  }
+}
+```
+
+The example launcher accepts three positional paths; select arguments that match
+the actual provisioned program. The authored `argv` is appended to the operator
+prefix. Each literal is one exact argument, including empty strings after the
+program; `{"asset": "name"}` resolves one selected asset copy and
+`{"workspace": "relative/path"}` resolves one private workspace path. Readiness
+commands accept the same typed tokens. No shell expansion or string template is
+applied. Asset destinations and working directories are canonical relative paths
+within the owned workspace. The parent verifies the downloaded input hashes and
+makes separate private copies; the original frozen inputs are not rewritten.
+
+Readiness selects one explicit observation:
+
+| Selection | Observed scope |
+| --- | --- |
+| `{"kind": "process_running"}` | The owned process is alive at the check. |
+| `{"kind": "tcp", "host": "selected-host", "port": 12345}` | The selected endpoint accepts a connection; hostname resolution uses the host's normal resolver. |
+| `{"kind": "log_bytes", "stream": "stdout", "marker": {"encoding": "hex", "value": "00ff"}}` | The exact byte marker is observed in the selected stdout/stderr stream; markers also accept `utf8` or `base64`. |
+| `{"kind": "command", "argv": ["selected-checker"], "expected_exit_code": 0}` | The selected checker exits with the selected code; an optional relative `cwd` chooses its working directory. |
+
+These observations establish only their stated scope. The supervisor can submit
+raw queries and commands through the separately selected native gateway profile
+and evaluate an authored response predicate. Continuous telemetry collection
+requires an explicit reader in the selected program or supervisor; readiness
+does not create one or select a scientific success criterion.
+
+`startup_timeout_seconds: null` selects no additional startup deadline; `0`
+requests an immediate readiness check. `max_log_bytes: null` selects no capture
+cap; `0` retains no raw log bytes. Finite log capture limits record truncation and
+observed byte counts. `poll_interval_seconds: 0` selects no retry sleep, and
+`shutdown_grace_seconds: 0` selects no graceful waiting interval. The attempt's
+authority and execution budgets still apply. Default `on_exit: "record"` retains
+an observed emulator exit without assigning scientific failure. Selecting
+`"fail_session"` asks the parent to fail an active session when it observes the
+emulator exit. Neither policy interprets firmware behavior or physical effects.
+
+Private process environment values belong in
+`profile_config.engine_secrets.hardware.session.emulator_bindings`, for example
+`{"chosen-emulator": {"environment": {"TOKEN": "OPERATOR_SUPPLIED"}}}`.
+The parent selects only that binding's overlay; it is excluded from portable
+parameters, public binding digests and capability declarations. Public environment
+choices remain part of the configured binding. Raw stdout/stderr stay outside
+automatically exported evidence by default. An explicit `raw_log_visibility` of
+`model`, `evaluation` or `truth` requests byte-preserving copies with that
+visibility after confirmed cleanup. There is no automatic redaction or rewrite;
+program output can contain values the program prints.
+
+Startup prepares and verifies the private assets, starts the emulator and checks
+selected readiness before exposing the session bridge to the supervisor. On
+shutdown the parent stops and reaps the supervisor first, closes the authority
+bridge and its selected scoped device action while the emulator is still alive,
+then closes the emulator and owned helpers and drains logs. Only after known
+writers stop does it seal asset custody and retain the final evidence inventory.
+The custody report distinguishes original download bytes, initial asset copies
+and final copy bytes. Expected writable-project changes remain observed changes;
+the researcher qualifies their meaning. A changed original downloaded input is a
+provenance failure. The private workspace is not automatically walked for models
+or exported files.
+
+Startup errors, exits, cancellation and unconfirmed cleanup retain qualified
+audit metadata. A missing process handle or failed cleanup observation remains
+unknown. Unconfirmed cleanup prevents asset sealing and raw-log/workspace export;
+known closed audit metadata can still be retained. Process cleanup, transport
+ACKs and file hashes establish neither physical stopping nor model fidelity.
+This remains native `trusted_native` execution under the operator's same UID.
+
+Runtime metadata distinguishes its own bridge/emulator cleanup from the caller's
+assertion that the supervisor has stopped. Runner supplies its process-group
+cleanup outcome. A later uncertain assertion invalidates the current sealing
+claim and produces a separate corrective assurance receipt referencing the prior
+manifest hash; previously exported bytes remain historical and cannot be
+recalled. Ctrl-C and Python `SystemExit` propagate after cleanup is attempted,
+with qualified cleanup evidence retained.
+
+Owned vendor verification used the official **Renode 1.17.0** portable release
+with one RV32I/NS16550 software model: a 32-byte fixture firmware returned each of
+the 256 byte values XOR `0xa5` through a Renode PTY and an owned loopback bridge.
+That fixture exercised managed startup, selected readiness, private logs and
+known process cleanup. It was not a C compiler build, physical-device comparison,
+timing/fidelity qualification or a complete Runner/server experiment. The
+reproducible optional fixture is in `tests/test_lab_managed_renode.py` and uses the
+operator-selected binary without downloading one.
+[Renode's UART documentation](https://renode.readthedocs.io/en/latest/host-integration/uart.html)
+describes PTY and TCP connections; its PTY was used for this fixture. Wokwi process
+configuration and RFC2217 support remain operator-selected and are documented in
+the [official Wokwi CLI reference](https://docs.wokwi.com/wokwi-ci/cli-usage).
+No Wokwi binary, token or cloud session was qualified by the Renode fixture.
+
 ## Data preparation contracts
 
 The actual Lab parameter view uses shared application templates and controls for
@@ -179,6 +958,23 @@ remain editable but block saving, compatibility checks and submission. Advanced
 settings share the visual definition; unknown fields and custom options survive.
 
 `data.pipeline` accepts retained JSON/JSONL, CSV and optional Parquet evidence through `source`, `recorded` or `dataset` bindings. Original files remain separate from normalized and transformed records. Preparation alone does not request a training dataset. An explicit `parameters.partition_policy` requests one; a complete existing train/validation/test assignment is validated and preserved. Partially declared, conflicting or unknown labels fail. Source-level evaluation/truth restrictions cannot be promoted by cleaning, alias changes or the existing training serializer. Training-only fitted transforms require a validated training partition.
+
+Field mappings accept existing flat source-column names or explicit selectors:
+`{"pointer": "/decoded_payload/temperature"}` follows RFC 6901, and
+`{"literal": "researcher-selected label"}` supplies a constant without stringifying
+its value. Missing pointer targets fail unless the mapping explicitly chooses
+`"missing": "null"`. The source editor preserves structured selectors and
+advanced mapping fields.
+
+`parameters.resources` selects optional `max_rows`, `source_bytes`,
+`per_source_bytes`, `pipeline_stages` and `window_records` budgets. Omitted choices
+inherit the execution host's explicit limits, or remain unbounded when the host
+has selected none. Explicit null cannot bypass a finite host budget. A budget
+failure is an execution/resource error, rather than scientific validation, and
+does not silently discard source rows. The resource receipt records selected
+limits, operator limits and actual usage. Decoding, sorting, grouping, lineage
+and transformations currently use memory; removing fixed dataset ceilings does
+not establish out-of-core execution.
 
 Partition strategy `temporal` (the default) orders whole connected groups and checks event/availability boundaries in one comparable clock, with explicitly selected purge controls. Strategy `grouped` allocates connected groups with the frozen seed, allowing independent episode clocks that restart. It reports no temporal-isolation guarantee, rejects temporal purge controls and retains per-clock bounds. In both strategies, any shared configured episode/device/scenario field connects records into one group; declared assignments cannot split it. The overlap report also exposes repeated dimensions outside the selected grouping policy.
 
@@ -193,6 +989,48 @@ aliases also apply). Source qualifiers never silently qualify a different target
 `purge_seconds` is a duration in seconds; `purge_coordinate_duration` records its
 converted value in the clock's units. Nonzero purges currently support the shared
 time registry's `s`, `ms` and `us`; other units require explicit alignment first.
+
+### Import curated observations into a study
+
+Retain acquisition bytes and curate their decoded records with `data.pipeline`.
+The study editor can then preview an explicit JSONL artifact projection and
+import its selected rows. Choose the protocol revision, physical source lines,
+unit IDs, conditions and named data fields. Repeated units remain repeated;
+counts describe rows and do not establish independence or sample size.
+
+A projection requires `selection: {"all": true}` or an explicit
+`selection: {"lines": [1, 3]}` list, plus `unit_id`, `condition`, `data`, and
+`number_encoding`. Each field selector is `{"pointer": "/your/field"}` or
+`{"literal": "your value"}`. Pointers follow [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901).
+`observed_at` is optional; `kind` defaults to `observation` and accepts authored
+record kinds. Choose `decimal_strings` to preserve source numeric tokens
+exactly as strings, or `json` for native JSON numbers with disclosed binary64
+rounding. Literal selector values retain their authored types.
+
+`tinystudio lab study-import-preview STUDY_ID REQUEST.json --project PROJECT`
+reads a request containing `artifact_id`, `revision`, and `projection`. Preview
+writes no ledger records or artifacts. It validates the complete source and
+returns the exact source hash, projected-row digest, normalized mapping,
+implementation identity, and up to five display examples. All selected rows
+contribute to the count and digest. The imported record retains its physical
+source line, raw-line hash, decoded-row hash, source artifact hash and projection
+digest. Bulk source verification happens once per import.
+
+`study-import` accepts that request plus `preview_digest` and an
+`idempotency_key`. Observations and their receipt publish in one database
+transaction. Retry an uncertain response with the unchanged request and key;
+a completed retry returns its original receipt, including after external source
+loss. A different key represents an intentional additional import. A changed
+source, mapping, or protocol fingerprint requires a new preview. Researcher
+record kinds remain open; the importer reserves its internal publication IDs.
+The assistant exposes the same two steps through `lab_study_import_preview`
+and `lab_study_import`. Shared route objects supply the service/client paths;
+the study response supplies action links to the browser.
+
+Freeze the resulting study boundary for `statistics.analyze`, then explicitly
+select the outcome, groups, units, repetitions/missingness policy and inference
+method. The original artifact, imported ledger rows and analysis selection
+remain separate inspectable evidence.
 
 ### Promote retained chats into existing training data
 
@@ -471,28 +1309,44 @@ remain readable.
 
 Device and dtype are selected independently. Explicit run fields override their
 respective machine defaults; an omitted dtype still inherits the configured
-dtype. For example, a CPU run on a machine configured for bf16 must explicitly
-select float32 rather than receiving a hidden precision fallback. The trainer
-checks actual policy/reference and prepared-batch placement and records observed
-dtypes. QLoRA requires compatible CUDA/bitsandbytes or the pinned Linux ARM64
-Python 3.12 CPU NF4 pack in `requirements/lab/qlora-linux-arm64-py312.txt`.
-Native Apple QLoRA remains unsupported. The CPU qualification covers float32 SFT,
-continued pretraining and DPO on the exact fixture image
-`tinystudio@sha256:2c8af1da323514b5fee5b56c724424b18fe0aeb11873de1dbc59ccd33c478443`.
-The operator must install the pack into the execution environment, using
-`python -m pip install --no-user -r requirements/lab/qlora-linux-arm64-py312.txt`;
-isolated runners disable user-site packages and replace HOME with an attempt-owned
-directory. Measure dependencies with those same settings before advertising the
-image/runtime evidence. A library's platform support or a metadata probe alone
-does not qualify training. CUDA targets require their own actual qualification.
+dtype. A CPU run that selects bf16 retains that choice. Actual kernel and trainer
+behavior is established by measurement. The trainer checks actual policy/reference
+and prepared-batch placement and records observed dtypes.
+The optional `qlora` package extra installs bitsandbytes into the chosen
+environment; installation leaves runtime compatibility unprobed.
+
+`runtime.qualify` measures NF4 training and retained reload on the selected Lab
+target/backend/profile. Inspect `tinystudio lab runtime-methods`, then author an
+explicit objective, device, dtype and fixture with `runtime-define`. Existing
+preflight, submit and inspect commands execute and retain the measurement. The
+deterministic local fixture records its model, tokenizer, data, seed and settings;
+`fixture=retained` uses supplied immutable model/snapshot artifacts. A completed
+probe may report unavailable prerequisites, failed measurements or verified
+compatibility. Verification applies only to its recorded selection.
+
+NF4 execution choices live in `NF4ExecutionPolicy`. The default preserves library
+behavior. An explicitly selected `nf4_execution.cpu_inference=portable` disables
+the discoverable bitsandbytes CPU packing optimization and records that setting.
+Frozen-base checks still apply. Reload comparisons default to identical dtype and
+bytes; an `allclose` policy requires explicit `rtol` and `atol` and retains measured
+errors. Runtime versions are provenance, and the optional baseline in
+`requirements/lab/qlora-linux-arm64-py312.txt` remains available for reproducing
+that environment. Native hosts and configured containers need their own actual
+probe evidence; a successful host probe does not qualify a container.
+Image Python commands resolve inside that image. The runner uses the shared
+`RuntimeTools.container_python` setting (`TINYSTUDIO_CONTAINER_PYTHON`) or an
+explicit profile `python` override, without substituting a host interpreter path.
 
 New QLoRA outputs use `tinystudio.pretrained.v2` / `quantized_adapter`: they retain
 the packed NF4 base, nested quantization state, adapter, tokenizer, checksums,
-observed precision and three live-policy prediction probes. Reload verifies the
-retained base/adapter and compatible OS, architecture, dependency and device
-contract, then checks bitwise probe equality. It never substitutes the original
-floating-point base. Legacy serving, merged export and refinement reject these
-new outputs until those consumers have a compatible quantized execution path;
+observed precision and three live-policy prediction probes. Reload verifies
+retained files, quantization state, precision and actual placement, then measures
+prediction agreement using the declared comparison policy. A retained policy
+follows the bundle into later serving; an explicit loader policy overrides it.
+Undeclared policies use bitwise equality. Different runtime metadata is recorded
+alongside actual verification. The original floating-point base is never
+substituted. Legacy job serving, merged export and refinement reject these
+outputs until those consumers have a compatible quantized execution path;
 durable configuration/status markers cover running and failed checkpoints too.
 Missing retained state is an error. Existing nonquantized v1 outputs remain
 readable. Training-time retrieval selections remain unsupported on this trainer
@@ -573,7 +1427,7 @@ Generation parameters are `max_new_tokens` (1–512), explicit `device` (CPU by 
 
 The attempt-owned model session reuses existing scratch and Hugging Face/retained full/adapter loaders, verifies the outer artifact and retained manifests, loads locally, and releases tensors and extracted files on completion or failure. It records exact input/output token IDs, effective context capacity and output reservation. Unknown context capacity and prompt-plus-output overflow fail; evidence and questions are never silently truncated. Incompatible devices or retained quantization runtimes fail without fallback. A supported loader is not qualification of every model family or hardware target.
 
-The run publishes unchanged index bytes, query traces, prediction records and `generation-evaluation.json`. Known retrieval restrictions and overlaps with case source/episode identities remain visible and research-only. Missing lineage and overlap with the model's training corpus are explicitly not established; a frozen index is not a claim of leakage-free evaluation. Existing run records, artifacts and the baseline comparison evidence expose these results. QLoRA generation is qualified only for the pinned local Linux ARM64 CPU NF4 runtime exercised by `tests/test_lab_qlora_workflow.py`: retained SFT, continued-pretraining and DPO outputs enter the registered generation engine, preserve their packed base, and reproduce exact generated tokens after unload/reload. Context overflow and cancellation clean up owned session resources. This does not qualify another device/runtime or establish useful model accuracy. Broader text/policy metrics and complete D application acceptance remain separate gates.
+The run publishes unchanged index bytes, query traces, prediction records and `generation-evaluation.json`. Known retrieval restrictions and overlaps with case source/episode identities remain visible and research-only. Missing lineage and overlap with the model's training corpus are explicitly not established; a frozen index is not a claim of leakage-free evaluation. Existing run records, artifacts and the baseline comparison evidence expose these results. QLoRA generation qualification is scoped to actual selected-runtime receipts. `tests/test_lab_qlora.py` exercises native CPU SFT, continued-pretraining and DPO retention, live-logit replay and serving reload with the explicitly selected NF4 execution policy. `tests/test_lab_qlora_workflow.py` requires its separately configured container profile for the registered generation path. Each runtime and profile needs its own completed evidence. Context overflow and cancellation clean up owned session resources. This does not qualify another device/runtime or establish useful model accuracy. Broader text/policy metrics and complete D application acceptance remain separate gates.
 
 ## Numeric partitions and control environments
 

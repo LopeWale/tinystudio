@@ -44,7 +44,7 @@ def secret_hash(value: str) -> str:
 def runtime_versions() -> dict[str, str]:
     result = {"python": platform.python_version(), "os": platform.system(), "machine": platform.machine()}
     for name in ("numpy", "torch", "transformers", "pyarrow", "tokenizers", "peft", "trl", "accelerate", "bitsandbytes", "safetensors", "datasets",
-                 "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt"):
+                 "sentence-transformers", "scipy", "pint", "simpy", "ortools", "hypothesis", "fmpy", "pybamm", "pandapower", "torchrl", "tensordict", "pyserial", "pymodbus", "paho-mqtt", "python-can", "pvlib"):
         try:
             result[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -66,7 +66,7 @@ def catalog() -> dict:
     from copy import deepcopy
     import importlib.util
     from .catalog import catalog as adapters
-    from .plugins import SCHEMAS, manifest_for, qualification_matrix
+    from .plugins import SCHEMAS, hardware_session_provenance, manifest_for, qualification_matrix
     methods = [
         ("learning.language", "Tiny transformer / recurrent language model", True),
         ("retrieval.index", "Lexical, structured and episode retrieval", True),
@@ -75,6 +75,10 @@ def catalog() -> dict:
         ("data.pipeline", "Scientific data preparation and grouped partitions", True),
         ("evaluation.compare", "Independent validation and paired comparison", True),
         ("statistics.plan", "Statistical planning and power calculations", True),
+        ("statistics.analyze", "Observed study analysis and custom methods", True),
+        ("runtime.qualify", "Measured runtime training and reload probes", True),
+        ("hardware.discover", "Operator-bound device and SunSpec discovery", True),
+        ("hardware.session", "Attempt-bound native hardware command sessions", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),
@@ -95,11 +99,21 @@ def catalog() -> dict:
             "qualification": "unqualified", "reason": "Implementation pending" if not implemented else
             "Optional dependencies missing: " + ", ".join(missing) if missing else None,
             "qualification_reason": "Availability is not an execution receipt; method-specific selections have additional prerequisites."})
+        if id_ == "hardware.session":
+            method_rows[-1].update(requires_operator_binding=True,
+                execution_profiles={"native": ["trusted_native"]},
+                parameters_schema_ref="tinystudio.lab.hardware-session-parameters.v1",
+                provenance=hardware_session_provenance(),
+                qualification_reason="Trusted-native same-UID execution requires an explicit host grant and selected binding; delivery receipts do not prove physical outcomes or source isolation.")
     method_rows = [{**row, "manifest": manifest_for(row)} for row in method_rows]
     from .statistics_selection import method_catalog
+    from .runtime_probe import method_catalog as runtime_methods
+    from .hardware_discovery_engine import method_catalog as discovery_methods
     return {"schema_version": 1, "enabled_increments": ["A", "B"], "adapters": items, "methods": method_rows,
             "qualification_matrix": qualification_matrix(items+method_rows),
             "statistics_methods": method_catalog(),
+            "runtime_methods": runtime_methods(),
+            "hardware_discovery_methods": discovery_methods(),
             "contract_schemas": deepcopy(SCHEMAS),
             "domains": sorted({item["domain"] for item in items})}
 
@@ -330,7 +344,7 @@ def submit(db: Session, project: str, definition_id: str, revision: int, target_
     integrity = selection_integrity(body.model_dump(), manifest)
     if not integrity["passed"]:
         raise LabError("; ".join(item["message"] for item in integrity["checks"] if not item["passed"]), 409)
-    if body.operating_mode == "physical_control":
+    if body.operating_mode == "physical_control" and body.engine != "hardware.session":
         raise LabError("physical control requires a qualified gateway ownership adapter; no physical endpoint is bound")
     backend, profile = body.execution.backend, body.execution.profile
     profiles = target.capabilities.get("profiles_by_backend", {"native": ["trusted_native"]})
@@ -437,12 +451,17 @@ def claim(db: Session, target: LabTarget, capabilities: dict, *, run_id: str | N
 
 
 def attempt_authority(db: Session, target: LabTarget, id_: str, token: str, *, terminal: bool = False) -> tuple[LabRun, LabAttempt]:
-    lock_target(db, target)
+    project_id, target_hash = target.project_id, target.token_hash
+    current_target = lock_target(db, target)
+    if current_target.project_id != project_id or current_target.token_hash != target_hash:
+        raise LabError("execution target credential changed", 403)
     attempt = db.get(LabAttempt, id_)
     if attempt is None or attempt.target_id != target.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
         raise LabError("invalid attempt authority", 403)
     run = get_run(db, target.project_id, attempt.run_id, lock=True)
     db.refresh(attempt)
+    if attempt.target_id != target.id or attempt.run_id != run.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
+        raise LabError("invalid attempt authority", 403)
     if attempt.state == "running" and aware(attempt.lease_until) <= now():
         raise LabError("attempt lease expired; stale execution may not publish", 409)
     if not terminal and (attempt.state != "running" or run.state != "running"):
@@ -574,62 +593,12 @@ def retry(db: Session, project: str, id_: str) -> LabRun:
 
 
 def finish(db: Session, target: LabTarget, attempt_id: str, token: str, state: str, result: dict | None, error: str | None) -> dict:
-    if state not in {"succeeded", "failed", "cancelled"}:
-        raise LabError("invalid terminal state")
-    payload_digest = checksum({"state": state, "result": result, "error": error})
-    # Read identity without acquiring the target/run authority locks. Slow
-    # storage verification must not prevent a heartbeat extending the lease.
-    attempt = db.get(LabAttempt, attempt_id)
-    if attempt is None or attempt.target_id != target.id or not secrets.compare_digest(attempt.token_hash, secret_hash(token)):
-        raise LabError("invalid attempt authority", 403)
-    run = get_run(db, target.project_id, attempt.run_id)
-    if attempt.state != "running":
-        # Recheck under the normal locks even for an idempotent completion.
-        _, ended = attempt_authority(db, target, attempt_id, token, terminal=True)
-        if ended.result_digest == payload_digest:
-            return {"accepted": True, "state": ended.state}
-        raise LabError("attempt already ended with a different outcome", 409)
-    if aware(attempt.lease_until) <= now():
-        raise LabError("attempt lease expired; stale execution may not publish", 409)
-    if checksum(run.spec) != run.spec_digest:
-        raise LabError("immutable specification checksum mismatch", 409)
-    canonical_result = _canonical_result(db, run.project_id, attempt.id, result)
-    if state == "succeeded" and (not canonical_result or not canonical_result.get("artifacts")):
-        raise LabError("success requires a complete evidence manifest")
-    with tempfile.TemporaryDirectory(prefix="ts-lab-outcome-") as root:
-        directory = Path(root)
-        _verify_result(db, run.project_id, canonical_result, directory)
-        document = _outcome_document(run, attempt.id, state, canonical_result, error)
-        path = directory / "attempt-outcome.json"
-        path.write_bytes(canonical(document))
-        verified = persist_verified(path, run.project_id, "application/json")
-        # Only publication holds authority locks; repeat all mutable ownership
-        # checks after verification, including cancellation and lease expiry.
-        run, attempt = attempt_authority(db, target, attempt_id, token, terminal=True)
-        if attempt.state != "running":
-            if attempt.result_digest == payload_digest:
-                return {"accepted": True, "state": attempt.state}
-            raise LabError("attempt already ended with a different outcome", 409)
-        if run.state != "running":
-            raise LabError("attempt no longer owns this run", 409)
-        if run.spec_digest != document["spec_digest"] or checksum(run.spec) != run.spec_digest:
-            raise LabError("immutable specification changed during completion verification", 409)
-        if state == "succeeded" and run.cancel_requested:
-            raise LabError("cancellation requested; completion cannot publish success", 409)
-        # Refresh/canonicalize metadata after the unlocked transfer boundary.
-        final_result = _canonical_result(db, run.project_id, attempt.id, result)
-        if final_result != canonical_result:
-            raise LabError("artifact metadata changed during completion verification", 409)
-        archive = store_artifact(db, run.project_id, path, "attempt-outcome.json", "application/json", "attempt_outcome",
-                                 attempt.id, already_stored=True, visibility="evaluation", verified=verified)
-        attempt.state, attempt.result_digest = state, payload_digest
-        run.state, run.result, run.error = state, final_result, error[:8192] if error else None
-        outcome = {"attempt_id": attempt.id, "state": state, "outcome_artifact_id": archive.id, "sha256": archive.sha256}
-        if run.error:
-            outcome["error"] = run.error
-        event(db, run, "server.outcome", outcome)
-        event(db, run, state, {"attempt_id": attempt.id, **({"error": run.error} if run.error else {})})
-    return {"accepted": True, "state": state}
+    from .finalization_service import _authenticate_finish, _prepare_finish, _publish_prepared_finish
+    authenticated = _authenticate_finish(db, target, attempt_id, token, state, result, error)
+    if isinstance(authenticated, dict):
+        return authenticated
+    identity, request_json = authenticated
+    return _publish_prepared_finish(db, _prepare_finish(db, identity, request_json))
 
 
 def outcome_references(db, run_id):

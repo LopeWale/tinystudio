@@ -133,7 +133,7 @@ class LabOperation(Base):
     __tablename__ = "lab_operations"
     __table_args__ = (
         UniqueConstraint("project_id", "idempotency_key", name="uq_lab_operation_request"),
-        CheckConstraint("kind IN ('export', 'import', 'data_bridge')", name="ck_lab_operation_kind"),
+        CheckConstraint("kind IN ('export', 'import', 'data_bridge', 'artifact_verify', 'attempt_finalize')", name="ck_lab_operation_kind"),
         CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed', 'lost', 'cancelled')", name="ck_lab_operation_state"),
         CheckConstraint("generation >= 0", name="ck_lab_operation_generation"),
     )
@@ -157,6 +157,40 @@ class LabOperation(Base):
 
 
 TABLES.append(LabOperation.__table__)
+
+
+class LabTransfer(Base):
+    """Immutable transfer intent; provider uncertainty is never an artifact ACK."""
+    __tablename__ = 'lab_transfers'
+    __table_args__ = (
+        UniqueConstraint('project_id', 'idempotency_key', name='uq_lab_transfer_request'),
+        CheckConstraint("state IN ('admitted','initializing','initialization_uncertain','uploading','sealing',"
+                        "'completion_uncertain','sealed','verifying','verified','aborting','abort_uncertain','aborted')",
+                        name='ck_lab_transfer_state'),
+        CheckConstraint('size >= 0', name='ck_lab_transfer_size'),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    intent: Mapped[dict[str, Any]] = mapped_column(DOC)
+    attempt_identity: Mapped[dict[str, Any] | None] = mapped_column(DOC, nullable=True)
+    policy: Mapped[dict[str, Any]] = mapped_column(StudyDocument())
+    geometry: Mapped[dict[str, Any]] = mapped_column(DOC)
+    storage_key: Mapped[str] = mapped_column(String(500))
+    size: Mapped[int] = mapped_column(BigInteger)
+    state: Mapped[str] = mapped_column(String(32), default='admitted', index=True)
+    upload_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parts: Mapped[list[dict[str, Any]]] = mapped_column(DOC, default=list)
+    operation_id: Mapped[str | None] = mapped_column(ForeignKey('lab_operations.id'), nullable=True)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey('lab_artifacts.id'), nullable=True)
+    artifact_receipt: Mapped[dict[str, Any] | None] = mapped_column(DOC, nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+TABLES.append(LabTransfer.__table__)
 
 
 class LabStudy(Base):

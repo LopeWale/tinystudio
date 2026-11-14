@@ -12,6 +12,7 @@
     "format:check": "prettier --check \"src/**/*.{js,ts,tsx,css}\" \"tests/**/*.{ts,tsx}\" \"*.json\" \"*.ts\""
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@remixicon/react": "4.9.0",
     "@tailwindcss/postcss": "4.3.3",
     "@xyflow/react": "12.12.0",

@@ -5,6 +5,7 @@ Availability is a target declaration, not a successful execution receipt.
 from __future__ import annotations
 
 from .contracts import ExperimentDefinition
+from .execution_configuration import ExecutionBudget
 
 
 def backend_engines(capabilities: dict, backend: str) -> list[str]:
@@ -34,10 +35,54 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
     check("runtime", bool(runtime), "Start the selected runner to publish its versioned runtime.")
     check("machine_authority", not execution.grants,
           "Machine grants belong in the runner operator configuration, never in portable definitions.")
-    check("physical_control", definition.operating_mode != "physical_control",
-          "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
+    spool = capabilities.get('evidence_spool_by_backend',{}).get(backend)
+    if isinstance(spool,dict):
+        enabled=spool.get('mode')=='all' or spool.get('mode')=='automatic_hardware' and engine.startswith(('acquisition.','hardware.'))
+        if enabled:
+            check('evidence_storage',not spool.get('requires_explicit_root') or spool.get('root_configured') is True,
+                  'Configure a persistent evidence_spool.root or TINYSTUDIO_LAB_EVIDENCE_DIR on the selected R2 execution host; its disposable cache is not a durable capture location.')
+    check("physical_control", definition.operating_mode != "physical_control" or engine == "hardware.session",
+          "Physical control requires the hardware.session parent authority bridge and its selected host binding; other engines do not implement this integration.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
+    if engine == 'hardware.discover':
+        from .hardware_discovery_engine import validate_selection
+        try:
+            selected = validate_selection(definition.model_dump())
+        except (ValueError, TypeError) as error:
+            check('hardware_selection', False, str(error))
+        else:
+            check('hardware_selection', True, 'Discovery choices are authored; device access requires the selected host binding.')
+            bindings = capabilities.get('hardware_discovery_bindings', [])
+            permitted = any(isinstance(binding, dict) and binding.get('binding_id') == selected.binding_id
+                            and binding.get('read_only') is True and selected.method in binding.get('methods', [])
+                            for binding in bindings)
+            check('hardware_binding', permitted,
+                  'Configure the exact binding and discovery method on the selected execution host; this declaration does not qualify a device.')
+    if engine == 'hardware.session':
+        from .hardware_session_engine import validate_selection
+        check('hardware_session_native_execution', capabilities.get('hardware_session_native_execution') is True,
+              'hardware.session requires the selected runner operator\'s explicit native_execution grant; authored definitions cannot grant authority.')
+        try:
+            selected = validate_selection(definition.model_dump())
+        except (ValueError, TypeError, KeyError) as error:
+            check('hardware_session_selection', False, str(error))
+        else:
+            check('hardware_session_selection', True,
+                  'Supervisor choices use the implemented native/trusted_native bridge; this is a trusted same-UID contract, not source isolation or physical qualification.')
+            bindings = capabilities.get('hardware_session_bindings')
+            permitted = isinstance(bindings, list) and any(
+                isinstance(binding, dict) and binding.get('binding_id') == selected.binding_id
+                for binding in bindings)
+            check('hardware_session_binding', permitted,
+                  'Configure the exact hardware.session binding on the selected execution host; its public profile and capability claims do not establish physical outcomes.')
+            if selected.emulator is not None:
+                emulator_bindings = capabilities.get('hardware_session_emulator_bindings')
+                permitted = isinstance(emulator_bindings, list) and any(
+                    isinstance(binding, dict) and binding.get('binding_id') == selected.emulator.binding_id
+                    for binding in emulator_bindings)
+                check('hardware_session_emulator_binding', permitted,
+                      'Configure the exact selected emulator process binding on the execution host; configured availability does not establish executable installation, readiness, firmware behavior or model fidelity.')
     if engine == "statistics.plan":
         from .statistics_selection import validate_statistics_selection
         try:
@@ -49,6 +94,28 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         else:
             check("statistics_selection", True,
                   "Planning inputs and goal are compatible; the result is conditional on the declared assumptions.")
+    if engine == "runtime.qualify":
+        from .runtime_probe import validate_selection
+        try:
+            validate_selection(definition.model_dump())
+        except (ValueError, KeyError, TypeError) as error:
+            check("runtime_probe_selection", False, str(error))
+        else:
+            check("runtime_probe_selection", True,
+                  "Probe settings are authored; actual target-side execution will retain unavailable, failed or verified evidence. This check does not establish kernel or training support.")
+    if engine == "statistics.analyze":
+        from .analysis_selection import CUSTOM_METHOD, validate_analysis_selection
+        try:
+            selected = validate_analysis_selection(definition.model_dump())
+            if selected["method"] == CUSTOM_METHOD:
+                if capabilities.get("custom_analysis_python") is not True:
+                    raise ValueError("custom analysis requires the selected runner operator's native_execution grant for statistics.analyze")
+            elif not (runtime or {}).get("scipy"):
+                raise ValueError("observed-data inference requires SciPy on the selected target; install tinystudio[statistics]")
+        except (ValueError, KeyError, TypeError) as error:
+            check("analysis_selection", False, str(error))
+        else:
+            check("analysis_selection", True, "Frozen observations and method are compatible; data selection and declared inference units are checked at execution.")
     if engine == "retrieval.index":
         from .retrieval_selection import validate_retrieval_selection
         try:
@@ -111,8 +178,8 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
             check("data_pipeline", True,
                   "Observation-triggered availability replay; source clocks and recorded availability are validated at execution.")
     if definition.operating_mode in {"acquisition", "shadow"}:
-        check("acquisition_adapter", engine.startswith("acquisition."),
-              "Acquisition and shadow modes require an acquisition adapter with an explicit operator binding.")
+        check("acquisition_adapter", engine.startswith("acquisition.") or engine in {"hardware.discover", "hardware.session"},
+              "Acquisition and shadow modes require an acquisition adapter, discovery method or hardware session with an explicit operator binding.")
     if execution.requirements:
         try:
             limits = capabilities.get("resource_limits_by_backend", {}).get(backend)
@@ -142,8 +209,9 @@ def resource_selection(execution, limits, *, kubernetes_pids_limit=None):
         raise ValueError("hard resource requirements need an isolated container or Kubernetes backend")
     maximum = {"cpu": limits.get("cpu", 1), "memory_bytes": limits.get("memory_bytes", 512*1024**2), "pids": limits.get("pids", 64)}
     selected = {**maximum, **requested}
+    budget = ExecutionBudget.from_execution(execution.model_dump())
     Limits(**maximum).validate()
-    Limits(**selected, wall_seconds=execution.max_seconds).validate()
+    Limits(**selected, wall_seconds=budget.max_seconds).validate()
     if any(selected[key] > maximum[key] for key in allowed):
         raise ValueError("requested resources exceed the operator-configured target allowance")
     if execution.backend == "kubernetes" and "pids" in requested and (kubernetes_pids_limit is None or kubernetes_pids_limit > selected["pids"]):

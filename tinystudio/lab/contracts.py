@@ -6,7 +6,9 @@ import json
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+
+from .execution_configuration import DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_SECONDS
 
 
 def canonical(value: Any) -> bytes:
@@ -40,8 +42,8 @@ class ExecutionProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     profile: Literal["trusted_native", "isolated"]
     backend: Literal["native", "container", "kubernetes", "rq"] = "native"
-    max_seconds: int = Field(default=300, ge=1, le=86400)
-    max_output_bytes: int = Field(default=536870912, ge=1, le=10737418240)
+    max_seconds: StrictInt | None = Field(default=DEFAULT_MAX_SECONDS, ge=0)
+    max_output_bytes: StrictInt | None = Field(default=DEFAULT_MAX_OUTPUT_BYTES, ge=0)
     requirements: dict[str, Any] = Field(default_factory=dict)
     grants: dict[str, Any] = Field(default_factory=dict)
 

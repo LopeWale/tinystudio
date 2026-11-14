@@ -805,7 +805,7 @@ it("preserves scientific values through study fields, revision saves and record 
   expect(writes[1].body).toMatch(/"large":1e\+?20/);
   expect(recorded.data.large).toBe(1e20);
   expect(
-    screen.getByText("Record #1 · observation").closest("details"),
+    (await screen.findByText("Record #1 · observation")).closest("details"),
   ).toHaveTextContent('"signed_zero": -0.0');
 });
 it("keeps unsafe integer source drafts blocked while admitting large scientific float values", async () => {

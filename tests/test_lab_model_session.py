@@ -259,26 +259,27 @@ def test_scratch_eos_is_retained_as_generated_token(tmp_path):
         assert result["max_new_tokens"] == 4
 
 
-def test_quantized_runtime_mismatch_never_loads_float_fallback(tmp_path, hf_root, monkeypatch):
-    # Controlled incompatible runtime contract: no claimed live NF4 acceptance.
+def test_quantized_missing_precision_contract_never_loads_float_fallback(tmp_path, hf_root, monkeypatch):
+    # A deliberately incomplete retained contract must fail before any loader;
+    # this synthetic receipt does not establish live NF4/runtime compatibility.
     root = retained(tmp_path, hf_root, "lora")
     (root / "source-model").rename(root / "quantized-base")
     probe = root / "reload-probes.safetensors"
-    probe.write_bytes(b"runtime rejection must occur before reading probes")
+    probe.write_bytes(b"precision rejection must occur before reading probes")
     manifest_path = root / "pretrained.json"
     manifest = json.loads(manifest_path.read_text())
     manifest.update(format="tinystudio.pretrained.v2", output_kind="quantized_adapter",
                     training_type="qlora", update_strategy="qlora")
     manifest["quantization"] = {"format": "tinystudio.nf4-base.v1", "directory": "quantized-base",
-        "files": directory_manifest(root / "quantized-base"), "runtime": {"os": "incompatible-runtime"}}
+        "files": directory_manifest(root / "quantized-base"), "runtime": {}}
     manifest["reload_probes"] = {"file": probe.name, "sha256": sha(probe), "inputs": [{}, {}, {}]}
     manifest_path.write_text(json.dumps(manifest))
     path = archive(root, tmp_path / "qlora.tar")
     from transformers import AutoModelForCausalLM
     def forbidden(*args, **kwargs):
-        pytest.fail("incompatible QLoRA must not load any float fallback")
+        pytest.fail("an incomplete QLoRA precision contract must not load any float fallback")
     monkeypatch.setattr(AutoModelForCausalLM, "from_pretrained", forbidden)
     work = tmp_path / "work"
-    with pytest.raises(ValueError, match="compatible retained runtime"):
+    with pytest.raises(ValueError, match="explicit retained precision contract"):
         ModelSession(path, sha(path), work)
     assert not list(work.iterdir())

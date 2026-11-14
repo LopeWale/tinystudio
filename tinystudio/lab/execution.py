@@ -52,7 +52,16 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
     # Authored grants are never promoted to runner authority, including direct use.
     view["_runtime_grants"] = dict(context.get("_runtime_grants", {}))
     view["_runtime_secrets"] = dict(context.get("_runtime_secrets", {}))
+    # Keep public execution provenance distinct from authority and secret data.
+    profile = context.get("profile_manifest", {})
+    profile = profile if isinstance(profile, dict) else {}
+    view["_runtime_context"] = {"spec_digest": context.get("spec_digest"), "profile": {
+        key: profile[key] for key in ("backend", "execution_backend", "profile", "image", "target_os",
+            "limits", "qualification", "required_attestations", "network_default", "service_account_token",
+            "evidence_retention") if key in profile}}
     engine = view["definition"]["engine"]
+    if engine=='hardware.session':
+        view['_hardware_session']=dict(context.get('hardware_session',{}))
     if engine.startswith("learning."):
         visible = [ref for ref in view["definition"].get("inputs", []) if ref.get("visibility", "model") == "model"]
         validation = [ref for ref in view["definition"].get("inputs", []) if engine.startswith("learning.")
@@ -84,11 +93,19 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
         from .research import execute_evaluation as run
     elif engine == "statistics.plan":
         from .statistics import execute_statistics as run
+    elif engine == "statistics.analyze":
+        from .analysis import execute_analysis as run
+    elif engine == "runtime.qualify":
+        from .runtime_probe import execute_runtime_probe as run
+    elif engine == "hardware.discover":
+        from .hardware_discovery_engine import execute_hardware_discovery as run
+    elif engine == 'hardware.session':
+        from .hardware_session_engine import execute_hardware_session as run
     elif engine == "data.pipeline":
         from .data import execute_data as run
     elif engine == "simulation.openmodelica":
         from .modelica import execute_modelica as run
-    elif engine in {"acquisition.serial", "acquisition.modbus", "acquisition.mqtt"}:
+    elif engine in {"acquisition.serial", "acquisition.modbus", "acquisition.mqtt", "acquisition.can"}:
         from .acquisition import execute_acquisition as run
     else:
         from .domain_adapters import CLI_TARGETS, PYTHON_TARGETS
@@ -110,6 +127,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
                     stream.write(json.dumps(row, allow_nan=False)+"\n")
             result["artifacts"].append({"name": target.name, "path": str(target), "sha256": digest(target),
                                         "media_type": "application/x-ndjson", "role": "derived_records"})
+            if engine=='hardware.session':
+                result['artifacts'][-1]['visibility']=view['definition']['parameters'].get('artifact_visibility','evaluation')
         result["record_count"] = len(rows)
         result["records"] = len(rows)
     if (engine in {"learning.timeseries", "learning.multimodal", "learning.control_rl", "learning.tool_rl", "learning.language_rl"} or
@@ -137,7 +156,9 @@ def main():
     receipt = verify_runtime(spec, package)
     receipt["context_digest"] = checksum(context)
     receipt["profile_manifest"] = context["profile_manifest"]
-    output.mkdir()
+    # The parent broker retains its independent ledger under this evidence root
+    # before the supervisor starts, including failures before child admission.
+    output.mkdir(exist_ok=spec['definition']['engine']=='hardware.session' and bool(context.get('hardware_session')))
 
     def emit(item):
         serialized = json.dumps(item, allow_nan=False)
@@ -146,12 +167,41 @@ def main():
         with (output.parent / "events.jsonl").open("a") as stream:
             stream.write(serialized + "\n")
 
-    result = execute(spec, output, emit, lambda: (output.parent / "cancel").exists(), context=context)
+    evidence_exit = None
+    try:
+        result = execute(spec, output, emit, lambda: (output.parent / "cancel").exists(), context=context)
+    except Exception as exc:
+        # Keep successful execution compatible with minimal source fixtures that
+        # have no cancellation class. Only the engine's explicit exception can
+        # opt into this separate audit outcome; arbitrary partial files cannot.
+        from . import engine
+        if not isinstance(getattr(exc, "evidence_result", None), dict):
+            raise
+        from .execution_outcome import (CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT,
+                                        RetainedExecutionError, cancelled_evidence_outcome,
+                                        failed_evidence_outcome)
+        if isinstance(exc, getattr(engine, "ExecutionCancelled", ())):
+            outcome = cancelled_evidence_outcome()
+            evidence_exit = CANCELLED_EVIDENCE_EXIT
+        elif isinstance(exc, RetainedExecutionError):
+            outcome = failed_evidence_outcome()
+            evidence_exit = FAILED_EVIDENCE_EXIT
+        else:
+            raise
+        result = json.loads(json.dumps(exc.evidence_result, allow_nan=False))
+        result["execution_outcome"] = outcome
+        if evidence_exit == FAILED_EVIDENCE_EXIT:
+            result["execution_error"] = f"{type(exc).__name__}: {exc}"[:8192]
     final_receipt = verify_runtime(spec, package)
     if any(receipt[key] != final_receipt[key] for key in final_receipt):
         raise ValueError("runtime identity changed during execution")
+    if evidence_exit is not None:
+        receipt["outcome"] = outcome
+        receipt["result_digest"] = checksum(result)
     (output.parent / "runtime-receipt.json").write_text(json.dumps(receipt, allow_nan=False))
     (output.parent / "result.json").write_text(json.dumps(result, allow_nan=False))
+    if evidence_exit is not None:
+        raise SystemExit(evidence_exit)
 
 
 if __name__ == "__main__":

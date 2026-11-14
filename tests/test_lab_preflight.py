@@ -133,6 +133,7 @@ def test_runner_places_selected_limits_in_kubernetes_job_resources(tmp_path):
     policy = ExecutionProfile(profile="isolated", backend="kubernetes", requirements={"cpu": .5, "memory_bytes": 32*1024**2, "pids": 8})
     spec = {"definition": {"execution": policy.model_dump()}, "runtime": {"os": "Linux"}}
     config = {"image": "fixture@sha256:"+"a"*64, "kube_context": "qualification", "kubeconfig": str(kubeconfig),
+              "shared_work_root": str(tmp_path.parent),
               "storage_claim": "qualification", "grants": {"network_policy_enforced": True, "kubernetes_pids_limit": 8}}
     plan = Runner._profile(None, spec, {"attempt_id": "limited"}, tmp_path, SimpleNamespace(root=tmp_path / "source"), config, ["python", "-V"])
     job = next(item for item in json.loads(plan.manifests_json)["items"] if item["kind"] == "Job")

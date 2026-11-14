@@ -138,11 +138,12 @@ def test_partial_completion_rejects_duplicate_or_foreign_evidence(fixture, state
 
 
 def test_slow_storage_verification_precedes_authority_lock_and_stale_recheck(fixture, monkeypatch):
+    from tinystudio.lab import finalization_service
     factory, store, root, _ = fixture
     with factory.begin() as db:
         row = output(db, root)
         original_download = store.download_file
-        original_authority = svc.attempt_authority
+        original_authority = finalization_service._locked_authority
         clock = [svc.now()]
         verified = []
         def download(*args):
@@ -155,7 +156,7 @@ def test_slow_storage_verification_precedes_authority_lock_and_stale_recheck(fix
             verified.append("locked")
             return original_authority(*args, **kwargs)
         monkeypatch.setattr(store, "download_file", download)
-        monkeypatch.setattr(svc, "attempt_authority", authority)
+        monkeypatch.setattr(finalization_service, "_locked_authority", authority)
         monkeypatch.setattr(svc, "now", lambda: clock[0])
         with pytest.raises(svc.LabError, match="lease expired"):
             svc.finish(db, db.get(LabTarget, "target"), "attempt", "lease", "succeeded", {"artifacts": [svc.artifact_dict(row)]}, None)

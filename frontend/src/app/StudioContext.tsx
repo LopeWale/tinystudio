@@ -123,23 +123,49 @@ export function StudioProvider({
       message: string;
       title: string;
       resolve: (value: boolean) => void;
+      generation: object;
     } | null>(null);
+  // A repeated account/project/route identity still has a distinct lifetime.
+  const confirmationContext = useRef({ key: "", generation: {} });
+  const confirmationKey = JSON.stringify([user?.id ?? "", project, route]);
+  if (confirmationContext.current.key !== confirmationKey)
+    confirmationContext.current = { key: confirmationKey, generation: {} };
+  const confirmationGeneration = confirmationContext.current.generation;
   const confirmationRef = useRef<typeof pendingConfirm>(null);
-  const settleConfirmation = useCallback((value: boolean) => {
-    const pending = confirmationRef.current;
-    confirmationRef.current = null;
-    pending?.resolve(value);
-    setPendingConfirm(null);
-  }, []);
+  const settleConfirmation = useCallback(
+    (value: boolean, expected?: typeof pendingConfirm) => {
+      const pending = confirmationRef.current;
+      if (expected !== undefined && pending !== expected) return;
+      confirmationRef.current = null;
+      pending?.resolve(value);
+      setPendingConfirm(null);
+    },
+    [],
+  );
+  const invalidateConfirmation = useCallback(() => {
+    confirmationContext.current = {
+      ...confirmationContext.current,
+      generation: {},
+    };
+    settleConfirmation(false);
+  }, [settleConfirmation]);
   const askConfirmation = useCallback(
-    (message: string, title = "Confirm action") =>
-      new Promise<boolean>((resolve) => {
+    (message: string, title = "Confirm action") => {
+      if (confirmationContext.current.generation !== confirmationGeneration)
+        return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
         settleConfirmation(false);
-        const pending = { message, title, resolve };
+        const pending = {
+          message,
+          title,
+          resolve,
+          generation: confirmationGeneration,
+        };
         confirmationRef.current = pending;
         setPendingConfirm(pending);
-      }),
-    [settleConfirmation],
+      });
+    },
+    [settleConfirmation, confirmationGeneration],
   );
   const latest = useRef({ user, project });
   const sessionGeneration = useRef(0),
@@ -158,7 +184,7 @@ export function StudioProvider({
     scope.invalidate();
     evidence.clear();
     latest.current = { user: null, project: "" };
-    settleConfirmation(false);
+    invalidateConfirmation();
     setUser(null);
     setProject("");
     setProjects([]);
@@ -166,7 +192,7 @@ export function StudioProvider({
     setOverview(null);
     setTasks([]);
     setPhase("login");
-  }, [scope, evidence, settleConfirmation]);
+  }, [scope, evidence, invalidateConfirmation]);
   const api = useMemo(
     () =>
       createApiClient({
@@ -193,12 +219,12 @@ export function StudioProvider({
       setProject(slug);
       setOverview(null);
       setTasks([]);
-      settleConfirmation(false);
+      invalidateConfirmation();
       try {
         localStorage.setItem("tinystudio.project", slug);
       } catch {}
     },
-    [scope, evidence, settleConfirmation],
+    [scope, evidence, invalidateConfirmation],
   );
   const refreshProjects = useCallback(
     async (signal?: AbortSignal, preserveSelection = false) => {
@@ -329,16 +355,20 @@ export function StudioProvider({
     };
   }, [api, user?.id, project, phase, route]);
   useEffect(
-    () => () => settleConfirmation(false),
-    [route, scopeKey, settleConfirmation],
+    () => () => {
+      // A delayed cleanup owns its old prompt, never a newer scope's prompt.
+      if (confirmationRef.current?.generation === confirmationGeneration)
+        settleConfirmation(false);
+    },
+    [confirmationGeneration, settleConfirmation],
   );
   useEffect(
     () => () => {
       scope.invalidate();
       evidence.clear();
-      settleConfirmation(false);
+      invalidateConfirmation();
     },
-    [scope, evidence, settleConfirmation],
+    [scope, evidence, invalidateConfirmation],
   );
   const runtime: StudioRuntime = {
     onSessionExpired: unauthorized,
@@ -357,7 +387,7 @@ export function StudioProvider({
     dismissFirstProjectPrompt: () => setFirstProjectPrompt(false),
     refreshOverview,
     navigate: (hash) => {
-      settleConfirmation(false);
+      invalidateConfirmation();
       go(hash.replace(/^#/, ""));
     },
     toast,
@@ -425,7 +455,7 @@ export function StudioProvider({
           title: pendingConfirm.title,
           message: pendingConfirm.message,
           onResolve: (value: boolean) => {
-            settleConfirmation(value);
+            settleConfirmation(value, pendingConfirm);
           },
         })}
       {taskView({

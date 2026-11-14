@@ -248,51 +248,108 @@ def partition_snapshot(rows: list[dict], seed: int, validation_fraction: float, 
             "excluded_test": split["test"], "tokenizer_fitted": False}
 
 
-def load_pretrained_output(path: str | Path, *, device: str | None = None):
-    """Load final full or adapter output using the retained local source model."""
+def load_pretrained_output(path: str | Path, *, device: str | None = None, comparison_policy=None):
+    """Load retained outputs; quantized reloads return measured runtime evidence.
+
+    comparison_policy selects bitwise or explicitly toleranced logits checks.
+    The returned manifest adds runtime_verification without editing disk.
+    """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
+    from tinystudio.training.quantization import has_quantized_marker
     root = Path(path)
     manifest = json.loads((root / "pretrained.json").read_text())
-    quantized = manifest.get("output_kind") == "quantized_adapter" or manifest.get("format") == "tinystudio.pretrained.v2"
+    quantized = (manifest.get("output_kind") == "quantized_adapter"
+                 or manifest.get("format") == "tinystudio.pretrained.v2" or has_quantized_marker(root))
     if quantized:
-        if (manifest.get("format"), manifest.get("output_kind"), manifest.get("update_strategy"), manifest.get("training_type")) != (
-                "tinystudio.pretrained.v2", "quantized_adapter", "qlora", "qlora"):
-            raise ValueError("inconsistent quantized output format, kind or update strategy")
-        from tinystudio.training.quantization import retained_base_path, nf4_settings, state_digest, dependency_versions, verify_probes
+        from copy import deepcopy
+        from tinystudio.training.quantization import (retained_base_path, nf4_settings, state_digest,
+            verify_probes, ComparisonPolicy, ReloadVerificationError, runtime_provenance,
+            verification_failure, adapter_state_digest)
         from tinystudio.training.runtime import TrainingPlacement
-        from tinystudio.training.train import qlora_support
-        import platform
         receipt = manifest.get("quantization")
-        base_path = retained_base_path(root, receipt)
-        target_runtime = receipt.get("runtime", {})
-        if (target_runtime.get("os"), target_runtime.get("machine"), target_runtime.get("dependencies")) != (platform.system(), platform.machine(), dependency_versions()):
-            raise ValueError("quantized model reload requires its compatible retained runtime/dependency pack")
-        placement = TrainingPlacement.resolve(device or target_runtime.get("device"), target_runtime.get("dtype"))
-        if placement.device != target_runtime.get("device"):
-            raise ValueError("quantized reload target differs from its retained inference contract")
-        eligible, reason = qlora_support(placement.device)
-        if not eligible:
-            raise ValueError(reason)
-        if manifest.get("trained_directory") != "adapter" or directory_manifest(root / "adapter") != manifest.get("trained_files"):
-            raise ValueError("retained quantized adapter checksum mismatch")
-        if not isinstance(manifest.get("reload_probes"), dict):
-            raise ValueError("quantized output requires live-policy reload probes")
-        from peft import PeftModel, prepare_model_for_kbit_training
-        tokenizer = AutoTokenizer.from_pretrained(root / "adapter", local_files_only=True)
-        base = AutoModelForCausalLM.from_pretrained(base_path, local_files_only=True, dtype=torch.float32,
-                                                  device_map={"": placement.device})
-        base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
-        if nf4_settings(base) != receipt.get("settings") or state_digest(base, base_only=True) != receipt.get("state_sha256"):
-            raise ValueError("restored quantized base state differs from the retained starting base")
-        model = PeftModel.from_pretrained(base, root / "adapter", is_trainable=False, local_files_only=True,
-                                         autocast_adapter_dtype=False)
-        for name, parameter in model.named_parameters():
-            if "lora_" in name:
-                parameter.data = parameter.data.to(placement.dtype)
-        model.eval()
-        verify_probes(model, root, manifest["reload_probes"], placement.device)
-        return model, tokenizer, manifest
+        target_runtime = receipt.get("runtime", {}) if isinstance(receipt, dict) else {}
+        verification = {"format": "tinystudio.quantized-runtime-verification.v1", "status": "pending",
+            "retained_runtime": deepcopy(target_runtime), "observed_runtime": runtime_provenance(device, None),
+            "comparison_policy": None, "checks": {}, "diagnostics": []}
+        try:
+            retained_policy = manifest.get("reload_comparison")
+            verification["comparison_policy_source"] = ("explicit_request" if comparison_policy is not None else
+                "retained_artifact" if retained_policy is not None else "default_bitwise")
+            policy = ComparisonPolicy.resolve(comparison_policy if comparison_policy is not None else retained_policy)
+            verification["comparison_policy"] = policy.report()
+            if (manifest.get("format"), manifest.get("output_kind"), manifest.get("update_strategy"), manifest.get("training_type")) != (
+                    "tinystudio.pretrained.v2", "quantized_adapter", "qlora", "qlora"):
+                raise ValueError("inconsistent quantized output format, kind or update strategy")
+            base_path = retained_base_path(root, receipt)
+            verification["checks"]["retained_base_files"] = True
+            if (not isinstance(target_runtime, dict) or not isinstance(target_runtime.get("dtype"), str)
+                    or target_runtime["dtype"] not in {"float32", "bfloat16"}):
+                raise ValueError("quantized reload requires an explicit retained precision contract")
+            placement = TrainingPlacement.resolve(device or target_runtime.get("device"), target_runtime["dtype"])
+            verification["observed_runtime"] = runtime_provenance(placement.device, placement.dtype_name)
+            if manifest.get("trained_directory") != "adapter" or directory_manifest(root / "adapter") != manifest.get("trained_files"):
+                raise ValueError("retained quantized adapter checksum mismatch")
+            verification["checks"]["retained_adapter_files"] = True
+            if not isinstance(manifest.get("reload_probes"), dict):
+                raise ValueError("quantized output requires live-policy reload probes")
+            precision = receipt.get("precision")
+            adapter_dtype = precision.get("adapter_dtype") if isinstance(precision, dict) else None
+            if adapter_dtype != placement.dtype_name:
+                raise ValueError("retained adapter precision differs from the retained inference dtype")
+            from peft import PeftModel, prepare_model_for_kbit_training
+            tokenizer = AutoTokenizer.from_pretrained(root / "adapter", local_files_only=True)
+            base = AutoModelForCausalLM.from_pretrained(base_path, local_files_only=True, dtype=torch.float32,
+                                                      device_map={"": placement.device})
+            base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
+            from tinystudio.training.nf4_execution import NF4ExecutionPolicy
+            execution_policy = NF4ExecutionPolicy.resolve(receipt.get("execution_policy"))
+            verification["execution_policy"] = execution_policy.to_dict()
+            if "execution_policy" in receipt:
+                verification["execution_configuration"] = execution_policy.apply(base, placement.device)
+            verification["checks"]["nf4_settings"] = nf4_settings(base) == receipt.get("settings")
+            verification["checks"]["base_state"] = state_digest(base, base_only=True) == receipt.get("state_sha256")
+            if not verification["checks"]["nf4_settings"] or not verification["checks"]["base_state"]:
+                raise ValueError("restored quantized base state differs from the retained starting base")
+            model = PeftModel.from_pretrained(base, root / "adapter", is_trainable=False, local_files_only=True,
+                                             autocast_adapter_dtype=False)
+            restored_precision = []
+            adapter_parameters = []
+            for name, parameter in model.named_parameters():
+                if "lora_" in name:
+                    adapter_parameters.append(parameter)
+                    if parameter.dtype != placement.dtype:
+                        restored_precision.append({"name": name, "from": str(parameter.dtype).replace("torch.", ""),
+                                                   "to": placement.dtype_name})
+                        parameter.data = parameter.data.to(placement.dtype)
+            if not adapter_parameters or any(parameter.dtype != placement.dtype for parameter in adapter_parameters):
+                raise ValueError("reloaded adapters do not preserve the retained precision contract")
+            verification["adapter_precision_restorations"] = restored_precision
+            verification["adapter_state_sha256"] = adapter_state_digest(model)
+            verification["checks"]["adapter_precision"] = True
+            verification["checks"]["adapter_preserved_base_state"] = state_digest(model, base_only=True) == receipt.get("state_sha256")
+            if not verification["checks"]["adapter_preserved_base_state"]:
+                raise ValueError("adapter restoration changed the retained quantized base state")
+            placement.check_model(model)
+            buffer_devices = set()
+            for buffer in model.buffers():
+                placement.check_device(buffer.device)
+                buffer_devices.add(str(buffer.device))
+            verification["placement"] = {**placement.report(), "buffer_devices": sorted(buffer_devices)}
+            verification["checks"]["model_placement"] = True
+            model.eval()
+            verification["probes"] = verify_probes(model, root, manifest["reload_probes"], placement.device,
+                                                    comparison_policy=policy)
+            verification["status"] = "passed"
+            manifest = deepcopy(manifest)
+            manifest["runtime_verification"] = verification
+            return model, tokenizer, manifest
+        except Exception as exc:
+            if isinstance(exc, ReloadVerificationError):
+                verification["probes"] = exc.receipt
+            raise verification_failure(str(exc), verification, code="quantized_reload_failed") from exc
+    if comparison_policy is not None:
+        raise ValueError("comparison_policy requires retained quantized reload probes")
     target = root / manifest["trained_directory"]
     tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
     if manifest.get("output_kind", "model" if manifest["training_type"] == "full" else "adapter") == "model":
@@ -349,6 +406,10 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         initializations={"pretrained", "from_pretrained"}, default_initialization="pretrained",
         actual_device=actual_device, actual_dtype=actual_dtype)
     strategy, objective = method.update_strategy, method.objective
+    from tinystudio.training.quantization import ComparisonPolicy
+    if strategy != "qlora" and "reload_comparison" in params:
+        raise ValueError("NF4 reload comparison applies only to QLoRA outputs")
+    reload_comparison = ComparisonPolicy.resolve(params.get("reload_comparison")).report() if strategy == "qlora" else None
     if definition.get("retrieval"):
         raise ValueError("pretrained training cannot silently consume a retrieval selection; compose a frozen retrieval run explicitly")
     if "family" in learning and selector(learning["family"], "family") not in {"pretrained", "causal_lm"}:
@@ -378,18 +439,11 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         and 1 <= config.gradient_accumulation_steps <= 128 and math.isfinite(config.epochs)
         and 0 < config.epochs <= 100 and 1 <= config.lora_r <= 256):
         raise ValueError("pretrained training parameters exceed local experiment bounds")
-    device_kind = actual_device.split(":")[0]
-    if device_kind not in {"cpu", "mps", "cuda"} or actual_dtype not in ({"float32", "bfloat16"} if device_kind == "cuda" else {"float32"}):
-        raise ValueError("existing pretrained training supports CPU/MPS float32 and CUDA float32/bfloat16 paths only")
-    if device_kind == "cuda" and not torch.cuda.is_available() or device_kind == "mps" and not torch.backends.mps.is_available():
-        raise ValueError(f"configured pretrained device {actual_device} is unavailable")
     if strategy == "qlora":
         from tinystudio.training.train import qlora_support
         supported, reason = qlora_support(actual_device)
         if not supported:
             raise ValueError(reason)
-    if device_kind == "cuda" and actual_dtype == "bfloat16" and not torch.cuda.is_bf16_supported():
-        raise ValueError("configured CUDA device does not support bfloat16 training")
     validation_bindings = evaluator_validation_inputs(spec)
     model_input = resolve_role(spec, "pretrained_model", directory=True, extract_dir=output_dir / "pretrained-input")
     model_config = json.loads((Path(model_input["path"]) / "config.json").read_text())
@@ -460,6 +514,7 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     manifest = {"format": "tinystudio.pretrained.v2" if result.get("quantization") else "tinystudio.pretrained.v1", "training_type": strategy,
         "objective": objective, "update_strategy": strategy, "output_kind": result["output_kind"],
         **({"quantization": result["quantization"], "reload_probes": result["reload_probes"]} if result.get("quantization") else {}),
+        **({"reload_comparison": reload_comparison} if result.get("quantization") else {}),
         "data_format": method.data_format,
         "axes": {**axes, "objective": objective, "architecture": dimensions, "architecture_source": "immutable pretrained artifact", "tokenizer_source": "immutable pretrained artifact",
                  "context_semantics": "training sequence cap; source positional embeddings are not resized", "source_context_capacity": capacity},
@@ -474,7 +529,17 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
     manifest_path.write_text(json.dumps(manifest, indent=2))
     # Explicit reloading proves the final saved output is consumable; the fixture
     # independently compares predictions and changed parameters as well.
-    reloaded, tokenizer, _ = load_pretrained_output(output_dir, device=actual_device)
+    reloaded, tokenizer, verified_manifest = load_pretrained_output(output_dir, device=actual_device,
+        comparison_policy=params.get("reload_comparison"))
+    runtime_verification = verified_manifest.get("runtime_verification")
+    verification_artifacts = []
+    if runtime_verification is not None:
+        manifest["runtime_verification"] = runtime_verification
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        from tinystudio.training.runtime_compatibility import RuntimeEvidencePaths
+        verification_path = RuntimeEvidencePaths(output_dir).verification_manifest
+        verification_path.write_text(json.dumps(runtime_verification, allow_nan=False, indent=2))
+        verification_artifacts.append({**artifact(verification_path, "runtime_verification"), "visibility": "evaluation"})
     probe_device = next(reloaded.parameters()).device
     probe = {key: value.to(probe_device) for key, value in tokenizer("user: pressure", return_tensors="pt").items()}
     with torch.no_grad():
@@ -497,12 +562,16 @@ def execute_pretrained(spec: dict, output_dir: Path, emit: Callable[[dict], None
         "artifacts": [artifact(target, "pretrained_model_bundle", "application/x-tar"),
                       {**artifact(manifest_path, "pretrained_manifest"), "visibility": "evaluation"},
                       {**artifact(snapshot_copy, "training_snapshot"), "visibility": "evaluation"},
-                      {**artifact(split_path, "partition_manifest"), "visibility": "evaluation"}],
+                      {**artifact(split_path, "partition_manifest"), "visibility": "evaluation"}, *verification_artifacts],
         "qualification": {"status": "completed", "training_type": strategy, "backend": result["device"], "dtype": actual_dtype,
             "requested_axes_honored": True, "structural_architecture_source": "immutable pretrained artifact",
             "validation_bindings": "evaluator-only map; never used for tokenizer fitting or optimizer updates",
             "trainer": "existing TinyStudio train_experiment", "saved_model_reloaded": True,
-            "live_policy_reload_equal": True if result.get("quantization") else None,
+            "live_policy_reload_equal": (True if runtime_verification and
+                runtime_verification.get("comparison_policy", {}).get("mode") == "bitwise" and
+                runtime_verification.get("status") == "passed" else None),
+            "live_policy_reload_verified": bool(runtime_verification and runtime_verification.get("status") == "passed"),
+            "runtime_verification": runtime_verification,
             "resume": "legacy backend saves weights; exact optimizer continuation is not provided",
             "cancellation": "checked at every optimizer step, progress/log callback and before model publication", "network_downloads": False,
             "partition_strategy": split["strategy"], "group_isolation": split["group_isolation"],

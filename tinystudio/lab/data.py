@@ -1,4 +1,4 @@
-"""Bounded immutable acquisition, causal scalar processing and leakage-aware datasets."""
+"""Immutable evidence curation with explicit budgets and leakage-aware datasets."""
 from __future__ import annotations
 
 import csv
@@ -10,6 +10,7 @@ import random
 import statistics
 from copy import deepcopy
 from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -19,14 +20,82 @@ from .evaluation import _quantity
 from .learning import artifact, resolved_inputs
 from .partitioning import isolation_groups, partition_labels, source_protection
 from .clocks import CLOCK_FIELDS, clock_reference
-from .signals import integer, number
+from .signals import number
+from .experiment_resources import ResourceLimits, count
+from .json_selection import JsonSelector
 
 
 PARTITIONS = ("train", "validation", "test")
+DATA_RESOURCES = ("max_rows", "source_bytes", "per_source_bytes", "pipeline_stages", "window_records")
+WINDOW_OPERATIONS = {"moving_average", "filter", "features"}
+
+
+@dataclass(frozen=True)
+class DataResourcePlan:
+    """Resolve portable authored requests against execution-host resource limits."""
+    selected: ResourceLimits
+    operator_limits: ResourceLimits
+
+    @classmethod
+    def resolve(cls, parameters, limits=None):
+        if not isinstance(parameters, dict):
+            raise ValueError("data parameters must be an object")
+        supplied = parameters.get("resources", {})
+        if not isinstance(supplied, dict) or supplied.keys() - set(DATA_RESOURCES):
+            raise ValueError("data resources contain an unsupported field")
+        supplied = dict(supplied)
+        if "max_rows" in parameters:
+            legacy = count(parameters["max_rows"], "max_rows", optional=True)
+            if "max_rows" in supplied and legacy != count(supplied["max_rows"], "max_rows", optional=True):
+                raise ValueError("parameters.max_rows conflicts with parameters.resources.max_rows")
+            supplied["max_rows"] = legacy
+        operator = ResourceLimits.from_dict(limits)
+        selected = ResourceLimits.from_dict({name: supplied.get(name, getattr(operator, name)) for name in DATA_RESOURCES})
+        for name in DATA_RESOURCES:
+            operator.authorize(name, getattr(selected, name))
+        return cls(selected, operator)
+
+    def authorize(self, name, amount):
+        limit = getattr(self.selected, name)
+        if limit is not None and amount > limit:
+            raise ValueError(f"{name} exceeds configured data resource budget ({limit})")
+
+    def to_dict(self, actual=None):
+        return {"selected": {name: getattr(self.selected, name) for name in DATA_RESOURCES},
+                "operator_limits": self.operator_limits.to_dict(),
+                "actual": dict(actual or {}), "scientific_validity_rule": False,
+                "disclosure": "Source bytes and JSON/CSV decoding are buffered; normalization, sorting, grouping, "
+                              "lineage and transformed rows remain in-memory. Parquet batches are decoding batches, "
+                              "not total-data caps. No out-of-core execution qualification is claimed."}
+
+
+def _window_size(stage):
+    size = count(stage.get("parameters", {}).get("window", 5), "window")
+    if size < 1:
+        raise ValueError("window must be a positive integer")
+    return size
+
+
+def _validate_stages(stages, plan):
+    if not isinstance(stages, list):
+        raise ValueError("data pipeline stages must be a list")
+    plan.authorize("pipeline_stages", len(stages))
+    for stage in stages:
+        if not isinstance(stage, dict) or not isinstance(stage.get("parameters", {}), dict):
+            raise ValueError("data pipeline stages must be operation objects")
+        if stage.get("kind") in WINDOW_OPERATIONS:
+            plan.authorize("window_records", _window_size(stage))
 
 
 def _canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _positive(value, name):
+    selected = number(value, name)
+    if selected <= 0:
+        raise ValueError(f"{name} must be positive")
+    return selected
 
 
 def _boolean(value, name):
@@ -39,20 +108,19 @@ def _boolean(value, name):
     raise ValueError(f"{name} must be a boolean")
 
 
-def _read_source(data, format, max_rows):
+def _read_source(data, format, max_rows=None):
     if format == "parquet":
         import pyarrow as pa
         import pyarrow.parquet as pq
         file = pq.ParquetFile(pa.BufferReader(data))
-        if file.metadata.num_rows > max_rows or sum(file.metadata.row_group(index).total_byte_size for index in range(file.metadata.num_row_groups)) > 64 * 1024 ** 2:
-            raise ValueError("Parquet decoded evidence exceeds fixture limits")
-        count, decoded_bytes = 0, 0
-        # Single-row batches also bound dictionary-expanded string/blob values.
-        for batch in file.iter_batches(batch_size=1):
-            count += batch.num_rows
-            decoded_bytes += batch.nbytes
-            if count > max_rows or batch.nbytes > 32 * 1024 ** 2 or decoded_bytes > 64 * 1024 ** 2:
-                raise ValueError("Parquet source exceeds bounded row/batch limits")
+        if max_rows is not None and file.metadata.num_rows > max_rows:
+            raise ValueError("max_rows exceeds configured data resource budget")
+        count_rows = 0
+        # Batch size controls decoding work, never total admissible evidence.
+        for batch in file.iter_batches(batch_size=1024 if max_rows is None else max(1, min(1024, max_rows))):
+            count_rows += batch.num_rows
+            if max_rows is not None and count_rows > max_rows:
+                raise ValueError("max_rows exceeds configured data resource budget")
             yield from batch.to_pylist()
     elif format == "csv":
         yield from csv.DictReader(io.StringIO(data.decode("utf-8-sig")))
@@ -84,9 +152,10 @@ def _format(data, requested=None):
     return "csv"
 
 
-def acquire(spec, output_dir, cancelled):
+def acquire(spec, output_dir, cancelled, *, resource_plan=None):
     params = spec["definition"].get("parameters", {})
-    maximum = integer(params.get("max_rows", 20000), "max_rows", 6, 100000)
+    plan = resource_plan or DataResourcePlan.resolve(params, spec.get("_runtime_grants", {}).get("limits"))
+    maximum = plan.selected.max_rows
     sources, records = [], []
     total_bytes = 0
     declared = spec["definition"].get("inputs", [])
@@ -96,12 +165,26 @@ def acquire(spec, output_dir, cancelled):
         if item.get("role", "source") not in {"source", "dataset", "recorded"}:
             raise ValueError("data acquisition accepts only source/dataset/recorded input roles")
         path = Path(binding["path"])
-        if path.stat().st_size > 32 * 1024 ** 2:
-            raise ValueError("individual source exceeds 32 MiB fixture import limit")
-        data = path.read_bytes()
+        size = path.stat().st_size
+        plan.authorize("per_source_bytes", size)
+        plan.authorize("source_bytes", total_bytes + size)
+        remaining = [limit for limit in (plan.selected.per_source_bytes,
+                     None if plan.selected.source_bytes is None else plan.selected.source_bytes - total_bytes) if limit is not None]
+        encoded = bytearray()
+        with path.open("rb") as stream:
+            while True:
+                # Chunk size batches reads; the selected budget limits their sum.
+                allowance = min(remaining) - len(encoded) + 1 if remaining else 1024 ** 2
+                chunk = stream.read(min(1024 ** 2, allowance))
+                if not chunk:
+                    break
+                plan.authorize("per_source_bytes", len(encoded) + len(chunk))
+                plan.authorize("source_bytes", total_bytes + len(encoded) + len(chunk))
+                encoded.extend(chunk)
+        data = bytes(encoded)
+        plan.authorize("per_source_bytes", len(data))
         total_bytes += len(data)
-        if total_bytes > 64 * 1024 ** 2:
-            raise ValueError("sources exceed 64 MiB total fixture import limit")
+        plan.authorize("source_bytes", total_bytes)
         digest = hashlib.sha256(data).hexdigest()
         if not binding.get("sha256") or digest != binding["sha256"]:
             raise ValueError("immutable source checksum mismatch")
@@ -111,11 +194,10 @@ def acquire(spec, output_dir, cancelled):
         protection = {"visibility": binding.get("visibility", "model"), "role": binding.get("role", "source")}
         sources.append({"artifact_id": item["artifact_id"], "sha256": digest, "format": format,
                         "bytes": len(data), "path": str(frozen), **protection})
-        for position, row in enumerate(_read_source(data, format, maximum - len(records))):
+        for position, row in enumerate(_read_source(data, format, None if maximum is None else maximum - len(records))):
             if cancelled():
                 raise ExecutionCancelled("data acquisition cancelled")
-            if len(records) >= maximum:
-                raise ValueError("data acquisition exceeds configured bounded row limit")
+            plan.authorize("max_rows", len(records) + 1)
             if not isinstance(row, dict):
                 raise ValueError("acquired records must be objects")
             if isinstance(row.get("record_json"), str):
@@ -124,21 +206,30 @@ def acquire(spec, output_dir, cancelled):
             records.append({"source": item["artifact_id"], "source_sha256": digest,
                             "position": position, "record": row, **protection})
     inline = params.get("records", [])
-    if inline:
-        data = b"".join(_canonical(row) + b"\n" for row in inline)
+    if not isinstance(inline, list):
+        raise ValueError("inline records must be a list of objects")
+    if inline or "records" in params and not sources:
+        encoded = bytearray()
+        for position, row in enumerate(inline):
+            if cancelled():
+                raise ExecutionCancelled("data acquisition cancelled")
+            plan.authorize("max_rows", len(records) + position + 1)
+            if not isinstance(row, dict):
+                raise ValueError("inline records must be objects")
+            line = _canonical(row) + b"\n"
+            plan.authorize("per_source_bytes", len(encoded) + len(line))
+            plan.authorize("source_bytes", total_bytes + len(encoded) + len(line))
+            encoded.extend(line)
+        data = bytes(encoded)
         total_bytes += len(data)
-        if len(data) > 32 * 1024 ** 2 or total_bytes > 64 * 1024 ** 2:
-            raise ValueError("inline evidence exceeds bounded import limit")
         frozen = output_dir / "original-inline.jsonl"
         frozen.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
         sources.append({"artifact_id": "inline", "sha256": digest, "format": "jsonl", "bytes": len(data), "path": str(frozen)})
         for index, row in enumerate(inline):
-            if len(records) >= maximum or not isinstance(row, dict):
-                raise ValueError("inline records must be bounded objects")
             records.append({"source": "inline", "source_sha256": digest, "position": index,
                             "record": dict(row), "visibility": "model", "role": "source"})
-    if not records:
+    if not sources:
         raise ValueError("data pipeline requires immutable input artifacts or explicit inline records")
     return records, sources, maximum
 
@@ -146,11 +237,26 @@ def acquire(spec, output_dir, cancelled):
 def normalize(acquired, parameters, clocks):
     schema, cleaned, truths = parameters.get("schema", {}), [], []
     cleaning = parameters.get("cleaning", {})
+    if not isinstance(schema, dict) or any(not isinstance(name, str) for name in schema):
+        raise ValueError("schema must map field names to flat keys or explicit JSON selectors")
+    selectors = {name: selected if isinstance(selected, str) else JsonSelector.from_dict(
+        selected, "schema." + name, allow_missing=True) for name, selected in schema.items()}
+    if set(selectors) & {"ground_truth", "true_value", "injected_fault"}:
+        raise ValueError("schema cannot project separated truth fields into curated observations")
     seen_ids = set()
     for item in acquired:
         truth = {key: value for key, value in item["record"].items() if key in {"ground_truth", "true_value", "injected_fault"}}
         original = {key: value for key, value in item["record"].items() if key not in truth}
-        field = lambda name: original.get(schema.get(name, name))
+        inherited_future_aware = _boolean(original.get("future_aware", False), "future_aware")
+        inherited_protection = source_protection(original, visibility=item.get("visibility", "model"),
+                                                 role=item.get("role", "source"))
+        projected = {name: original.get(selected) if isinstance(selected, str) else selected.resolve(original)
+                     for name, selected in selectors.items()}
+        for name in ("partition", "split", "bucket"):
+            if name in projected and name in original and projected[name] != original[name]:
+                raise ValueError("schema cannot replace a declared source partition marker")
+        original = {**original, **projected}
+        field = lambda name: original.get(name)
         value = field("value")
         missing = value is None or value in ("", "NA", "N/A", "null", "None")
         if not missing:
@@ -167,7 +273,10 @@ def normalize(acquired, parameters, clocks):
         if time_estimated:
             if "sampling_interval" not in parameters:
                 raise ValueError("missing event times require an explicit sampling_interval")
-            event = item["position"] * number(parameters["sampling_interval"], "sampling_interval", minimum=1e-12)
+            interval = _positive(parameters["sampling_interval"], "sampling_interval")
+            event = item["position"] * interval
+            if item["position"] > 0 and event <= (item["position"] - 1) * interval:
+                raise ValueError("sampling_interval cannot advance representable event time")
         event = number(event, "event time")
         available = field("available_at")
         availability_assumed = available is None or available == ""
@@ -183,11 +292,15 @@ def normalize(acquired, parameters, clocks):
         clock_label = {"source_domain": domain, "source_time": event, "source_available_at": available,
                        "source_clock": source_clock, "basis": "unaligned source clock"}
         if affine:
-            scale = number(affine.get("scale", 1), "clock scale", minimum=1e-12)
+            scale = _positive(affine.get("scale", 1), "clock scale")
             offset = number(affine.get("offset", 0), "clock offset")
             if not affine.get("target"):
                 raise ValueError("clock affine alignment requires an explicit target clock domain")
-            event, available = scale * event + offset, scale * available + offset
+            source_delay = available > event
+            event = number(scale * event + offset, "aligned event time")
+            available = number(scale * available + offset, "aligned available_at")
+            if source_delay and available <= event:
+                raise ValueError("clock alignment cannot preserve representable availability advancement")
             domain = str(affine["target"])
             clock_label.update(scale=scale, offset=offset, basis="authored affine alignment; calibration not independently measured")
         source_id = str(original.get("source_record_id") or f"{item['source']}:{item['position']}")
@@ -205,8 +318,9 @@ def normalize(acquired, parameters, clocks):
         if observed and (missing or masked_missing):
             raise ValueError("observed=true conflicts with a missing value")
         units = str(field("units") or parameters.get("units", "unitless"))
-        protection = source_protection(original, visibility=item.get("visibility", "model"),
+        protection = source_protection(original, visibility=inherited_protection,
                                        role=item.get("role", "source"))
+        projected_future_aware = _boolean(original.get("future_aware", False), "future_aware")
         row = {**original, "record_id": source_id, "source_record_id": source_id,
             "source_record_ids": [source_id], "source_artifact_id": item["source"], "source_sha256": item["source_sha256"],
             "source_visibility": protection, "source_role": original.get("source_role", item.get("role", "source")),
@@ -221,7 +335,7 @@ def normalize(acquired, parameters, clocks):
             "source_missing_mask": original.get("missing_mask", {"value": missing}), "missing_mask": {"value": missing},
             "estimated": not observed and value is not None,
             "estimation_method": None if observed or value is None else "provided estimate",
-            "future_aware": _boolean(original.get("future_aware", False), "future_aware"),
+            "future_aware": inherited_future_aware or projected_future_aware,
             "value_origin": "measured" if observed else "missing" if value is None else "provided_estimate"}
         for name in CLOCK_FIELDS:
             if name in {"clock_domain", "clock_units"}:
@@ -263,6 +377,13 @@ def clean_series(records, parameters):
         kept = []
         for row in ordered:
             if kept and row["time"] == kept[-1]["time"]:
+                previous_clock = kept[-1]["clock_alignment"]
+                current_clock = row["clock_alignment"]
+                if ("scale" in current_clock and
+                        all(current_clock.get(name) == previous_clock.get(name)
+                            for name in ("source_clock", "scale", "offset")) and
+                        current_clock["source_time"] != previous_clock["source_time"]):
+                    raise ValueError("clock alignment cannot preserve representable event-time advancement")
                 if policy == "error":
                     raise ValueError("duplicate event time in a scalar signal series")
                 discarded = row if policy == "first" else kept[-1]
@@ -283,8 +404,8 @@ def partition_records(records, parameters, seed):
     fields = policy.get("group_by")
     if fields is None:
         fields = [field for field in ("episode_id", "device_id", "scenario_id") if any(row.get(field) is not None for row in records)]
-    validation = number(policy.get("validation", 0.2), "validation fraction", minimum=1e-12)
-    train = number(policy.get("train", 0.6), "train fraction", minimum=1e-12)
+    validation = _positive(policy.get("validation", 0.2), "validation fraction")
+    train = _positive(policy.get("train", 0.6), "train fraction")
     if train + validation >= 1:
         raise ValueError("train/validation/test fractions must all be positive")
     domain = {row["clock_domain"] for row in records}
@@ -496,9 +617,14 @@ def assert_available_history(records, source_availability):
             raise ValueError("online replay transformation used information unavailable at its decision")
 
 
-def transform_records(records, stages, mode, seed, maximum, *, dataset_ready=True):
-    if len(stages) > 32:
-        raise ValueError("data pipeline exceeds 32 bounded fixture stages")
+def transform_records(records, stages, mode, seed, maximum, *, dataset_ready=True,
+                      resource_plan=None, resource_usage=None):
+    plan = resource_plan or DataResourcePlan.resolve({"resources": {"max_rows": maximum}})
+    maximum = plan.selected.max_rows
+    _validate_stages(stages, plan)
+    usage = resource_usage if resource_usage is not None else {}
+    usage["rows"] = max(usage.get("rows", 0), len(records))
+    usage["window_records"] = usage.get("window_records", 0)
     fits, lineage = [], {row["record_id"]: row["source_record_ids"] for row in records}
     source_availability = {row["source_record_id"]: row["available_at"] for row in records}
     if mode == "online":
@@ -574,30 +700,30 @@ def transform_records(records, stages, mode, seed, maximum, *, dataset_ready=Tru
             groups = defaultdict(list)
             for row in records:
                 groups[_series_key(row)].append(row)
-            updated, lineage_entries = [], 0
+            updated = []
             for rows in groups.values():
                 rows = sorted(rows, key=lambda row: row["time"])
                 if kind in {"scale", "offset", "scale_offset"} and options.get("units"):
                     if options.get("source_units") != rows[0]["units"]:
                         raise ValueError("unit conversion requires matching explicit source_units")
-                window = deque(maxlen=integer(options.get("window", 5), "window", 1, min(maximum, 256)))
+                window = deque(maxlen=_window_size(stage)) if kind in WINDOW_OPERATIONS else None
                 donor = None
                 dependencies = {}
                 for row in rows:
-                    window.append(row)
-                    if kind in {"moving_average", "filter", "features"}:
+                    if window is not None:
+                        window.append(row)
+                        usage["window_records"] = max(usage["window_records"], len(window))
                         dependencies[row["record_id"]] = sorted({source for value in window for source in value["source_record_ids"]})
                     elif kind == "impute":
                         if row["value"] is None and donor is not None and options.get("method", "forward_fill") == "forward_fill":
                             dependencies[row["record_id"]] = sorted(set(row["source_record_ids"] + donor["source_record_ids"]))
                         elif row["value"] is not None and row["observed"]:
                             donor = row
-                for row in _transform(rows, stage, mode, seed):
+                remaining_rows = None if maximum is None else maximum - len(updated)
+                for row in _transform(rows, stage, mode, seed, max_records=remaining_rows,
+                                      max_window=plan.selected.window_records):
                     refs = dependencies.get(row["record_id"], row.get("source_record_ids", [row["source_record_id"]]))
                     row["source_record_ids"] = sorted({source for ref in refs for source in lineage.get(ref, [ref])})
-                    lineage_entries += len(row["source_record_ids"])
-                    if len(row["source_record_ids"]) > 1024 or lineage_entries > 2_000_000:
-                        raise ValueError("transformed lineage exceeds bounded fixture limits")
                     derived = kind in {"moving_average", "filter", "features", "scale", "offset", "scale_offset"} or row.get("quality") in {"imputed", "resampled"}
                     row["estimated"] = row.get("estimated", False) or derived
                     row["estimation_method"] = kind if derived else row.get("estimation_method")
@@ -616,9 +742,9 @@ def transform_records(records, stages, mode, seed, maximum, *, dataset_ready=Tru
                         row["unit_conversion"] = {"from": options["source_units"], "to": options["units"],
                             "factor": options.get("factor", options.get("scale", 1)), "offset": options.get("offset", 0), "basis": "authored conversion"}
                     updated.append(row)
-                    if len(updated) > maximum:
-                        raise ValueError("transformed data exceeds configured bounded row limit")
+                    plan.authorize("max_rows", len(updated))
             records = updated
+        usage["rows"] = max(usage["rows"], len(records))
         lineage = {row["record_id"]: row["source_record_ids"] for row in records}
         if mode == "online":
             assert_available_history(records, source_availability)
@@ -701,8 +827,8 @@ def publication_visibility(records, *, training=False):
 def export_representations(records, specifications, output_dir, *, dataset_ready, cancelled):
     from .representations import RepresentationEncoder
 
-    if not isinstance(specifications, list) or len(specifications) > 8:
-        raise ValueError("representations must be a list of at most eight explicit codecs")
+    if not isinstance(specifications, list):
+        raise ValueError("representations must be a list of explicit codecs")
     encoders = [RepresentationEncoder(specification) for specification in specifications]
     if len({encoder.specification["name"].casefold() for encoder in encoders}) != len(encoders):
         raise ValueError("representation names must be unique")
@@ -719,8 +845,6 @@ def export_representations(records, specifications, output_dir, *, dataset_ready
                 encoded["visibility"] = publication_visibility([row], training=dataset_ready and row["partition"] == "train")
                 data = _canonical(encoded) + b"\n"
                 total_bytes += len(data)
-                if total_bytes > 128 * 1024 ** 2:
-                    raise ValueError("matched representations exceed the 128 MiB export budget")
                 stream.write(data)
                 token_count += encoded["token_count"]
                 truncated += encoded["loss"]["truncated"]
@@ -752,9 +876,14 @@ def execute_data(spec, output_dir: Path, emit: Callable[[dict], None], cancelled
     if mode not in {"offline", "online"}:
         raise ValueError("data.pipeline mode must be offline or online")
     stages = definition.get("pipeline", params.get("pipeline", []))
+    resource_plan = DataResourcePlan.resolve(params, spec.get("_runtime_grants", {}).get("limits"))
+    _validate_stages(stages, resource_plan)
     online_policy = online_plan(params, stages) if mode == "online" else None
     output_dir.mkdir(parents=True, exist_ok=True)
-    acquired, sources, maximum = acquire(spec, output_dir, cancelled)
+    acquired, sources, maximum = acquire(spec, output_dir, cancelled, resource_plan=resource_plan)
+    resource_usage = {"rows": len(acquired), "source_bytes": sum(source["bytes"] for source in sources),
+                      "per_source_bytes": max((source["bytes"] for source in sources), default=0),
+                      "pipeline_stages": len(stages), "window_records": 0}
     alignment = params.get("clock_alignment", definition.get("clocks", {}).get("alignment", {}))
     normalized, truths = normalize(acquired, params, alignment)
     # Original files retain every acquired row, including rows cleaning removes.
@@ -772,7 +901,8 @@ def execute_data(spec, output_dir: Path, emit: Callable[[dict], None], cancelled
         truth_source_record_ids=[row["source_record_id"] for row in truths], truth_fields_separated=True)
     prepared = arrival_records(partitioned, online_policy) if mode == "online" else partitioned
     transformed, fits = transform_records(prepared, stages, mode, int(definition.get("seed", 42)), maximum,
-                                         dataset_ready=manifest["dataset_ready"])
+                                         dataset_ready=manifest["dataset_ready"], resource_plan=resource_plan,
+                                         resource_usage=resource_usage)
     invalidate_supervision(transformed, normalized)
     from .annotations import apply_annotations
     transformed, supervision, annotation_manifest = apply_annotations(transformed, params.get("annotations", []))
@@ -790,6 +920,7 @@ def execute_data(spec, output_dir: Path, emit: Callable[[dict], None], cancelled
         "policy": online_policy, "live_acquisition": False, "real_time_scheduling": False,
         "resampling": "unsupported without an independently defined replay horizon"}
     manifest["processing"] = {"mode": mode, "online_replay": online_status}
+    manifest["resources"] = resource_plan.to_dict(resource_usage)
     manifest["raw_sha256"] = hashlib.sha256(raw_path.read_bytes()).hexdigest()
     manifest["transformed_sha256"] = hashlib.sha256(transformed_path.read_bytes()).hexdigest()
     manifest_path = output_dir / "partitions.json"
@@ -857,6 +988,5 @@ def execute_data(spec, output_dir: Path, emit: Callable[[dict], None], cancelled
             "source_metadata_retained": True, "raw_separate_from_transformed": True, "train_only_fits": True,
             "truth_fields_separated": True, "model_visible_partitions": ["train"] if manifest["dataset_ready"] else [],
             "causal": profiles["transformed"]["future_aware_records"] == 0, "figures": figure_status,
-            "scale": {"max_rows": maximum, "source_bytes": 64 * 1024 ** 2, "per_source_bytes": 32 * 1024 ** 2, "pipeline_stages": 32, "window_records": 256,
-                      "lineage_entries_per_stage": 2_000_000,
-                      "implementation": "bounded in-memory scalar fixtures; no large-scale streaming qualification"}}}
+            "resources": manifest["resources"],
+            "scale": {**manifest["resources"]["selected"], "implementation": manifest["resources"]["disclosure"]}}}

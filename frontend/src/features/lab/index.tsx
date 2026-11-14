@@ -30,7 +30,10 @@ import { Label } from "react-aria-components";
 import {
   makeDefinition,
   parseDefinition,
+  DEFAULT_EXECUTION_BUDGETS,
+  parseFiniteExecutionBudget,
   evaluationParameters,
+  hardwareSessionInputPatch,
   templates,
   isTerminal,
   type ExperimentDefinition,
@@ -49,6 +52,14 @@ import { NumericLearning } from "./numeric-learning";
 import { pretrainedAxes, editPretrainedAxes } from "./pretrained-learning";
 import { MethodMatrixEditor } from "./method-matrix";
 import { Studies } from "./studies";
+import { StudyAnalysisResult } from "./study-analysis";
+import { RuntimeProbeResult } from "./runtime-probe";
+import { RuntimeProbeFields } from "./runtime-probe-fields";
+import {
+  HardwareDiscoveryFields,
+  HardwareDiscoveryResult,
+} from "./hardware-discovery";
+import { RecoveredEvidencePanel } from "./recovered-evidence";
 import {
   StatisticsPlanning,
   RetainedStatisticsPlanning,
@@ -87,6 +98,120 @@ function Fault({ error }: { error: unknown }) {
       {error instanceof Error ? error.message : String(error)}
     </p>
   ) : null;
+}
+/** Omission, explicit null and zero retain different authored budget choices. */
+function ExecutionBudgetField({
+  label,
+  modeLabel,
+  value,
+  defaultValue,
+  unit,
+  fieldKey,
+  report,
+  onChange,
+}: {
+  label: string;
+  modeLabel: string;
+  value: number | null | undefined;
+  defaultValue: number;
+  unit: string;
+  fieldKey: string;
+  report: (key: string, valid: boolean) => void;
+  onChange: (value: number | null | undefined) => void;
+}) {
+  const serialized =
+    value === undefined
+      ? "default"
+      : value === null
+        ? "unbounded"
+        : String(value);
+  const [draft, setDraft] = useState(
+    typeof value === "number" ? String(value) : "",
+  );
+  const [error, setError] = useState("");
+  const committed = useRef(serialized);
+  useEffect(() => {
+    if (serialized !== committed.current) {
+      committed.current = serialized;
+      setDraft(typeof value === "number" ? String(value) : "");
+      setError("");
+      report(fieldKey, true);
+    }
+  }, [serialized, value, fieldKey, report]);
+  useEffect(() => () => report(fieldKey, true), [fieldKey, report]);
+  const mode =
+    value === undefined ? "default" : value === null ? "unbounded" : "finite";
+  return (
+    <div className="flex flex-col gap-2">
+      <Choice
+        label={modeLabel}
+        value={mode}
+        options={[
+          { id: "default", name: "Use default" },
+          { id: "finite", name: "Finite limit" },
+          { id: "unbounded", name: "Unbounded" },
+        ]}
+        onChange={(nextMode) => {
+          const next =
+            nextMode === "default"
+              ? undefined
+              : nextMode === "unbounded"
+                ? null
+                : typeof value === "number"
+                  ? value
+                  : defaultValue;
+          committed.current =
+            next === undefined
+              ? "default"
+              : next === null
+                ? "unbounded"
+                : String(next);
+          setDraft(typeof next === "number" ? String(next) : "");
+          setError("");
+          report(fieldKey, true);
+          onChange(next);
+        }}
+      />
+      {mode === "finite" && (
+        <Input
+          label={label}
+          value={draft}
+          inputMode="numeric"
+          isInvalid={!!error}
+          onChange={(text) => {
+            setDraft(text);
+            try {
+              const next = parseFiniteExecutionBudget(text);
+              committed.current = String(next);
+              setError("");
+              report(fieldKey, true);
+              onChange(next);
+            } catch (failure) {
+              setError(
+                failure instanceof Error ? failure.message : String(failure),
+              );
+              report(fieldKey, false);
+            }
+          }}
+        />
+      )}
+      {mode === "default" && (
+        <p className="text-caption-1-regular text-text-secondary">
+          Default: {defaultValue} {unit}.
+        </p>
+      )}
+      {mode === "unbounded" && (
+        <p className="text-caption-1-regular text-text-secondary">
+          No authored {unit === "seconds" ? "time" : "output size"} limit.
+        </p>
+      )}
+      {error && (
+        <p role="alert">
+          {label}: {error}
+        </p>
+      )}
+    </div>
+  );
 }
 // A temporarily empty name is an editing state, not a reason to remove the
 // controls. Save and preflight continue to use the strict definition parser.
@@ -161,6 +286,7 @@ function LabWorkspace() {
   const [languageLearningValid, setLanguageLearningValid] = useState(true);
   const [controlLearningValid, setControlLearningValid] = useState(true);
   const [numericLearningValid, setNumericLearningValid] = useState(true);
+  const [hardwareDiscoveryValid, setHardwareDiscoveryValid] = useState(true);
   const [parameterDrafts, setParameterDrafts] = useState<Set<string>>(
     () => new Set(),
   );
@@ -354,6 +480,7 @@ function LabWorkspace() {
     !numericLearningValid ||
     !!parameterDrafts.size ||
     (definition?.engine === "statistics.plan" && !statisticsPlanningValid) ||
+    (definition?.engine === "hardware.discover" && !hardwareDiscoveryValid) ||
     pendingInputWork;
   const dirty = !saved || hasAuthoringEdits;
   const structuredEngine = [
@@ -363,6 +490,8 @@ function LabWorkspace() {
     "learning.timeseries",
     "learning.multimodal",
     "statistics.plan",
+    "runtime.qualify",
+    "hardware.discover",
   ].includes(definition?.engine ?? "");
   const authoringValid =
     !parameterDrafts.size &&
@@ -378,8 +507,11 @@ function LabWorkspace() {
             ? numericLearningValid
             : definition?.engine === "statistics.plan"
               ? statisticsPlanningValid
-              : true);
+              : definition?.engine === "hardware.discover"
+                ? hardwareDiscoveryValid
+                : true);
   const draftParameterEngine = [
+    "hardware.session",
     "learning.pretrained",
     "learning.language_rl",
     "learning.tool_rl",
@@ -1242,7 +1374,7 @@ function LabWorkspace() {
                                         ? "Every row needs a prompt, a final assistant answer and a distinct rejected answer. Full updates use a separate frozen reference model."
                                         : "Snapshot rows use conversational messages. The retained model tokenizer supplies the chat template."}
                                     {
-                                      " QLoRA requires CUDA with bitsandbytes, or the pinned Linux ARM64 CPU NF4 pack."
+                                      " Use a runtime qualification probe to measure NF4 training and reload on the selected target."
                                     }
                                   </p>
                                 </>
@@ -1506,6 +1638,24 @@ function LabWorkspace() {
                             onValidityChange={setStatisticsPlanningValid}
                           />
                         )}
+                        {definition?.engine === "runtime.qualify" && (
+                          <RuntimeProbeFields
+                            definition={definition}
+                            onChange={change}
+                            methods={catalog.data?.runtime_methods?.methods}
+                          />
+                        )}
+                        {definition?.engine === "hardware.discover" && (
+                          <HardwareDiscoveryFields
+                            key={`${authoringGeneration}:hardware-discovery`}
+                            definition={definition}
+                            onChange={change}
+                            onValidityChange={setHardwareDiscoveryValid}
+                            methods={
+                              catalog.data?.hardware_discovery_methods?.methods
+                            }
+                          />
+                        )}
                         {definition?.engine === "data.pipeline" && (
                           <DataPreparation
                             key={`${authoringGeneration}:data`}
@@ -1605,48 +1755,42 @@ function LabWorkspace() {
                           </SettingsSection>
                           <SettingsSection
                             title="Limits"
-                            description="Bound execution time and retained output size."
+                            description="Choose a finite budget, an explicit unbounded budget, or the default. Zero is an exact zero budget."
                           >
                             <div className="lab-fields">
-                              <Input
-                                label="Maximum execution seconds"
-                                type="number"
-                                value={String(
-                                  definition.execution.max_seconds ?? 300,
-                                )}
-                                onChange={(value) => {
-                                  if (
-                                    Number.isInteger(Number(value)) &&
-                                    Number(value) > 0
-                                  )
-                                    change({
-                                      execution: {
-                                        ...definition.execution,
-                                        max_seconds: Number(value),
-                                      },
-                                    });
-                                }}
-                              />
-                              <Input
-                                label="Maximum output bytes"
-                                type="number"
-                                value={String(
-                                  definition.execution.max_output_bytes ??
-                                    536870912,
-                                )}
-                                onChange={(value) => {
-                                  if (
-                                    Number.isInteger(Number(value)) &&
-                                    Number(value) > 0
-                                  )
-                                    change({
-                                      execution: {
-                                        ...definition.execution,
-                                        max_output_bytes: Number(value),
-                                      },
-                                    });
-                                }}
-                              />
+                              {(
+                                ["max_seconds", "max_output_bytes"] as const
+                              ).map((key) => (
+                                <ExecutionBudgetField
+                                  key={`${authoringGeneration}:execution:${key}`}
+                                  fieldKey={`${authoringGeneration}:execution:${key}`}
+                                  label={
+                                    key === "max_seconds"
+                                      ? "Maximum execution seconds"
+                                      : "Maximum output bytes"
+                                  }
+                                  modeLabel={
+                                    key === "max_seconds"
+                                      ? "Execution time budget"
+                                      : "Output size budget"
+                                  }
+                                  value={definition.execution[key]}
+                                  defaultValue={DEFAULT_EXECUTION_BUDGETS[key]}
+                                  unit={
+                                    key === "max_seconds" ? "seconds" : "bytes"
+                                  }
+                                  report={reportParameter}
+                                  onChange={(value) => {
+                                    const execution = {
+                                      ...definition.execution,
+                                    };
+                                    if (value === undefined)
+                                      delete execution[key];
+                                    else execution[key] = value;
+                                    change({ execution });
+                                  }}
+                                />
+                              ))}
                             </div>
                           </SettingsSection>
                           <p>
@@ -1686,7 +1830,18 @@ function LabWorkspace() {
                             }
                             key={`${authoringGeneration}:${definition.engine}`}
                             definition={definition}
-                            onChange={(inputs) => change({ inputs })}
+                            onChange={(inputs) =>
+                              change(
+                                parameterDrafts.has(
+                                  `${authoringGeneration}:${definition.engine}:supervisor`,
+                                )
+                                  ? { inputs }
+                                  : hardwareSessionInputPatch(
+                                      definition,
+                                      inputs,
+                                    ),
+                              )
+                            }
                             onPendingChange={setPendingInputWork}
                             signal={() => lifetime.current?.signal}
                           />
@@ -2015,8 +2170,19 @@ function RunEvidence({
   const statisticsRun =
     (run?.spec as any)?.definition?.engine === "statistics.plan" ||
     retained?.all.some((item) => item.role === "statistical_plan");
+  const analysisRun =
+    (run?.spec as any)?.definition?.engine === "statistics.analyze" ||
+    retained?.all.some((item) => item.role === "statistical_analysis");
+  const runtimeProbeRun =
+    (run?.spec as any)?.definition?.engine === "runtime.qualify" ||
+    retained?.all.some((item) => item.role === "runtime_probe");
+  const hardwareDiscoveryRun =
+    (run?.spec as any)?.definition?.engine === "hardware.discover" ||
+    retained?.all.some((item) => item.role === "device_discovery");
   const recordArtifacts =
-    retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? [];
+    analysisRun || runtimeProbeRun || hardwareDiscoveryRun
+      ? []
+      : (retained?.all.filter((item) => item.name.endsWith(".jsonl")) ?? []);
   const artifact = recordArtifacts.some(
     (item) => item.name === requestedArtifact,
   )
@@ -2111,7 +2277,12 @@ function RunEvidence({
   }, [studio.api, id, refresh, onChanged]);
   // Each artifact owns its retrieval state: a missing counterpart must not
   // erase successfully retained observations or independent run evidence.
-  const recordsAvailable = !!run && isTerminal(run.state);
+  const recordsAvailable =
+    !!run &&
+    !analysisRun &&
+    !runtimeProbeRun &&
+    !hardwareDiscoveryRun &&
+    isTerminal(run.state);
   const recordPath = (name: string, start: number, limit: number) =>
     recordsAvailable
       ? `/api/lab/runs/${enc(id)}/records?offset=${start}&limit=${limit}&artifact=${enc(name)}`
@@ -2369,6 +2540,7 @@ function RunEvidence({
           </Evidence>
         )}
         {run?.error != null && <pre role="alert">{json(run.error)}</pre>}
+        {run && <RecoveredEvidencePanel run={run} />}
         <SegmentedControl
           kind="tabs"
           variant="tray"
@@ -2379,7 +2551,15 @@ function RunEvidence({
           options={[
             {
               value: "replay",
-              label: statisticsRun ? "Planning" : "Replay",
+              label: statisticsRun
+                ? "Planning"
+                : analysisRun
+                  ? "Analysis"
+                  : runtimeProbeRun
+                    ? "Runtime probe"
+                    : hardwareDiscoveryRun
+                      ? "Discovery"
+                      : "Replay",
               controls: "lab-run-view-replay",
             },
             {
@@ -2452,7 +2632,17 @@ function RunEvidence({
         <section
           id="lab-run-view-replay"
           role="tabpanel"
-          aria-label={statisticsRun ? "Planning" : "Replay"}
+          aria-label={
+            statisticsRun
+              ? "Planning"
+              : analysisRun
+                ? "Analysis"
+                : runtimeProbeRun
+                  ? "Runtime probe"
+                  : hardwareDiscoveryRun
+                    ? "Discovery"
+                    : "Replay"
+          }
           hidden={runView !== "replay"}
         >
           {run &&
@@ -2462,6 +2652,12 @@ function RunEvidence({
                 runId={id}
                 scopeKey={studio.scopeKey}
               />
+            ) : analysisRun ? (
+              <StudyAnalysisResult run={run} />
+            ) : runtimeProbeRun ? (
+              <RuntimeProbeResult run={run} />
+            ) : hardwareDiscoveryRun ? (
+              <HardwareDiscoveryResult run={run} />
             ) : (
               <ReplayViews
                 records={chartRecords}
@@ -2483,172 +2679,228 @@ function RunEvidence({
           aria-label="Records"
           hidden={runView !== "records"}
         >
-          <Choice
-            label="Record artifact"
-            value={artifact}
-            options={
-              recordArtifacts.length
-                ? recordArtifacts.map((item) => ({
-                    id: item.name,
-                    name: `${item.role ?? "Evidence"} · ${item.name}`,
-                  }))
-                : [
-                    {
-                      id: "processed.jsonl",
-                      name: "Derived / processed records",
-                    },
-                    { id: "raw.jsonl", name: "Original / raw records" },
-                  ]
-            }
-            onChange={(value) => {
-              setArtifact(value);
-              setOffset(0);
-            }}
-          />
-          {!recordsAvailable ? (
-            <EmptyState heading="Records are not available yet" role="status">
-              Retained records can be retrieved after this run finishes.
-            </EmptyState>
-          ) : page.loading ? (
-            <EmptyState
-              heading="Loading retained records"
-              role="status"
-              aria-busy="true"
-            >
-              Retrieving {artifact} for the selected record window.
-            </EmptyState>
-          ) : pageSource.status === "missing" ? (
-            <EmptyState heading="No retained record artifact">
-              This run has no retained {artifact} artifact. Choose another
-              artifact or inspect the other run evidence.
-            </EmptyState>
-          ) : pageError ? (
-            <EmptyState
-              heading="Retained records unavailable"
-              role="alert"
-              actions={<Button onClick={page.reload}>Retry records</Button>}
-            >
-              {pageError instanceof Error
-                ? pageError.message
-                : String(pageError)}
-            </EmptyState>
-          ) : (
-            <Evidence
-              label="Laboratory records"
-              data={{ run_id: id, artifact, offset, records }}
-            >
-              <p className="lab-context-hint">
-                Filters and sorting apply to this loaded window of{" "}
-                {records.length} records. Use Previous records and Next records
-                to load another window.
-              </p>
-              <DataTable<{ record: any; position: number }>
-                assistantActionsEnabled={active && runView === "records"}
-                label="Retained records"
-                rows={records.map((record, index) => ({
-                  record,
-                  position: offset + index + 1,
-                }))}
-                getRowId={(row) => `${id}:${artifact}:${row.position}`}
-                scopeKey={`${id}:${artifact}`}
-                empty=""
+          {analysisRun || runtimeProbeRun || hardwareDiscoveryRun ? (
+            <>
+              <EmptyState
+                heading="Results use reports and supporting artifacts"
+                actions={
+                  <Button onClick={() => setRunView("replay")}>
+                    {runtimeProbeRun
+                      ? "Open runtime probe report"
+                      : hardwareDiscoveryRun
+                        ? "Open discovery report"
+                        : "Open analysis report"}
+                  </Button>
+                }
+              >
+                <p>
+                  {runtimeProbeRun
+                    ? "Runtime qualification retains a compatibility report, measurement stages and diagnostic artifacts. Inspect the report in Runtime probe."
+                    : hardwareDiscoveryRun
+                      ? "Hardware discovery retains structural metadata, model-address chains and wire trace artifacts. Inspect the retained status and source identity in Discovery. These artifacts are not numeric observation records."
+                      : "Study analysis retains its statistical report, selected observations and inference-unit artifacts. Inspect estimates, diagnostics and provenance in Analysis."}
+                </p>
+                <p>Use Run actions to export the retained manifest bundle.</p>
+              </EmptyState>
+              <SimpleTable
+                label="Report and supporting artifact identities"
+                rows={retained?.all ?? []}
+                getRowId={(row) => row.id}
+                scopeKey={id}
+                empty="No report or supporting artifact identities are retained for this run."
                 columns={[
+                  { id: "name", label: "Artifact", value: (row) => row.name },
                   {
-                    id: "record",
-                    label: "Record",
-                    value: (row) => row.position,
+                    id: "role",
+                    label: "Role",
+                    value: (row) => row.role ?? "Not recorded",
                   },
                   {
-                    id: "original",
-                    label: "Original fields",
-                    value: ({ record }) =>
-                      json(
-                        record.original ??
-                          record.raw ??
-                          (artifact ===
-                          (retained?.original?.name ?? "raw.jsonl")
-                            ? record
-                            : null),
-                      ),
-                    render: ({ record }) => (
-                      <EvidenceValue
-                        value={
-                          record.original ??
-                          record.raw ??
-                          (artifact ===
-                          (retained?.original?.name ?? "raw.jsonl")
-                            ? record
-                            : null)
-                        }
-                      />
-                    ),
+                    id: "identity",
+                    label: "Artifact identity",
+                    value: (row) => row.id,
                   },
                   {
-                    id: "derived",
-                    label: "Derived fields",
-                    value: ({ record }) =>
-                      json(
-                        record.derived ??
-                          record.processed ??
-                          (artifact ===
-                          (retained?.derived?.name ?? "processed.jsonl")
-                            ? record
-                            : null),
-                      ),
-                    render: ({ record }) => (
-                      <EvidenceValue
-                        value={
-                          record.derived ??
-                          record.processed ??
-                          (artifact ===
-                          (retained?.derived?.name ?? "processed.jsonl")
-                            ? record
-                            : null)
-                        }
-                      />
-                    ),
-                  },
-                  {
-                    id: "lineage",
-                    label: "Lineage and full record",
-                    value: ({ record }) => json(record),
-                    render: ({ record }) => (
-                      <details>
-                        <summary>Inspect record</summary>
-                        <pre>{json(record)}</pre>
-                      </details>
-                    ),
+                    id: "checksum",
+                    label: "SHA-256",
+                    value: (row) => row.sha256 ?? "Not recorded",
                   },
                 ]}
               />
-              {!records.length && (
-                <EmptyState heading="No retained records in this window">
-                  {artifact} returned no records at offset {offset}. Choose
-                  another artifact or record window to inspect other retained
-                  evidence.
+            </>
+          ) : (
+            <>
+              <Choice
+                label="Record artifact"
+                value={artifact}
+                options={
+                  recordArtifacts.length
+                    ? recordArtifacts.map((item) => ({
+                        id: item.name,
+                        name: `${item.role ?? "Evidence"} · ${item.name}`,
+                      }))
+                    : [
+                        {
+                          id: "processed.jsonl",
+                          name: "Derived / processed records",
+                        },
+                        { id: "raw.jsonl", name: "Original / raw records" },
+                      ]
+                }
+                onChange={(value) => {
+                  setArtifact(value);
+                  setOffset(0);
+                }}
+              />
+              {!recordsAvailable ? (
+                <EmptyState
+                  heading="Records are not available yet"
+                  role="status"
+                >
+                  Retained records can be retrieved after this run finishes.
                 </EmptyState>
+              ) : page.loading ? (
+                <EmptyState
+                  heading="Loading retained records"
+                  role="status"
+                  aria-busy="true"
+                >
+                  Retrieving {artifact} for the selected record window.
+                </EmptyState>
+              ) : pageSource.status === "missing" ? (
+                <EmptyState heading="No retained record artifact">
+                  This run has no retained {artifact} artifact. Choose another
+                  artifact or inspect the other run evidence.
+                </EmptyState>
+              ) : pageError ? (
+                <EmptyState
+                  heading="Retained records unavailable"
+                  role="alert"
+                  actions={<Button onClick={page.reload}>Retry records</Button>}
+                >
+                  {pageError instanceof Error
+                    ? pageError.message
+                    : String(pageError)}
+                </EmptyState>
+              ) : (
+                <Evidence
+                  label="Laboratory records"
+                  data={{ run_id: id, artifact, offset, records }}
+                >
+                  <p className="lab-context-hint">
+                    Filters and sorting apply to this loaded window of{" "}
+                    {records.length} records. Use Previous records and Next
+                    records to load another window.
+                  </p>
+                  <DataTable<{ record: any; position: number }>
+                    assistantActionsEnabled={active && runView === "records"}
+                    label="Retained records"
+                    rows={records.map((record, index) => ({
+                      record,
+                      position: offset + index + 1,
+                    }))}
+                    getRowId={(row) => `${id}:${artifact}:${row.position}`}
+                    scopeKey={`${id}:${artifact}`}
+                    empty=""
+                    columns={[
+                      {
+                        id: "record",
+                        label: "Record",
+                        value: (row) => row.position,
+                      },
+                      {
+                        id: "original",
+                        label: "Original fields",
+                        value: ({ record }) =>
+                          json(
+                            record.original ??
+                              record.raw ??
+                              (artifact ===
+                              (retained?.original?.name ?? "raw.jsonl")
+                                ? record
+                                : null),
+                          ),
+                        render: ({ record }) => (
+                          <EvidenceValue
+                            value={
+                              record.original ??
+                              record.raw ??
+                              (artifact ===
+                              (retained?.original?.name ?? "raw.jsonl")
+                                ? record
+                                : null)
+                            }
+                          />
+                        ),
+                      },
+                      {
+                        id: "derived",
+                        label: "Derived fields",
+                        value: ({ record }) =>
+                          json(
+                            record.derived ??
+                              record.processed ??
+                              (artifact ===
+                              (retained?.derived?.name ?? "processed.jsonl")
+                                ? record
+                                : null),
+                          ),
+                        render: ({ record }) => (
+                          <EvidenceValue
+                            value={
+                              record.derived ??
+                              record.processed ??
+                              (artifact ===
+                              (retained?.derived?.name ?? "processed.jsonl")
+                                ? record
+                                : null)
+                            }
+                          />
+                        ),
+                      },
+                      {
+                        id: "lineage",
+                        label: "Lineage and full record",
+                        value: ({ record }) => json(record),
+                        render: ({ record }) => (
+                          <details>
+                            <summary>Inspect record</summary>
+                            <pre>{json(record)}</pre>
+                          </details>
+                        ),
+                      },
+                    ]}
+                  />
+                  {!records.length && (
+                    <EmptyState heading="No retained records in this window">
+                      {artifact} returned no records at offset {offset}. Choose
+                      another artifact or record window to inspect other
+                      retained evidence.
+                    </EmptyState>
+                  )}
+                </Evidence>
               )}
-            </Evidence>
+              <div className="lab-actions">
+                <Button
+                  disabled={!recordsAvailable || page.loading || !offset}
+                  onClick={() => setOffset(Math.max(0, offset - 100))}
+                >
+                  Previous records
+                </Button>
+                <Button
+                  disabled={
+                    !recordsAvailable ||
+                    page.loading ||
+                    !!pageError ||
+                    nextOffset == null
+                  }
+                  onClick={() => setOffset(nextOffset!)}
+                >
+                  Next records
+                </Button>
+              </div>
+            </>
           )}
-          <div className="lab-actions">
-            <Button
-              disabled={!recordsAvailable || page.loading || !offset}
-              onClick={() => setOffset(Math.max(0, offset - 100))}
-            >
-              Previous records
-            </Button>
-            <Button
-              disabled={
-                !recordsAvailable ||
-                page.loading ||
-                !!pageError ||
-                nextOffset == null
-              }
-              onClick={() => setOffset(nextOffset!)}
-            >
-              Next records
-            </Button>
-          </div>
         </section>
       </RunTemplate>
     </Panel>

@@ -1,3 +1,24 @@
+import { scientificJson } from "../../api/scientific-json";
+
+export const DEFAULT_EXECUTION_BUDGETS = Object.freeze({
+  max_seconds: 300,
+  max_output_bytes: 536870912,
+});
+export const EXECUTION_BUDGET_INTEGER_HELP =
+  "Enter a nonnegative integer within this browser's exact-integer representation. Python/API clients can author larger exact integer budgets.";
+const exactBudget = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+export function parseFiniteExecutionBudget(text: string): number {
+  let value: unknown;
+  try {
+    value = scientificJson.parse(text);
+  } catch {
+    throw new Error(EXECUTION_BUDGET_INTEGER_HELP);
+  }
+  if (!exactBudget(value)) throw new Error(EXECUTION_BUDGET_INTEGER_HELP);
+  return Object.is(value, -0) ? 0 : value;
+}
+
 export interface InputBinding {
   artifact_id: string;
   sha256: string;
@@ -40,8 +61,8 @@ export interface ExperimentDefinition {
   execution: {
     profile: string;
     backend?: string;
-    max_seconds?: number;
-    max_output_bytes?: number;
+    max_seconds?: number | null;
+    max_output_bytes?: number | null;
     [key: string]: unknown;
   };
   objectives: Record<string, unknown>;
@@ -88,6 +109,41 @@ const input = (
   required = true,
 ): InputExpectation => ({ role, description, required });
 export const templates: Template[] = [
+  {
+    id: "hardware.session",
+    name: "Hardware session",
+    domain: "hardware",
+    parameters: {
+      binding_id: "",
+      supervisor: { kind: "recorded", artifact_id: "" },
+      supervisor_parameters: {},
+      evidence: { flush_records: 1, fsync: true },
+      ipc_timeout_seconds: null,
+      artifact_visibility: "evaluation",
+    },
+    inputs: [
+      input(
+        "supervisor",
+        "Recorded decision JSONL or Python source; the selector may reference any attached input role",
+        false,
+      ),
+    ],
+    hint: "Select an operator binding and a frozen supervisor artifact. Edit supervisor JSON to choose recorded or python; Python also selects its callable. Arbitrary supervisor parameters remain authored choices. Native delivery receipts do not qualify physical effects or control stability.",
+  },
+  {
+    id: "hardware.discover",
+    name: "Hardware discovery",
+    domain: "hardware",
+    parameters: {},
+    hint: "Author a discovery method and exact operator binding. Serial and CAN enumeration or SunSpec structural reads retain evidence without actuator writes or physical qualification.",
+  },
+  {
+    id: "runtime.qualify",
+    name: "Runtime qualification",
+    domain: "runtime",
+    parameters: {},
+    hint: "Choose the objective, target device, precision, fixture and execution policy. A completed measurement retains its verified, failed or unavailable outcome.",
+  },
   {
     id: "statistics.plan",
     name: "Statistical planning",
@@ -768,6 +824,37 @@ export function defaultVisibility(
       ? "evaluation"
       : "model";
 }
+export function hardwareSessionInputPatch(
+  definition: ExperimentDefinition,
+  inputs: InputBinding[],
+): Partial<ExperimentDefinition> {
+  const patch = { inputs };
+  if (definition.engine !== "hardware.session") return patch;
+  const candidates = inputs.filter((ref) => ref.role === "supervisor");
+  if (
+    candidates.length !== 1 ||
+    definition.inputs.some(
+      (ref) =>
+        ref.artifact_id === candidates[0].artifact_id &&
+        ref.role === "supervisor",
+    )
+  )
+    return patch;
+  const supervisor = definition.parameters.supervisor;
+  if (
+    !supervisor ||
+    typeof supervisor !== "object" ||
+    Array.isArray(supervisor)
+  )
+    return patch;
+  return {
+    inputs,
+    parameters: {
+      ...definition.parameters,
+      supervisor: { ...supervisor, artifact_id: candidates[0].artifact_id },
+    },
+  };
+}
 export function makeDefinition(
   engine = "synthetic.signal",
 ): ExperimentDefinition {
@@ -779,7 +866,12 @@ export function makeDefinition(
     engine,
     seed: 42,
     mode: "offline",
-    operating_mode: engine === "recorded.replay" ? "replay" : "simulation",
+    operating_mode:
+      engine === "hardware.discover"
+        ? "acquisition"
+        : ["recorded.replay", "runtime.qualify"].includes(engine)
+          ? "replay"
+          : "simulation",
     parameters: structuredClone(template?.parameters ?? {}),
     pipeline: [],
     inputs: [],
@@ -789,8 +881,7 @@ export function makeDefinition(
     execution: {
       profile: "trusted_native",
       backend: "native",
-      max_seconds: 300,
-      max_output_bytes: 536870912,
+      ...DEFAULT_EXECUTION_BUDGETS,
     },
     objectives: {},
     clocks: {},
@@ -939,12 +1030,18 @@ export function parseDefinition(text: string): ExperimentDefinition {
     !object(value.learning)
   )
     throw new Error("Learning configuration must be an object or null.");
-  for (const key of ["max_seconds", "max_output_bytes"])
+  for (const key of ["max_seconds", "max_output_bytes"]) {
     if (
       value.execution[key] !== undefined &&
-      (!Number.isInteger(value.execution[key]) || value.execution[key] <= 0)
+      value.execution[key] !== null &&
+      !exactBudget(value.execution[key])
     )
-      throw new Error("Execution budgets must be positive integers.");
+      throw new Error(
+        `Execution budgets accept null for unbounded or an exact nonnegative integer. ${EXECUTION_BUDGET_INTEGER_HELP}`,
+      );
+    // Keep strict integer API fields from being emitted as the codec's -0.0.
+    if (Object.is(value.execution[key], -0)) value.execution[key] = 0;
+  }
   return value as ExperimentDefinition;
 }
 export const isTerminal = (state: string) =>

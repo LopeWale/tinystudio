@@ -14,6 +14,7 @@ from pathlib import Path
 import stat
 
 from .gateway_api import create_gateway_app
+from .gateway_configuration import GatewayFilePolicy,GatewayRequestPolicy
 
 
 def listener_options(host, binding_mode, tls_cert=None, tls_key=None, trusted_proxies=None):
@@ -46,6 +47,9 @@ def main(argv=None):
     parser.add_argument("--binding-file", required=True)
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--journal-root", required=True)
+    parser.add_argument('--runtime-secrets-file',help='Private device credentials, separate from the public binding')
+    parser.add_argument('--config-max-bytes',type=int,help='Optional operational byte budget for each private configuration file')
+    parser.add_argument('--request-max-bytes',type=int,help='Optional operational byte budget for each HTTP command envelope')
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8766, type=int)
     parser.add_argument("--binding-mode", choices=["loopback", "tls", "reverse-proxy"], default="loopback")
@@ -57,7 +61,11 @@ def main(argv=None):
         parser.error("port must be 1..65535")
     try:
         options = listener_options(args.host, args.binding_mode, args.tls_cert, args.tls_key, args.trusted_proxies)
-        app = create_gateway_app(args.binding_file, args.journal_root, args.token_file)
+        selected={}
+        if args.runtime_secrets_file is not None:selected['runtime_secrets_file']=args.runtime_secrets_file
+        if args.config_max_bytes is not None:selected['file_policy']=GatewayFilePolicy(args.config_max_bytes)
+        if args.request_max_bytes is not None:selected['request_policy']=GatewayRequestPolicy(args.request_max_bytes)
+        app = create_gateway_app(args.binding_file, args.journal_root, args.token_file,**selected)
     except ValueError as exc:
         parser.error(str(exc))
     import uvicorn
