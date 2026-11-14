@@ -303,3 +303,27 @@ class EmulatorProcessBinding:
     @property
     def digest(self):
         return hashlib.sha256(_encoded(self.as_dict())).hexdigest()
+
+
+def emulator_binding_capabilities(grants) -> list[dict]:
+    """Declare configured process bindings without resolving or probing them.
+
+    The digest identifies the configured public binding, including its selected
+    executable and public environment. Neither those values nor private runtime
+    environment overlays are disclosed in this target capability declaration.
+    """
+    if type(grants) is not dict:
+        raise ValueError('hardware session grants must be an object')
+    bindings = grants.get('emulator_bindings', {})
+    if type(bindings) is not dict:
+        raise ValueError('hardware session emulator bindings must be an object')
+    if grants.get('native_execution') is not True:
+        return []
+    configured = [EmulatorProcessBinding.from_grants(grants, key) for key in bindings]
+    return [
+        {'binding_id': binding.binding_id, 'binding_sha256': binding.digest,
+         'qualification': {'availability': 'configured_only', 'executable': 'not_checked',
+                           'readiness': 'not_checked', 'firmware': 'not_checked',
+                           'model_fidelity': 'unverified', 'physical_outcome': 'unverified'}}
+        for binding in sorted(configured, key=lambda value: value.binding_id)
+    ]

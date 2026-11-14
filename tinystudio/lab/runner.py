@@ -84,6 +84,8 @@ def capabilities(profile_config: dict | None = None, *, work_root: Path | None =
     if not isinstance(session_bindings,dict):raise ValueError('hardware session bindings must be an object')
     result['hardware_session_bindings']=[HardwareSessionBinding.from_grants(session_grants,key).public_description()
         for key in session_bindings] if result['hardware_session_native_execution'] else []
+    from .hardware_emulator_selection import emulator_binding_capabilities
+    result['hardware_session_emulator_bindings'] = emulator_binding_capabilities(session_grants)
     from .spool_configuration import SpoolConfiguration
     result['evidence_spool_by_backend'] = {
         backend:SpoolConfiguration.resolve(profile_config,'hardware.discover',backend,work_root=work_root,persistent_publication=backend=='native').advertised()
@@ -806,11 +808,22 @@ class Runner:
         publication=AttemptPublication(self,attempt,root,check_authority=heartbeat.check_authority)
         publication_pending=False
         group = None
-        session_bridge=None;parent_artifacts=[];parent_outcome=None
+        session_bridge=None;parent_artifacts=[];parent_outcome=None;managed_selection=None
         state, result, error = "failed", None, None
         verified_audit_result = False
         cleanup_confirmed = True
         recorder_error = None
+        def close_parent_session():
+            if managed_selection is None:
+                return session_bridge.close()
+            return session_bridge.close(supervisor_cleanup_confirmed=cleanup_confirmed)
+        def observe_managed_process():
+            if managed_selection is None:
+                return
+            observation = session_bridge.poll().get('emulator')
+            if (managed_selection.on_exit == 'fail_session' and not heartbeat.cancelled.is_set()
+                    and isinstance(observation, dict) and observation.get('exit_code') is not None):
+                raise RuntimeError('selected emulator exit policy ended the supervisor session')
         try:
             heartbeat.start()
             publication.discover()
@@ -836,8 +849,20 @@ class Runner:
                 selected=validate_selection(spec['definition'])
                 binding=HardwareSessionBinding.from_grants(operator.get('engine_grants',{}).get(engine,{}),selected.binding_id)
                 runtime_secrets=binding.select_runtime_secrets(operator.get('engine_secrets',{}).get(engine,{}))
-                session_bridge=HardwareSessionBridge(binding,authority,SessionBridgePaths.evidence_in_work(work),runtime_secrets=runtime_secrets)
+                managed_selection = selected.emulator
+                if managed_selection is None:
+                    session_bridge=HardwareSessionBridge(binding,authority,SessionBridgePaths.evidence_in_work(work),runtime_secrets=runtime_secrets)
+                else:
+                    from .hardware_emulator_selection import EmulatorProcessBinding
+                    from .hardware_session_runtime import HardwareSessionRuntime
+                    emulator_binding = EmulatorProcessBinding.from_grants(
+                        operator.get('engine_grants', {}).get(engine, {}), managed_selection.binding_id)
+                    session_bridge = HardwareSessionRuntime(binding, authority, work, input_paths=paths,
+                        emulator_selection=managed_selection, emulator_binding=emulator_binding,
+                        runtime_secrets=runtime_secrets, emulator_runtime_secrets=emulator_binding.select_runtime_secrets(
+                            operator.get('engine_secrets', {}).get(engine, {})))
                 session_bridge.start()
+                observe_managed_process()
                 context['_runtime_grants']={'native_execution':True}
                 context['_runtime_secrets']={}
                 context['hardware_session']=session_bridge.descriptor
@@ -888,10 +913,12 @@ class Runner:
                             cancellation_deadline = time.monotonic() + max(0, self.process_grace)
                         if time.monotonic() >= cancellation_deadline:
                             raise
+                    observe_managed_process()
                     budget.check_output(self._output_size(root))
                     pause = .05 if cancellation_deadline is None else min(.05, max(0, cancellation_deadline - time.monotonic()))
                     time.sleep(pause)
                     returncode = poll()
+                observe_managed_process()
                 heartbeat.check_execution_budget()
                 if plan is not None and policy["backend"] != "native":
                     captured_out,captured_err = group.logs()
@@ -902,8 +929,10 @@ class Runner:
                 cleanup_confirmed = True
                 audit_only = returncode in {CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}
                 if session_bridge is not None:
-                    parent_outcome=session_bridge.close()
+                    parent_outcome=close_parent_session()
                     cleanup_confirmed=session_bridge.cleanup_confirmed
+                    if not cleanup_confirmed:
+                        raise RuntimeError('parent session cleanup is unconfirmed; inspect retained host evidence')
                     parent_artifacts=session_bridge.retain_artifacts(evidence,
                         visibility='evaluation' if audit_only else selected.artifact_visibility)
                 expected_outcome = (cancelled_evidence_outcome() if returncode == CANCELLED_EVIDENCE_EXIT
@@ -1000,7 +1029,7 @@ class Runner:
                     cleanup_confirmed = False
                     state, result, error = "failed", None, f"process cleanup unconfirmed: {cause}"[:8192]
             if session_bridge is not None:
-                try:session_bridge.close()
+                try:close_parent_session()
                 except Exception as cause:
                     state,result,error='failed',None,'parent session cleanup/evidence unconfirmed: '+type(cause).__name__
                 cleanup_confirmed=cleanup_confirmed and session_bridge.cleanup_confirmed

@@ -1,8 +1,9 @@
 """Parent coordination for a session bridge and an optional owned emulator.
 
-The caller owns its supervisor child and must stop/reap it before close(). This
-object reports only its own bridge/process cleanup. Exit codes and custody
-changes are observations, never an inferred scientific or physical outcome.
+The caller owns its supervisor child. close() takes its cleanup assertion; a
+false assertion remains restrictive. This object observes only its own bridge/
+process cleanup. Exit codes and custody changes never infer a scientific or
+physical outcome.
 """
 from __future__ import annotations
 
@@ -133,6 +134,8 @@ class HardwareSessionRuntime:
         self._close_lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
         self._close_requested = threading.Event()
+        self._supervisor_uncertain = threading.Event()
+        self._supervisor_assurance = {'prior_seal_not_attested': False, 'prior_exports_not_recalled': False}
         self._startup_active = False
         self._startup_thread = None
 
@@ -228,7 +231,13 @@ class HardwareSessionRuntime:
             primary = {'phase': self._phase, 'type': type(error).__name__}
             self._primary = primary
             self.close()
-            public_error = HardwareSessionRuntimeError(primary['phase'], primary['type'], self._summary)
+            if isinstance(error, KeyboardInterrupt):
+                public_error = KeyboardInterrupt()
+            elif isinstance(error, SystemExit):
+                code = error.code
+                public_error = SystemExit(code if code is None or type(code) is int else 1)
+            else:
+                public_error = HardwareSessionRuntimeError(primary['phase'], primary['type'], self._summary)
         # Raise outside the native exception handler: even __context__ must not
         # retain the original exception's private diagnostic/credential text.
         raise public_error from None
@@ -246,7 +255,7 @@ class HardwareSessionRuntime:
         observation = None
         if self.emulator is not None:
             try: observation = deepcopy(self.emulator.poll())
-            except BaseException as error: observation = {'status': 'unconfirmed', 'error_type': type(error).__name__}
+            except Exception as error: observation = {'status': 'unconfirmed', 'error_type': type(error).__name__}
         return {'state': self._state, 'emulator': observation,
                 'workspace': self._prepared.as_dict() if self._prepared is not None else None,
                 'qualification': {'scientific_outcome': 'not_inferred', 'physical_outcome': 'unverified'}}
@@ -301,7 +310,9 @@ class HardwareSessionRuntime:
     def _make_summary(self):
         return {'format': 'tinystudio.hardware-session-runtime.v1', 'state': self._state,
             'cleanup_confirmed': all(self._component_cleanup.values()),
-            'cleanup_scope': 'owned_bridge_and_emulator_only; caller_must_stop_and_reap_supervisor_first',
+            'cleanup_scope': 'owned_bridge_and_emulator_only; supervisor_cleanup_is_a_caller_assertion',
+            'writer_quiescence': self._writer_quiescence(),
+            'supervisor_assurance': deepcopy(self._supervisor_assurance),
             'bridge': {'status': self._component_status['bridge'], 'cleanup_confirmed': self._component_cleanup['bridge'],
                        'outcome': deepcopy(self._bridge_outcome)},
             'emulator': {'status': self._component_status['emulator'], 'cleanup_confirmed': self._component_cleanup['emulator'],
@@ -318,7 +329,48 @@ class HardwareSessionRuntime:
     def cleanup_confirmed(self):
         return self._close_complete and all(self._component_cleanup.values())
 
-    def close(self):
+    def _writer_quiescence(self):
+        confirmed = not self._supervisor_uncertain.is_set()
+        own = all(self._component_cleanup.values())
+        return {'supervisor_cleanup_confirmed': confirmed, 'supervisor_scope': 'caller_assertion_not_process_observation',
+                'own_cleanup_confirmed': own, 'all_writers_quiescent': own and confirmed,
+                'false_latched': not confirmed}
+
+    def _invalidate_prior_seal(self):
+        if self._workspace['status'] == 'sealed':
+            self._workspace = {'status': 'prior_seal_not_attested', 'report': None,
+                               'prior_report': deepcopy(self._workspace['report'])}
+            self._supervisor_assurance['prior_seal_not_attested'] = True
+
+    def _refresh_supervisor_assurance(self):
+        if not self._supervisor_uncertain.is_set(): return
+        previous = self._summary or {}
+        stale = previous.get('writer_quiescence', {}).get('supervisor_cleanup_confirmed') is True
+        stale = stale or self._workspace['status'] == 'sealed'
+        if not stale: return
+        self._invalidate_prior_seal()
+        self._supervisor_assurance['prior_exports_not_recalled'] = bool(self._retained)
+        self._retained.clear()
+        # Previously hashed manifests/reports remain historical bytes. Publish
+        # a separate current correction, never silently revise their contents.
+        prior_manifest = self._own_files.pop(self.paths.manifest, None)
+        self._summary = self._make_summary()
+        correction = {**self._summary, 'supersedes_runtime_manifest_sha256': prior_manifest}
+        if self._writer is not None:
+            try:
+                with self.paths.assurance.open('xb') as stream:
+                    self.paths.assurance.chmod(0o600)
+                    stream.write(_encoded(correction)); stream.flush()
+                    if self.binding.evidence.fsync: os.fsync(stream.fileno())
+                self._own_files[self.paths.assurance] = _stable_file(self.paths.assurance)[0]
+            except BaseException as error:
+                self._error('supervisor_assurance_metadata', error)
+                self._summary = self._make_summary()
+
+    def close(self, *, supervisor_cleanup_confirmed=True):
+        if type(supervisor_cleanup_confirmed) is not bool:
+            raise ValueError('supervisor_cleanup_confirmed must be a boolean caller assertion')
+        if not supervisor_cleanup_confirmed: self._supervisor_uncertain.set()
         self._close_requested.set()
         if self._startup_active and self._startup_thread != threading.get_ident() and not self._close_attempted:
             # A concurrent shutdown must wake cooperative prepare/probe checks,
@@ -326,7 +378,9 @@ class HardwareSessionRuntime:
             # cancel/expiry reasons remain latched by AttemptControl.
             self.control.revoke('parent_session_closed', termination='release')
         with self._lifecycle_lock:
-            return self._close()
+            self._close()
+            self._refresh_supervisor_assurance()
+            return deepcopy(self._summary)
 
     def _close(self):
         with self._close_lock:
@@ -335,14 +389,18 @@ class HardwareSessionRuntime:
             self._close_bridge()
             self._close_emulator()
             if self.workspace is not None:
-                if all(self._component_cleanup.values()):
+                if self._writer_quiescence()['all_writers_quiescent']:
                     try: self._workspace = {'status': 'sealed', 'report': self.workspace.seal()}
                     except BaseException as error:
                         self._workspace = {'status': 'seal_failed', 'report': deepcopy(getattr(error, 'report', None))}
                         self._error('workspace_seal', error)
-                else: self._workspace = {'status': 'not_sealed_cleanup_unconfirmed', 'report': None}
+                elif not all(self._component_cleanup.values()):
+                    self._workspace = {'status': 'not_sealed_cleanup_unconfirmed', 'report': None}
+                else: self._workspace = {'status': 'not_sealed_supervisor_cleanup_unconfirmed', 'report': None}
+                if self._supervisor_uncertain.is_set(): self._invalidate_prior_seal()
             self._state = 'closed'
-            try: self._record('runtime_closed', cleanup_confirmed=all(self._component_cleanup.values()), primary_error=self._primary)
+            try: self._record('runtime_closed', cleanup_confirmed=all(self._component_cleanup.values()),
+                              writer_quiescence=self._writer_quiescence(), primary_error=self._primary)
             except BaseException as error: self._error('metadata_write', error)
             if self._writer is not None:
                 try: self._writer.close()
@@ -382,6 +440,7 @@ class HardwareSessionRuntime:
         with self._lifecycle_lock:
             if not self._close_complete:
                 raise RuntimeError('parent runtime close must complete before evidence retention')
+            self._refresh_supervisor_assurance()
             return self._retain_artifacts(destination, visibility=visibility)
 
     def _retain_artifacts(self, destination, *, visibility):
@@ -404,7 +463,7 @@ class HardwareSessionRuntime:
                         artifacts.append(self._retain_known(source, destination, visibility,
                             role='hardware_session_parent', name=bridge_paths.exported(self.control.identity.owner, source)))
             core_metadata = (self.paths.emulator.lifecycle, self.paths.emulator.readiness, self.paths.emulator.manifest)
-            if self.emulator is not None and self._component_cleanup['emulator'] and all(path.is_file() for path in core_metadata):
+            if self.emulator is not None and self._writer_quiescence()['all_writers_quiescent'] and all(path.is_file() for path in core_metadata):
                 artifacts.extend(self.emulator.retain_artifacts(destination, visibility=visibility))
             elif self.emulator is not None:
                 # Preserve only explicitly known closed parent metadata. Raw logs
@@ -418,7 +477,7 @@ class HardwareSessionRuntime:
                 if receipts and all(value.get('closed') is True for value in receipts.values()) and self.paths.emulator.manifest.exists():
                     artifacts.append(self._retain_known(self.paths.emulator.manifest, destination, visibility,
                         role='managed_emulator_parent', name='managed-emulator-' + self.paths.emulator.manifest.name))
-            if self.workspace is not None and self._workspace['status'] == 'sealed':
+            if self.workspace is not None and self._writer_quiescence()['all_writers_quiescent'] and self._workspace['status'] == 'sealed':
                 artifacts.extend(self.workspace.retain_artifacts(destination, visibility=visibility))
         except BaseException as error:
             public_error = HardwareSessionRuntimeError('artifact_retention', type(error).__name__, self._summary, artifacts=artifacts)

@@ -794,10 +794,159 @@ revocation; it never replays an uncertain stop or stops a newer owner's lease.
 File fsync acknowledgements and transport receipts do not prove physical effects,
 power-loss durability or stopping.
 
-Owned verification exercised serial loopback, the actual native Runner child
-and local IPC. It establishes no physical-device, Wokwi/Renode session or CUDA
-qualification. The same definition remains authorable through existing Lab JSON,
-CLI and tools; target capabilities and explicit operator bindings still apply.
+The original bridge verification exercised serial loopback, the actual native
+Runner child and local IPC. That verification establishes no physical-device,
+Wokwi/Renode session or CUDA qualification. The same definition remains
+authorable through existing Lab JSON, CLI and tools; target capabilities and
+explicit operator bindings still apply.
+
+### Managed emulator sessions
+
+An optional `parameters.emulator` lets the parent manage a software process for
+the same hardware session. Omitting it or selecting `null` preserves the existing
+session. The experiment chooses portable assets, argument tokens, readiness and
+exit policy. The execution host chooses the executable through a separate
+`emulator_bindings` map beside its existing gateway `bindings`:
+
+```json
+{
+  "native_execution": true,
+  "emulator_bindings": {
+    "chosen-emulator": {
+      "executable": {"argv_prefix": ["/operator/chosen/emulator-launcher"]},
+      "public_env": {"EXPERIMENT_LABEL": "owned-software-fixture"}
+    }
+  }
+}
+```
+
+This is a fragment of `profile_config.engine_grants.hardware.session`; retain the
+gateway binding required by the session. An explicit prefix can select any
+operator-provisioned executable and literal arguments. Alternatively,
+`"executable": {"runtime_tool": "renode"}` or
+`"executable": {"runtime_tool": "wokwi_cli"}` selects a central `RuntimeTools`
+alias, configured with `TINYSTUDIO_RENODE` or
+`TINYSTUDIO_WOKWI_CLI`. These aliases select programs; they neither install them
+nor choose a board, firmware, device model or command-line arguments.
+
+The target advertises `hardware_session_emulator_bindings` containing each
+configured `binding_id`, its public configuration `binding_sha256` and explicitly
+unverified qualification fields. It publishes no executable arguments,
+environment values or private paths. Preflight requires the exact emulator
+binding ID only when an emulator is selected, in addition to the native grant
+and gateway binding. A matching declaration establishes configured availability;
+it performs no binary lookup, readiness probe or firmware verification.
+
+Attach the asset files as ordinary frozen Inputs with their SHA-256 values, then
+add a selection such as this to the existing session parameters:
+
+```json
+{
+  "emulator": {
+    "binding_id": "chosen-emulator",
+    "assets": [
+      {"name": "project", "artifact_id": "UPLOADED_PROJECT_ID", "destination": "project/config.json"},
+      {"name": "firmware", "artifact_id": "UPLOADED_FIRMWARE_ID", "destination": "project/firmware.bin"}
+    ],
+    "argv": [{"asset": "project"}, {"asset": "firmware"}, {"workspace": "output"}],
+    "cwd": ".",
+    "readiness": {"kind": "process_running"},
+    "startup_timeout_seconds": null,
+    "shutdown_grace_seconds": 3,
+    "max_log_bytes": null,
+    "poll_interval_seconds": 0.02,
+    "raw_log_visibility": null,
+    "on_exit": "record"
+  }
+}
+```
+
+The example launcher accepts three positional paths; select arguments that match
+the actual provisioned program. The authored `argv` is appended to the operator
+prefix. Each literal is one exact argument, including empty strings after the
+program; `{"asset": "name"}` resolves one selected asset copy and
+`{"workspace": "relative/path"}` resolves one private workspace path. Readiness
+commands accept the same typed tokens. No shell expansion or string template is
+applied. Asset destinations and working directories are canonical relative paths
+within the owned workspace. The parent verifies the downloaded input hashes and
+makes separate private copies; the original frozen inputs are not rewritten.
+
+Readiness selects one explicit observation:
+
+| Selection | Observed scope |
+| --- | --- |
+| `{"kind": "process_running"}` | The owned process is alive at the check. |
+| `{"kind": "tcp", "host": "selected-host", "port": 12345}` | The selected endpoint accepts a connection; hostname resolution uses the host's normal resolver. |
+| `{"kind": "log_bytes", "stream": "stdout", "marker": {"encoding": "hex", "value": "00ff"}}` | The exact byte marker is observed in the selected stdout/stderr stream; markers also accept `utf8` or `base64`. |
+| `{"kind": "command", "argv": ["selected-checker"], "expected_exit_code": 0}` | The selected checker exits with the selected code; an optional relative `cwd` chooses its working directory. |
+
+These observations establish only their stated scope. The supervisor can submit
+raw queries and commands through the separately selected native gateway profile
+and evaluate an authored response predicate. Continuous telemetry collection
+requires an explicit reader in the selected program or supervisor; readiness
+does not create one or select a scientific success criterion.
+
+`startup_timeout_seconds: null` selects no additional startup deadline; `0`
+requests an immediate readiness check. `max_log_bytes: null` selects no capture
+cap; `0` retains no raw log bytes. Finite log capture limits record truncation and
+observed byte counts. `poll_interval_seconds: 0` selects no retry sleep, and
+`shutdown_grace_seconds: 0` selects no graceful waiting interval. The attempt's
+authority and execution budgets still apply. Default `on_exit: "record"` retains
+an observed emulator exit without assigning scientific failure. Selecting
+`"fail_session"` asks the parent to fail an active session when it observes the
+emulator exit. Neither policy interprets firmware behavior or physical effects.
+
+Private process environment values belong in
+`profile_config.engine_secrets.hardware.session.emulator_bindings`, for example
+`{"chosen-emulator": {"environment": {"TOKEN": "OPERATOR_SUPPLIED"}}}`.
+The parent selects only that binding's overlay; it is excluded from portable
+parameters, public binding digests and capability declarations. Public environment
+choices remain part of the configured binding. Raw stdout/stderr stay outside
+automatically exported evidence by default. An explicit `raw_log_visibility` of
+`model`, `evaluation` or `truth` requests byte-preserving copies with that
+visibility after confirmed cleanup. There is no automatic redaction or rewrite;
+program output can contain values the program prints.
+
+Startup prepares and verifies the private assets, starts the emulator and checks
+selected readiness before exposing the session bridge to the supervisor. On
+shutdown the parent stops and reaps the supervisor first, closes the authority
+bridge and its selected scoped device action while the emulator is still alive,
+then closes the emulator and owned helpers and drains logs. Only after known
+writers stop does it seal asset custody and retain the final evidence inventory.
+The custody report distinguishes original download bytes, initial asset copies
+and final copy bytes. Expected writable-project changes remain observed changes;
+the researcher qualifies their meaning. A changed original downloaded input is a
+provenance failure. The private workspace is not automatically walked for models
+or exported files.
+
+Startup errors, exits, cancellation and unconfirmed cleanup retain qualified
+audit metadata. A missing process handle or failed cleanup observation remains
+unknown. Unconfirmed cleanup prevents asset sealing and raw-log/workspace export;
+known closed audit metadata can still be retained. Process cleanup, transport
+ACKs and file hashes establish neither physical stopping nor model fidelity.
+This remains native `trusted_native` execution under the operator's same UID.
+
+Runtime metadata distinguishes its own bridge/emulator cleanup from the caller's
+assertion that the supervisor has stopped. Runner supplies its process-group
+cleanup outcome. A later uncertain assertion invalidates the current sealing
+claim and produces a separate corrective assurance receipt referencing the prior
+manifest hash; previously exported bytes remain historical and cannot be
+recalled. Ctrl-C and Python `SystemExit` propagate after cleanup is attempted,
+with qualified cleanup evidence retained.
+
+Owned vendor verification used the official **Renode 1.17.0** portable release
+with one RV32I/NS16550 software model: a 32-byte fixture firmware returned each of
+the 256 byte values XOR `0xa5` through a Renode PTY and an owned loopback bridge.
+That fixture exercised managed startup, selected readiness, private logs and
+known process cleanup. It was not a C compiler build, physical-device comparison,
+timing/fidelity qualification or a complete Runner/server experiment. The
+reproducible optional fixture is in `tests/test_lab_managed_renode.py` and uses the
+operator-selected binary without downloading one.
+[Renode's UART documentation](https://renode.readthedocs.io/en/latest/host-integration/uart.html)
+describes PTY and TCP connections; its PTY was used for this fixture. Wokwi process
+configuration and RFC2217 support remain operator-selected and are documented in
+the [official Wokwi CLI reference](https://docs.wokwi.com/wokwi-ci/cli-usage).
+No Wokwi binary, token or cloud session was qualified by the Renode fixture.
 
 ## Data preparation contracts
 

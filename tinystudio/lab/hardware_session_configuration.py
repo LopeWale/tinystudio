@@ -45,6 +45,8 @@ class HardwareSessionRuntimePaths:
     @property
     def manifest(self): return self.evidence / 'hardware-session-runtime.json'
     @property
+    def assurance(self): return self.evidence / 'hardware-session-runtime-assurance.json'
+    @property
     def bridge(self): return SessionBridgePaths.evidence_in_work(self.work)
     @property
     def emulator(self):

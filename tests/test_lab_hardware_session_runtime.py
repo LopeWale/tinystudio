@@ -186,6 +186,20 @@ def test_poll_observes_exit_without_changing_authority_or_scientific_policy(tmp_
     finally: runtime.close()
 
 
+@pytest.mark.parametrize('interrupt', [KeyboardInterrupt, SystemExit])
+def test_poll_does_not_swallow_caller_shutdown_signals(tmp_path, interrupt):
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path)).start()
+    def stop(): raise interrupt()
+    components.emulator.poll = stop
+    try:
+        with pytest.raises(interrupt):
+            runtime.poll()
+    finally:
+        runtime.close()
+    assert runtime.cleanup_confirmed
+
+
 def test_readiness_failure_closes_known_process_before_sealing_and_never_starts_bridge(tmp_path):
     components = Components(tmp_path, authority(), fail_ready=True)
     runtime = components.runtime(binding(tmp_path))
@@ -443,6 +457,178 @@ def test_actual_bridge_close_blocks_retention_until_final_runtime_inventory(tmp_
         if closer.ident is not None: closer.join(3)
         if retainer.ident is not None: retainer.join(3)
         runtime.close()
+
+
+def test_unknown_live_supervisor_blocks_real_custody_and_raw_exports_after_own_cleanup(tmp_path):
+    from tinystudio.lab.runner import ProcessGroup
+    control = authority(); components = Components(tmp_path, control)
+    original = tmp_path / 'frozen.bin'; original.write_bytes(b'original')
+    selected = EmulatorSelection.from_definition({'engine': 'hardware.session',
+        'inputs': [{'artifact_id': 'asset', 'sha256': hashlib.sha256(b'original').hexdigest()}], 'parameters': {'emulator': {
+            'binding_id': 'emulator', 'assets': [{'name': 'data', 'artifact_id': 'asset', 'destination': 'data.bin'}],
+            'argv': ['-c', 'import time; time.sleep(30)'], 'readiness': {'kind': 'process_running'},
+            'shutdown_grace_seconds': .1, 'raw_log_visibility': 'truth'}}})
+    runtime = HardwareSessionRuntime(binding(tmp_path), control, components.work, input_paths={'asset': original},
+        emulator_selection=selected, emulator_binding=emulator_binding(), bridge_factory=components.bridge_factory).start()
+    marker = tmp_path / 'supervisor-running'
+    code = f"from pathlib import Path; import time; target=Path({str(runtime.workspace.root / 'data.bin')!r}); Path({str(marker)!r}).touch(); i=0\nwhile True: target.write_bytes(str(i).encode()); i+=1; time.sleep(.01)"
+    supervisor = ProcessGroup([sys.executable, '-c', code], grace=.1)
+    try:
+        deadline = time.monotonic() + 3
+        while not marker.exists():
+            assert time.monotonic() < deadline
+            time.sleep(.005)
+        assert supervisor.process.poll() is None
+        result = runtime.close(supervisor_cleanup_confirmed=False)
+        assert runtime.cleanup_confirmed and result['cleanup_confirmed']
+        assert result['writer_quiescence']['supervisor_cleanup_confirmed'] is False
+        assert result['writer_quiescence']['supervisor_scope'] == 'caller_assertion_not_process_observation'
+        assert result['writer_quiescence']['all_writers_quiescent'] is False
+        assert result['workspace']['status'] == 'not_sealed_supervisor_cleanup_unconfirmed'
+        assert not runtime.workspace.report_path.exists() and supervisor.process.poll() is None
+        assert not runtime.paths.assurance.exists()
+        assert json.loads(runtime.paths.manifest.read_text())['writer_quiescence']['all_writers_quiescent'] is False
+        artifacts = runtime.retain_artifacts(tmp_path / 'audit')
+        assert {'hardware_session_runtime', 'managed_emulator_parent'} <= {item['role'] for item in artifacts}
+        assert not any(item['role'] == 'emulator_asset_custody' or item['media_type'] == 'application/octet-stream' for item in artifacts)
+        assert original.read_bytes() == b'original'
+        assert runtime.close(supervisor_cleanup_confirmed=True)['writer_quiescence']['false_latched'] is True
+    finally:
+        supervisor.close()
+        try: runtime.close(supervisor_cleanup_confirmed=False)
+        except TypeError: runtime.close()  # RED against the prior API still reaps its owned model.
+
+
+def test_concurrent_false_supervisor_assertion_wins_over_true_before_seal(tmp_path):
+    import threading
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path)).start()
+    entered, release = threading.Event(), threading.Event()
+    original_close = runtime.bridge.close
+    def gated_close():
+        entered.set(); assert release.wait(3)
+        return original_close()
+    runtime.bridge.close = gated_close
+    results, errors = [], []
+    def close(value):
+        try: results.append(runtime.close(supervisor_cleanup_confirmed=value))
+        except BaseException as error: errors.append(error)
+    first, second = threading.Thread(target=close, args=(True,)), threading.Thread(target=close, args=(False,))
+    try:
+        first.start(); assert entered.wait(2)
+        second.start()
+        assert runtime._supervisor_uncertain.wait(2)  # Synchronize publication of the restrictive caller assertion.
+        release.set(); first.join(3); second.join(3)
+        assert not first.is_alive() and not second.is_alive() and not errors
+        assert len(results) == 2 and all(not row['writer_quiescence']['all_writers_quiescent'] for row in results)
+        assert 'seal' not in components.events
+        assert components.bridge.close_calls == components.emulator.close_calls == 1
+        assert runtime.close(supervisor_cleanup_confirmed=True) == results[-1]
+    finally:
+        release.set()
+        if first.ident is not None: first.join(3)
+        if second.ident is not None: second.join(3)
+        runtime.close(supervisor_cleanup_confirmed=False)
+
+
+def test_late_false_invalidates_prior_seal_and_cached_raw_inventory_without_rewriting_it(tmp_path):
+    components = Components(tmp_path, authority())
+    selected = emulator_selection(argv=['-c', 'import time; time.sleep(30)'], raw_log_visibility='truth')
+    runtime = HardwareSessionRuntime(binding(tmp_path), components.control, components.work, input_paths={},
+        emulator_selection=selected, emulator_binding=emulator_binding(), bridge_factory=components.bridge_factory).start()
+    first = runtime.close()
+    assert first['workspace']['status'] == 'sealed' and first['writer_quiescence']['all_writers_quiescent']
+    original_manifest = runtime.paths.manifest.read_bytes()
+    original_custody = runtime.workspace.report_path.read_bytes()
+    destination = tmp_path / 'retained'
+    prior_artifacts = runtime.retain_artifacts(destination)
+    assert any(item['media_type'] == 'application/octet-stream' for item in prior_artifacts)
+    late = runtime.close(supervisor_cleanup_confirmed=False)
+    assert late['cleanup_confirmed'] and not late['writer_quiescence']['all_writers_quiescent']
+    assert late['workspace']['status'] == 'prior_seal_not_attested' and late['workspace']['report'] is None
+    assert late['workspace']['prior_report']['status'] == 'sealed'
+    assert late['supervisor_assurance']['prior_exports_not_recalled'] is True
+    assert runtime.paths.manifest.read_bytes() == original_manifest
+    assert runtime.workspace.report_path.read_bytes() == original_custody
+    current = runtime.retain_artifacts(destination)
+    assert any(item['name'] == runtime.paths.assurance.name for item in current)
+    assert not any(item['media_type'] == 'application/octet-stream' or item['role'] == 'emulator_asset_custody' for item in current)
+    correction = json.loads(runtime.paths.assurance.read_text())
+    assert correction['writer_quiescence']['false_latched'] is True
+    assert correction['workspace']['status'] == 'prior_seal_not_attested'
+    assert correction['supersedes_runtime_manifest_sha256'] == hashlib.sha256(original_manifest).hexdigest()
+    assert runtime.close(supervisor_cleanup_confirmed=True) == late
+
+
+def test_false_arriving_during_seal_keeps_that_report_historical_and_unexported(tmp_path):
+    import threading
+    components = Components(tmp_path, authority())
+    entered, release = threading.Event(), threading.Event()
+    def workspace(*args):
+        owned = components.workspace_factory(*args)
+        original = owned.seal
+        def seal():
+            entered.set(); assert release.wait(3)
+            return original()
+        owned.seal = seal
+        return owned
+    runtime = HardwareSessionRuntime(binding(tmp_path), components.control, components.work, input_paths={},
+        emulator_selection=emulator_selection(), emulator_binding=emulator_binding(), workspace_factory=workspace,
+        emulator_factory=components.emulator_factory, bridge_factory=components.bridge_factory).start()
+    results, errors = [], []
+    def close(value):
+        try: results.append(runtime.close(supervisor_cleanup_confirmed=value))
+        except BaseException as error: errors.append(error)
+    first, second = threading.Thread(target=close, args=(True,)), threading.Thread(target=close, args=(False,))
+    try:
+        first.start(); assert entered.wait(2)
+        second.start(); assert runtime._supervisor_uncertain.wait(2)
+        release.set(); first.join(3); second.join(3)
+        assert not first.is_alive() and not second.is_alive() and not errors
+        assert components.events.count('seal') == 1
+        assert all(row['workspace']['status'] == 'prior_seal_not_attested' for row in results)
+        assert all(not row['writer_quiescence']['all_writers_quiescent'] for row in results)
+        runtime.retain_artifacts(tmp_path / 'audit')
+        assert 'retain_workspace' not in components.events
+    finally:
+        release.set()
+        if first.ident is not None: first.join(3)
+        if second.ident is not None: second.join(3)
+        runtime.close(supervisor_cleanup_confirmed=False)
+
+
+def test_actual_startup_sigint_propagates_after_owned_cleanup_and_metadata(tmp_path):
+    import signal
+    from tinystudio.lab.managed_emulator import ManagedEmulatorProcess
+    class InterruptAfterReady(ManagedEmulatorProcess):
+        def wait_ready(self):
+            super().wait_ready()
+            os.kill(os.getpid(), signal.SIGINT)
+            raise AssertionError('SIGINT did not interrupt startup')
+    runtime = HardwareSessionRuntime(binding(tmp_path), authority(), tmp_path / 'work', input_paths={},
+        emulator_selection=emulator_selection(argv=['-c', 'import time; time.sleep(30)'], shutdown_grace_seconds=.1),
+        emulator_binding=emulator_binding(), emulator_factory=InterruptAfterReady)
+    with pytest.raises(KeyboardInterrupt) as caught: runtime.start()
+    assert caught.value.args == () and caught.value.__context__ is None and caught.value.__cause__ is None
+    assert runtime.cleanup_confirmed and runtime.emulator.snapshot()['cleanup_confirmed']
+    summary = runtime.close()
+    assert summary['primary_error']['type'] == 'KeyboardInterrupt'
+    assert summary['evidence']['closed'] and runtime.paths.manifest.is_file()
+
+
+@pytest.mark.parametrize('code,expected', [(None, None), (0, 0), (7, 7), ('private-system-exit-secret', 1)])
+def test_startup_systemexit_keeps_safe_code_and_cleanup_without_private_context(tmp_path, code, expected):
+    components = Components(tmp_path, authority())
+    def emulator(*args, **kwargs):
+        owned = components.emulator_factory(*args, **kwargs)
+        def exit_ready(): raise SystemExit(code)
+        owned.wait_ready = exit_ready
+        return owned
+    runtime = components.runtime(binding(tmp_path), emulator_factory=emulator)
+    with pytest.raises(SystemExit) as caught: runtime.start()
+    assert caught.value.code == expected and caught.value.__context__ is None and caught.value.__cause__ is None
+    assert 'private-system-exit-secret' not in str(caught.value) + json.dumps(runtime.close())
+    assert components.emulator.close_calls == 1 and runtime.cleanup_confirmed
 
 
 @pytest.mark.parametrize('raw_visibility', [None, 'truth'])

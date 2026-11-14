@@ -76,6 +76,13 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
                 for binding in bindings)
             check('hardware_session_binding', permitted,
                   'Configure the exact hardware.session binding on the selected execution host; its public profile and capability claims do not establish physical outcomes.')
+            if selected.emulator is not None:
+                emulator_bindings = capabilities.get('hardware_session_emulator_bindings')
+                permitted = isinstance(emulator_bindings, list) and any(
+                    isinstance(binding, dict) and binding.get('binding_id') == selected.emulator.binding_id
+                    for binding in emulator_bindings)
+                check('hardware_session_emulator_binding', permitted,
+                      'Configure the exact selected emulator process binding on the execution host; configured availability does not establish executable installation, readiness, firmware behavior or model fidelity.')
     if engine == "statistics.plan":
         from .statistics_selection import validate_statistics_selection
         try:
