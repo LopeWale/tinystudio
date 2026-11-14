@@ -31,6 +31,27 @@ class SessionBridgePaths:
     def exported(self,session_id,path):return 'parent-session-'+session_id+'-'+path.name
 
 
+@dataclass(frozen=True)
+class HardwareSessionRuntimePaths:
+    work: Path
+
+    def __post_init__(self):
+        object.__setattr__(self, 'work', Path(self.work))
+
+    @property
+    def evidence(self): return self.work / 'evidence' / 'parent-session-runtime'
+    @property
+    def lifecycle(self): return self.evidence / 'hardware-session-runtime.jsonl'
+    @property
+    def manifest(self): return self.evidence / 'hardware-session-runtime.json'
+    @property
+    def bridge(self): return SessionBridgePaths.evidence_in_work(self.work)
+    @property
+    def emulator(self):
+        from .managed_process_configuration import ManagedProcessPaths
+        return ManagedProcessPaths(self.work)
+
+
 def _positive(value, name):
     try:
         valid = type(value) in {int, float} and math.isfinite(value) and value > 0
@@ -121,8 +142,10 @@ class HardwareSessionBinding:
 
     def select_runtime_secrets(self,values):
         if values is None:values={}
-        if not isinstance(values,dict) or values.keys()-{'bindings'}:
+        if not isinstance(values,dict) or values.keys()-{'bindings', 'emulator_bindings'}:
             raise ValueError('hardware session runtime secrets must select a bindings map')
+        if not isinstance(values.get('emulator_bindings', {}), dict):
+            raise ValueError('emulator secret bindings must be an object')
         bindings=values.get('bindings',{})
         if not isinstance(bindings,dict):raise ValueError('hardware session secret bindings must be an object')
         selected=bindings.get(self.binding_id,{})

@@ -12,9 +12,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import Contract, ExperimentDefinition, InputRef
+from .hardware_emulator_selection import EmulatorSelection
 
 
 SCHEMAS = {
+    "tinystudio.lab.hardware-emulator-selection.v1": EmulatorSelection.json_schema(),
     "tinystudio.lab.definition.v1": ExperimentDefinition.model_json_schema(),
     "tinystudio.lab.input-ref.v1": InputRef.model_json_schema(),
     "tinystudio.lab.published-artifacts.v1": {
@@ -47,7 +49,8 @@ SCHEMAS = {
                 "fsync": {"type": "boolean", "default": True}},
                 "description": "Selected file write policy; fsync acknowledgement is not physical power-loss verification."},
             "ipc_timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": None},
-            "artifact_visibility": {"enum": ["model", "evaluation", "truth"], "default": "evaluation"}}},
+            "artifact_visibility": {"enum": ["model", "evaluation", "truth"], "default": "evaluation"},
+            "emulator": {"oneOf": [{"type": "null"}, EmulatorSelection.json_schema()]}}},
     "tinystudio.lab.hardware-session-provenance.v1": {
         "type": "object", "required": ["format", "implementation_sha256", "files"], "additionalProperties": False,
         "properties": {"format": {"const": "tinystudio.lab.hardware-session-provenance.v1"},
@@ -62,6 +65,8 @@ def hardware_session_provenance() -> dict:
     names = (
         "hardware_session_engine.py", "hardware_session_client.py", "session_protocol.py",
         "hardware_session_configuration.py", "hardware_session_bridge.py",
+        "hardware_session_runtime.py", "hardware_emulator_selection.py", "emulator_workspace.py",
+        "managed_emulator.py", "managed_process_configuration.py", "native_process.py",
         "attempt_control.py", "attempt_bound_transport.py", "command_profiles.py",
         "native_command_transports.py", "gateway.py", "gateway_lifecycle.py",
         "gateway_lease_policy.py", "gateway_watchdog.py", "evidence_io.py",

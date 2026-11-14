@@ -27,7 +27,9 @@ from .engine import ExecutionCancelled, digest
 from .evidence_io import JsonlEvidenceWriter, RecordWritePolicy
 from .execution_outcome import RetainedExecutionError
 from .session_protocol import SESSION_FORMAT as IPC_FORMAT
-from .hardware_session_configuration import SessionBridgePaths
+from .hardware_session_configuration import HardwareSessionRuntimePaths, SessionBridgePaths
+from .hardware_emulator_selection import EmulatorSelection
+from .emulator_workspace import EmulatorWorkspace
 
 
 FORMAT = 'tinystudio.hardware-session.v1'
@@ -87,16 +89,19 @@ class HardwareSessionSelection:
     evidence: RecordWritePolicy
     ipc_timeout_seconds: float | None
     artifact_visibility: str = 'evaluation'
+    emulator: EmulatorSelection | None = None
 
     def __post_init__(self):
         for name in ('supervisor', 'supervisor_parameters'):
             object.__setattr__(self, name, _freeze(getattr(self, name)))
 
     def to_dict(self):
-        return {'binding_id': self.binding_id, 'supervisor': _plain(self.supervisor),
+        result = {'binding_id': self.binding_id, 'supervisor': _plain(self.supervisor),
                 'supervisor_parameters': _plain(self.supervisor_parameters),
                 'evidence': self.evidence.to_dict(), 'ipc_timeout_seconds': self.ipc_timeout_seconds,
                 'artifact_visibility': self.artifact_visibility}
+        if self.emulator is not None: result['emulator'] = self.emulator.as_dict()
+        return result
 
 
 def validate_selection(definition):
@@ -111,7 +116,7 @@ def validate_selection(definition):
         raise ValueError('unsupported hardware session operating mode')
     parameters = definition.get('parameters', {})
     if not isinstance(parameters, dict) or parameters.keys() - {
-            'binding_id', 'supervisor', 'supervisor_parameters', 'evidence', 'ipc_timeout_seconds', 'artifact_visibility'}:
+            'binding_id', 'supervisor', 'supervisor_parameters', 'evidence', 'ipc_timeout_seconds', 'artifact_visibility', 'emulator'}:
         raise ValueError('hardware session parameters contain unsupported fields')
     binding_id = parameters.get('binding_id')
     if type(binding_id) is not str or not binding_id:
@@ -141,7 +146,8 @@ def validate_selection(definition):
     if type(visibility) is not str or visibility not in {'model', 'evaluation', 'truth'}:
         raise ValueError('artifact_visibility must select model, evaluation or truth')
     return HardwareSessionSelection(binding_id, deepcopy(supervisor), deepcopy(settings),
-        RecordWritePolicy.from_parameters(parameters), parameters.get('ipc_timeout_seconds'), visibility)
+        RecordWritePolicy.from_parameters(parameters), parameters.get('ipc_timeout_seconds'), visibility,
+        EmulatorSelection.from_definition(definition))
 
 
 @dataclass(frozen=True)
@@ -335,8 +341,12 @@ def execute_hardware_session(spec, output_dir, emit, cancelled):
     _cancel(cancelled)
     paths = HardwareSessionPaths(Path(output_dir))
     paths.root.mkdir(parents=True, exist_ok=True)
-    parent=SessionBridgePaths.parent_in_output(paths.root)
-    if any(path!=parent or path.is_symlink() or not path.is_dir() for path in paths.root.iterdir()):
+    runtime_paths = HardwareSessionRuntimePaths(paths.root.parent)
+    parents = {SessionBridgePaths.parent_in_output(paths.root), runtime_paths.evidence}
+    if selection.emulator is not None:
+        parents.update({runtime_paths.emulator.evidence_directory,
+                        EmulatorWorkspace(paths.root.parent, selection.emulator).evidence_directory})
+    if any(path not in parents or path.is_symlink() or not path.is_dir() for path in paths.root.iterdir()):
         raise ValueError('hardware session requires an empty owned output directory')
     definition = deepcopy(spec['definition'])
     profile = deepcopy(descriptor['profile'])

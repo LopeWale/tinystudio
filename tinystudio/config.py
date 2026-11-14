@@ -93,8 +93,10 @@ class RuntimeTools:
     docker: str = "docker"
     kubectl: str = "kubectl"
     redis_server: str = "redis-server"
+    renode: str = field(default="renode", kw_only=True)
+    wokwi_cli: str = field(default="wokwi-cli", kw_only=True)
     path: str = field(default_factory=lambda: os.environ.get("PATH", os.defpath))
-    names: ClassVar[tuple[str, ...]] = ("python", "cloudflared", "docker", "kubectl", "redis_server")
+    names: ClassVar[tuple[str, ...]] = ("python", "cloudflared", "docker", "kubectl", "redis_server", "renode", "wokwi_cli")
 
     @classmethod
     def from_environment(cls) -> RuntimeTools:
