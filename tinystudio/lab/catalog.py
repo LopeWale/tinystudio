@@ -114,7 +114,8 @@ def catalog() -> list[dict]:
             "execution_scope": "read-only telemetry; exact trusted binding required; serial opening may toggle control lines",
             "version": "sha256:"+hashlib.sha256(b''.join(Path(__file__).with_name(name).read_bytes()
                 for name in ('acquisition.py', 'acquisition_paths.py', 'hardware_transports.py', 'hardware_bindings.py',
-                             'device_discovery.py', 'experiment_resources.py', 'modbus_trace.py', 'serial_framing.py'))).hexdigest(),
+                             'device_discovery.py', 'experiment_resources.py', 'modbus_trace.py', 'serial_framing.py',
+                             'evidence_io.py'))).hexdigest(),
             "representations": ["numeric", "raw_payload"]})
     from .plugins import manifest_for
     return [{**row, "manifest": manifest_for(row)} for row in result]

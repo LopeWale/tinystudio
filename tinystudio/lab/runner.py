@@ -59,7 +59,7 @@ def _backend_runtime(backend: str, config: dict) -> dict:
     return json.loads(json.dumps(runtime))
 
 
-def capabilities(profile_config: dict | None = None) -> dict:
+def capabilities(profile_config: dict | None = None, *, work_root: Path | None = None) -> dict:
     info, runtime = catalog(), runtime_versions()
     rows = info["adapters"] + info["methods"]
     engines = [row["id"] for row in rows if row["implemented"] and row["available"]]
@@ -71,6 +71,10 @@ def capabilities(profile_config: dict | None = None) -> dict:
     from .hardware_bindings import HardwareBindingRegistry
     discovery_grants = (profile_config or {}).get('engine_grants', {}).get('hardware.discover', {})
     result['hardware_discovery_bindings'] = HardwareBindingRegistry.from_grants(discovery_grants, 'discovery').discovery_capabilities()
+    from .spool_configuration import SpoolConfiguration
+    result['evidence_spool_by_backend'] = {
+        backend:SpoolConfiguration.resolve(profile_config,'hardware.discover',backend,work_root=work_root).advertised()
+        for backend in {'native',*_backend_configs(profile_config)}}
     for backend, config in _backend_configs(profile_config).items():
         if backend == "rq" and isinstance(config, dict) and config.get("enabled") is True and config.get("profiles") == ["trusted_native"]:
             result["backends"].append("rq")
@@ -393,6 +397,8 @@ class Runner:
         else:
             self.client = client
         self.prefix = f"/api/lab/runner/{target_id}"
+        self.server = server
+        self.target_id = target_id
         self.work_root = work_root
         self.source_root = source_root or Path(__file__).resolve().parents[1]
         self.heartbeat_interval, self.process_grace = heartbeat_interval, process_grace
@@ -414,11 +420,16 @@ class Runner:
         response.raise_for_status()
         return response.json()
 
+    def _advertised_capabilities(self):
+        if self.work_root is None:
+            return capabilities(self._profile_config)
+        return capabilities(self._profile_config,work_root=self.work_root)
+
     def advertise(self) -> dict:
-        return self.post("/advertise", {"capabilities": capabilities(self._profile_config)})
+        return self.post("/advertise", {"capabilities": self._advertised_capabilities()})
 
     def run_once(self, *, run_id: str | None = None) -> bool:
-        body = {"capabilities": capabilities(self._profile_config)}
+        body = {"capabilities": self._advertised_capabilities()}
         if run_id is not None:
             body["run_id"] = run_id
         try:
@@ -437,6 +448,36 @@ class Runner:
         directory = selected.get("shared_work_root") if backend == "kubernetes" else self.work_root
         if backend == "kubernetes" and not directory:
             raise ValueError("Kubernetes execution needs an operator-provisioned shared_work_root")
+        from .evidence_spool import EvidenceSpool
+        from .spool_configuration import SpoolConfiguration
+        try:
+            selected_spool = SpoolConfiguration.resolve(self._profile_config,attempt["spec"]["definition"]["engine"],backend,work_root=self.work_root)
+            selected_spool.require_ready()
+            spool_policy = selected_spool.policy
+            retained = EvidenceSpool(spool_policy).allocate(attempt, server=self.server, target_id=self.target_id) if spool_policy.enabled else None
+        except FileExistsError:
+            # Existing evidence may belong to an already active execution of
+            # this authority. Never overwrite it or end that attempt here.
+            raise
+        except Exception as cause:
+            try:
+                self.post(f"/attempts/{attempt['attempt_id']}/finish",{
+                    "state":"failed","result":None,
+                    "error":f"Host evidence admission failed before local execution: {type(cause).__name__}: {cause}"[:8192]},attempt['lease_token'])
+            except Exception as finish_error:
+                cause.add_note(f"Pre-execution failure acknowledgement is unconfirmed: {type(finish_error).__name__}: {finish_error}")
+            raise
+        if spool_policy.enabled:
+            try:
+                self.execute_attempt(attempt, retained.execution_root, evidence_recorder=retained)
+            except BaseException as cause:
+                try:
+                    retained.snapshot()
+                except Exception as snapshot_error:
+                    cause.add_note(f"Local evidence inventory also failed: {type(snapshot_error).__name__}: {snapshot_error}")
+                raise
+            retained.snapshot()
+            return True
         with tempfile.TemporaryDirectory(prefix="tinystudio-lab-", dir=directory) as root:
             self.execute_attempt(attempt, Path(root))
         return True
@@ -549,7 +590,7 @@ class Runner:
             return evidence.get("job_uid") == job_uid and evidence.get("terminated") is True
         return probe
 
-    def execute_attempt(self, attempt: dict, root: Path):
+    def execute_attempt(self, attempt: dict, root: Path, *, evidence_recorder=None):
         if not root.is_absolute() or root.is_symlink() or not root.is_dir():
             raise ValueError("attempt root must be an existing absolute non-symlink directory")
         # macOS temporary-directory ancestors can be aliases (/var -> /private/var).
@@ -570,6 +611,8 @@ class Runner:
         group = None
         state, result, error = "failed", None, None
         verified_audit_result = False
+        cleanup_confirmed = True
+        recorder_error = None
         try:
             heartbeat.start()
             heartbeat.check()
@@ -593,16 +636,23 @@ class Runner:
             plan = self._profile(spec,attempt,root,snapshot,config,command) if policy["profile"] == "isolated" else None
             context["profile_manifest"] = plan.manifest() if plan else {"format":"tinystudio.execution-profile.v1","backend":"native","profile":"trusted_native","qualification":"trusted_native_not_isolated"}
             context["profile_manifest"]["profile"] = policy["profile"]
+            if evidence_recorder is not None:
+                context["profile_manifest"]["evidence_retention"] = {
+                    "mechanism":"persistent_host_spool","classification":"operator_host_evidence",
+                    "spool_key":evidence_recorder.key,"retention":evidence_recorder.spool.policy.retention,
+                    "qualification":"Selected retention mechanism; no filesystem or physical outcome guarantee."}
             if policy["backend"] == "rq":
                 context["profile_manifest"].update(backend="rq", execution_backend="native")
             (root / "context.json").write_text(json.dumps(context, allow_nan=False))
             (root / "context.json").chmod(0o444)
             with (work / "stdout.log").open("wb") as stdout, (work / "stderr.log").open("wb") as stderr:
                 if plan is None:
+                    cleanup_confirmed = False
                     group = ProcessGroup(command, grace=self.process_grace, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=self._environment(root, snapshot), cwd=work)
                     poll = group.process.poll
                 else:
                     from .profiles import ProfileExecution
+                    cleanup_confirmed = False
                     group = ProfileExecution(plan,termination_probe=self._termination_probe(config))
                     group.start(stdout=stdout,stderr=stderr)
                     poll = group.poll
@@ -631,6 +681,7 @@ class Runner:
                     stdout.write(captured_out.encode());stderr.write(captured_err.encode())
                     stdout.flush();stderr.flush()
                 group.close()  # Descendants must stop before reading/hashing any final output.
+                cleanup_confirmed = True
                 audit_only = returncode in {CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}
                 expected_outcome = (cancelled_evidence_outcome() if returncode == CANCELLED_EVIDENCE_EXIT
                                     else failed_evidence_outcome() if returncode == FAILED_EVIDENCE_EXIT else None)
@@ -704,8 +755,15 @@ class Runner:
             if group is not None:
                 try:
                     group.close()
+                    cleanup_confirmed = True
                 except Exception as cause:
+                    cleanup_confirmed = False
                     state, result, error = "failed", None, f"process cleanup unconfirmed: {cause}"[:8192]
+            if evidence_recorder is not None:
+                try:
+                    evidence_recorder.mark_cleanup(cleanup_confirmed)
+                except Exception as cause:
+                    recorder_error = cause
         try:
             if heartbeat.connectivity_lost:
                 raise RuntimeError("runner lost lease connectivity; local execution stopped, server must recover the attempt") from heartbeat.error
@@ -714,9 +772,15 @@ class Runner:
             elif heartbeat.cancelled.is_set() and state == "failed" and verified_audit_result and result is not None:
                 state = "cancelled"
             retained = result if state == "succeeded" or (state in {"cancelled", "failed"} and verified_audit_result) else None
-            self.post(prefix + "/finish", {"state": state, "result": retained, "error": error}, lease)
+            acknowledgement = self.post(prefix + "/finish", {"state": state, "result": retained, "error": error}, lease)
+            if evidence_recorder is not None:
+                if not isinstance(acknowledgement, dict) or acknowledgement.get("accepted") is not True or acknowledgement.get("state") != state:
+                    raise RuntimeError("completion acknowledgement is unconfirmed; local evidence remains retained")
+                evidence_recorder.record_server_ack({"accepted": True, "state": state})
         finally:
             heartbeat.stop()
+        if recorder_error is not None:
+            raise RuntimeError("execution ended but local evidence metadata update failed; inspect the retained spool") from recorder_error
 
 
 def run(server: str, target_id: str, token: str, *, once: bool = False, poll_seconds: float = 2,

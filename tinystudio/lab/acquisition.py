@@ -30,6 +30,7 @@ from .acquisition_paths import AcquisitionPaths
 from .serial_framing import FramedSerialReader, SerialFraming
 from .device_discovery import SunSpecDiscovery, SunSpecScanConfig
 from .modbus_trace import RawModbusTrace
+from .evidence_io import JsonlEvidenceWriter, RecordWritePolicy
 
 ENGINES = frozenset({'acquisition.serial', 'acquisition.modbus', 'acquisition.mqtt', 'acquisition.can'})
 _DECIMAL = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z')
@@ -466,6 +467,7 @@ def _parquet(path, output, cancelled):
 
 def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=None, clock=time, predictor=None):
     definition=spec['definition'];params=definition.get('parameters',{})
+    write_policy=RecordWritePolicy.from_parameters(params)
     retained=definition.get('operating_mode')=='shadow' and params.get('source')=='retained'
     binding=_binding(spec,retained=retained)
     plan=CollectionPlan.resolve(params,binding.get('limits',{}))
@@ -485,10 +487,19 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
     domain='host-monotonic:'+str(spec.get('research_identity','acquisition'))
     reader=None;rows=raw_rows=missing=stale=0;pending_frame=None
     source=iter(_retained(spec,maximum)) if retained else None
-    failure=None;cleanup_errors=[]
+    failure=None;cleanup_errors=[];raw_writer=processed_writer=None
 
-    def retain_failure(cause):
-        from .execution_outcome import RetainedExecutionError
+    def evidence_writes():
+        return {name:writer.receipt() for name,writer in (('raw',raw_writer),('processed',processed_writer))
+                if writer is not None}
+
+    def failure_evidence(cause):
+        nonlocal raw_rows,rows,pending_frame
+        if raw_writer is not None:
+            written=raw_writer.receipt()['written_records']
+            if written>raw_rows:pending_frame=None
+            raw_rows=written
+        if processed_writer is not None:rows=processed_writer.receipt()['written_records']
         attached=getattr(cause,'source_binding',None)
         if attached is not None:
             paths.source_binding.write_text(json.dumps(attached,allow_nan=False,sort_keys=True))
@@ -513,7 +524,7 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                'retained_raw_records':raw_rows,'retained_processed_records':rows,
                'unprocessed_receive_retained':paths.unprocessed_receive.is_file(),
                'native_close_errors':list(cleanup_errors),'closure_unconfirmed':bool(cleanup_errors),
-               'resource_plan':plan.to_dict(),'physical_validation':False,
+               'resource_plan':plan.to_dict(),'evidence_writes':evidence_writes(),'physical_validation':False,
                'clock':{'started_monotonic':started,'finished_monotonic':clock.monotonic()},
                'disclosure':'Partial acquisition audit only; files and bookkeeping counts do not establish completion or statistical sufficiency.'}
         paths.failure.write_text(json.dumps(audit,allow_nan=False,sort_keys=True))
@@ -526,7 +537,22 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                  'metrics':{'records':rows,'missing_records':missing,'stale_records':stale,'actuator_writes':0},
                  'qualification':{'status':'partial_acquisition_audit','complete':False,'physical_validation':False,
                                   'resource_plan':plan.to_dict(),'binding_id':binding['binding_id'],
+                                  'evidence_writes':evidence_writes(),
+                                  'availability_boundary':'decoded_and_validated_before_evidence_commit_and_inference',
                                   'native_close_errors':list(cleanup_errors),'closure_unconfirmed':bool(cleanup_errors)}}
+        return partial
+
+    def retain_failure(cause):
+        from .execution_outcome import RetainedExecutionError
+        try:
+            partial=failure_evidence(cause)
+        except Exception as retention_error:
+            cause.add_note(f'Acquisition evidence retention failed; no audit result was published: '
+                           f'{type(retention_error).__name__}: {retention_error}')
+            if hasattr(cause,'evidence_result'):cause.evidence_result=None
+            # Keep the same primary exception and its original cause chain.
+            # The retention error remains visible as context and in the note.
+            raise cause
         if isinstance(cause,ExecutionCancelled):
             cause.evidence_result=partial
             raise cause
@@ -540,7 +566,9 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
             source_binding=getattr(reader,'source_binding',None)
             if source_binding is not None:
                 paths.source_binding.write_text(json.dumps(source_binding,allow_nan=False,sort_keys=True))
-        with paths.raw.open('w') as raw, paths.processed.open('w') as derived:
+        raw_writer=JsonlEvidenceWriter(paths.raw,write_policy,clock)
+        processed_writer=JsonlEvidenceWriter(paths.processed,write_policy,clock)
+        with raw_writer as raw, processed_writer as derived:
             while (count is None or rows<count) and (until is None or clock.monotonic()<until):
                 if cancelled():raise ExecutionCancelled('acquisition cancelled')
                 before=clock.monotonic()
@@ -549,11 +577,11 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                     except StopIteration:break
                 else:frame=reader.read(timeout if until is None else min(timeout,max(0,until-before)))
                 pending_frame=frame
-                completed=clock.monotonic();processing_at=clock.time()
-                if completed<before or before<started:raise ValueError('host monotonic clock regressed')
-                monotonic=(frame or {}).get('host_received_monotonic',completed)
-                received=(frame or {}).get('host_received_at',processing_at)
-                if not started<=monotonic<=completed:raise ValueError('transport receive timestamp is outside its host clock interval')
+                read_completed=clock.monotonic();read_completed_at=clock.time()
+                if read_completed<before or before<started:raise ValueError('host monotonic clock regressed')
+                monotonic=(frame or {}).get('host_received_monotonic',read_completed)
+                received=(frame or {}).get('host_received_at',read_completed_at)
+                if not started<=monotonic<=read_completed:raise ValueError('transport receive timestamp is outside its host clock interval')
                 identity=f"{binding['binding_id']}:{rows}"
                 common={'record_id':identity,'episode_id':str(spec.get('research_identity',binding['binding_id'])),'source_record_ids':[identity],
                         'time':monotonic-started,'available_at':monotonic-started,'received_at':received,'received_monotonic':monotonic,
@@ -563,7 +591,7 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                          'protocol_request_base64':base64.b64encode(frame.get('request_wire',b'')).decode() if frame else '',
                          'transport_metadata':{key:value for key,value in (frame or {}).items() if key not in {'wire','request_wire','registers','retained_record'}},
                          'original_record':frame.get('retained_record') if frame else None}
-                row={**common,'source_record_ids':[identity],'quality_flags':[],'available_at':completed-started,'processed_monotonic':completed,'processing_delay_seconds':completed-monotonic}
+                row={**common,'source_record_ids':[identity],'quality_flags':[]}
                 body={}
                 if frame:
                     try:
@@ -583,26 +611,34 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                 source_clock=binding.get('source_clock',{})
                 row['source_timestamp']=raw_row['source_timestamp']=timestamp
                 row['source_clock_domain']=raw_row['source_clock_domain']=source_clock.get('domain','unreported')
+                qualified_timestamp=None
                 if timestamp is not None and source_clock.get('kind')=='unix_seconds' and source_clock.get('synchronized') is True:
-                    try:
-                        age=processing_at-_finite(timestamp);row['source_age_seconds']=age
-                        if age<0:row['quality_flags'].append('source_timestamp_in_future')
-                        elif age>stale_after:row['quality_flags'].append('stale');stale+=1
+                    try:qualified_timestamp=_finite(timestamp)
                     except ValueError:row['quality_flags'].append('invalid_source_timestamp')
                 elif timestamp is not None:row['quality_flags'].append('source_clock_unqualified')
-                if completed-before>timeout:row['quality_flags'].append('read_deadline_exceeded')
-                if completed-monotonic>stale_after:row['quality_flags'].append('delivery_queue_stale')
+                decoded_completed=clock.monotonic();decoded_at=clock.time()
+                if decoded_completed<read_completed:raise ValueError('host monotonic clock regressed during decoding')
+                boundary={'available_at':decoded_completed-started,'processed_monotonic':decoded_completed,
+                          'read_completed_monotonic':read_completed,'processing_delay_seconds':decoded_completed-monotonic,
+                          'availability_boundary':'decoded_and_validated_before_evidence_commit_and_inference'}
+                row.update(boundary);raw_row.update(boundary)
+                if qualified_timestamp is not None:
+                    age=decoded_at-qualified_timestamp;row['source_age_seconds']=age
+                    if age<0:row['quality_flags'].append('source_timestamp_in_future')
+                    elif age>stale_after:row['quality_flags'].append('stale');stale+=1
+                if read_completed-before>timeout:row['quality_flags'].append('read_deadline_exceeded')
+                if read_completed-monotonic>stale_after:row['quality_flags'].append('delivery_queue_stale')
                 if frame and frame.get('retained'):row['quality_flags'].append('mqtt_retained_message')
                 if row['quality']=='good' and row['quality_flags']:row['quality']='stale' if 'stale' in row['quality_flags'] else 'uncertain'
                 raw_row['quality']=row['quality'];raw_row['observed']=bool(frame);raw_row['value']=None
-                raw.write(json.dumps(raw_row,allow_nan=False,sort_keys=True)+'\n')
+                raw.write_record(raw_row)
                 raw_rows+=1;pending_frame=None
                 if predict and not cancelled():
                     row['prediction']=predict(dict(row));row['prediction_is_actuation']=False
                     row['prediction_available_at']=clock.monotonic()-started
                     row['prediction_source_record_ids']=list(getattr(predict,'source_record_ids',row['source_record_ids']))
                 if row['value'] is None:missing+=1
-                derived.write(json.dumps(row,allow_nan=False,sort_keys=True)+'\n')
+                derived.write_record(row)
                 rows+=1
                 if cancelled():raise ExecutionCancelled('acquisition cancelled after retaining received frame')
                 if frame and frame.get('fatal_transport_error'):
@@ -638,6 +674,8 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
             'qualification':{'status':'unqualified_live_source' if not retained else 'immutable_retained_shadow','physical_validation':False,
                              'operating_mode':definition['operating_mode'],'transport':definition['engine'],'binding_id':binding['binding_id'],
                              'resource_plan':plan.to_dict(),
+                             'evidence_writes':evidence_writes(),
+                             'availability_boundary':'decoded_and_validated_before_evidence_commit_and_inference',
                              'source_clock_sync':'operator declaration only','host_clock_origin':{'monotonic':started,'received_at':received_origin,'domain':domain},
                              'duration_policy':{'scope':'transport_open_discovery_and_collection',
                                                 'checks':'between native operations', 'native_timeout_requested':timeout,

@@ -34,6 +34,12 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
     check("runtime", bool(runtime), "Start the selected runner to publish its versioned runtime.")
     check("machine_authority", not execution.grants,
           "Machine grants belong in the runner operator configuration, never in portable definitions.")
+    spool = capabilities.get('evidence_spool_by_backend',{}).get(backend)
+    if isinstance(spool,dict):
+        enabled=spool.get('mode')=='all' or spool.get('mode')=='automatic_hardware' and engine.startswith(('acquisition.','hardware.'))
+        if enabled:
+            check('evidence_storage',not spool.get('requires_explicit_root') or spool.get('root_configured') is True,
+                  'Configure a persistent evidence_spool.root or TINYSTUDIO_LAB_EVIDENCE_DIR on the selected R2 execution host; its disposable cache is not a durable capture location.')
     check("physical_control", definition.operating_mode != "physical_control",
           "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",

@@ -63,6 +63,10 @@ class RuntimePaths:
     def uploads(self) -> Path:
         return self.root / "uploads"
 
+    @property
+    def laboratory_evidence_spool(self) -> Path:
+        return self.root / "lab-evidence-spool"
+
     def project(self, project_id: str) -> Path:
         return self.root / "projects" / project_id
 
@@ -216,10 +220,15 @@ class Config:
     public_url: str | None = None
     sync_row_limit: int = 100_000  # dataset-wide operations above this many rows run as worker tasks, not inside the request
     self_url: str | None = None
+    lab_evidence_dir: Path | None = None
 
     @property
     def paths(self) -> RuntimePaths:
         return RuntimePaths(self.data_dir)
+
+    @property
+    def laboratory_evidence_spool(self) -> Path:
+        return self.lab_evidence_dir if self.lab_evidence_dir is not None else self.paths.laboratory_evidence_spool
 
     @property
     def local_url(self) -> str:
@@ -269,6 +278,7 @@ def _load() -> Config:
         qdrant_url=_env("TINYSTUDIO_QDRANT_URL", DEFAULT_QDRANT_URL),
         qdrant_api_key=_env("TINYSTUDIO_QDRANT_API_KEY") or None,
         data_dir=data_dir,
+        lab_evidence_dir=Path(_env("TINYSTUDIO_LAB_EVIDENCE_DIR")).expanduser().absolute() if _env("TINYSTUDIO_LAB_EVIDENCE_DIR") else None,
         host=_env("TINYSTUDIO_HOST", "127.0.0.1"),
         port=int(_env("TINYSTUDIO_PORT", "8000")),
         inference_url=_env("TINYSTUDIO_INFERENCE_URL").rstrip("/") or None,

@@ -502,7 +502,7 @@ def claim_loop_fixture(monkeypatch, actions):
 
 def claimed_attempt():
     return {'attempt_id': 'attempt-once', 'lease_token': 'lease-secret',
-            'spec': {'definition': {'execution': {'backend': 'native'}}}}
+            'spec': {'definition': {'engine':'synthetic.signal','execution': {'backend': 'native'}}}}
 
 
 def test_claim_loop_recovers_502_then_executes_received_authority_once(monkeypatch, caplog):

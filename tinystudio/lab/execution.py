@@ -57,7 +57,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
     profile = profile if isinstance(profile, dict) else {}
     view["_runtime_context"] = {"spec_digest": context.get("spec_digest"), "profile": {
         key: profile[key] for key in ("backend", "execution_backend", "profile", "image", "target_os",
-            "limits", "qualification", "required_attestations", "network_default", "service_account_token") if key in profile}}
+            "limits", "qualification", "required_attestations", "network_default", "service_account_token",
+            "evidence_retention") if key in profile}}
     engine = view["definition"]["engine"]
     if engine.startswith("learning."):
         visible = [ref for ref in view["definition"].get("inputs", []) if ref.get("visibility", "model") == "model"]
