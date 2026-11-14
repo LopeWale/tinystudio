@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import uuid
 
 
 def _json(value):
@@ -154,7 +155,12 @@ class GatewayLeaseLifecycle:
                     event=gateway._db.execute('SELECT * FROM lease_events WHERE event_key=?',(event_key,)).fetchone()
                     if not self.current(event):return self.finish(event,'superseded',error='revocation_fence_superseded')
                     if event['action']=='revoke_only':return self.finish(event,'completed')
-                    command_id='lease-stop:'+hashlib.sha256(event_key.encode()).hexdigest()
+                    # Author-selected IDs share this journal. Allocate under the
+                    # admission transaction and retain the exact chosen identity.
+                    while True:
+                        command_id='lease-stop:'+uuid.uuid4().hex
+                        if gateway._db.execute('SELECT 1 FROM commands WHERE command_id=?',(command_id,)).fetchone() is None:
+                            break
                     gateway._db.execute('UPDATE lease_events SET stop_command_id=? WHERE event_key=?',(command_id,event_key))
                     request=gateway._stop_request(command_id,event['revocation_epoch'],now)
                     gateway._pending(request)

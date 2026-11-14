@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import hashlib
 import json
+import uuid
 
 import pytest
 
@@ -304,3 +305,120 @@ def test_completed_release_readback_never_revokes_a_new_owner_after_acknowledgem
         assert state['state']=='owned' and state['owner']=='new-run'
         assert gateway.lease_events()[0]['state']=='completed'
         assert gateway.watchdog_tick()==[]
+
+
+@pytest.mark.parametrize('claimed',[False,True])
+def test_restart_preserves_expiry_fence_with_a_crashed_pending_command(tmp_path,monkeypatch,claimed):
+    class OwnedCrash(BaseException):pass
+    path=tmp_path/'gateway.sqlite3';clock=Clock();device=Device()
+    config=selected(on_expiry='local_stop')
+    with CommandGateway(path,config,device,clock=clock) as gateway:
+        lease=gateway.acquire('run-one',ttl=20)
+        original=gateway._commit;injected=[]
+        def commit_then_crash():
+            expiry=gateway._db.execute("SELECT 1 FROM lease_events WHERE trigger='expiry' AND state='pending'").fetchone()
+            pending=gateway._db.execute("SELECT 1 FROM commands WHERE state='pending'").fetchone()
+            original()
+            if expiry and pending and not injected:
+                injected.append(True)
+                raise OwnedCrash('owned crash after durable expiry, before command outcome recording')
+        monkeypatch.setattr(gateway,'_commit',commit_then_crash)
+        device.before_write=lambda:setattr(clock,'value',1021.)
+        with pytest.raises(OwnedCrash):dispatch(gateway,lease)
+        monkeypatch.setattr(gateway,'_commit',original)
+        event=gateway.lease_events()[0]
+        assert event['state']=='pending' and gateway.journal()[0]['state']=='pending'
+        assert device.effects==[]
+        if claimed:
+            with gateway._transaction():gateway._db.execute("UPDATE lease_events SET state='executing'")
+    restarted_device=Device()
+    with CommandGateway(path,config,restarted_device,clock=clock) as restarted:
+        assert restarted.snapshot()['epoch']==event['revocation_epoch']
+        receipts=restarted.watchdog_tick()
+        if claimed:
+            assert receipts==[] and restarted_device.effects==[]
+            assert restarted.lease_events()[0]['state']=='unknown'
+        else:
+            assert len(receipts)==1 and receipts[0]['state']=='completed'
+            assert [row['kind'] for row in restarted_device.effects]==['local_stop']
+        assert restarted.watchdog_tick()==[]
+        assert restarted.journal()[0]['state']=='pending'
+        assert restarted.snapshot()['state']=='recovery_required'
+
+
+@pytest.mark.parametrize('persisted_state',['owned','idle'])
+def test_restart_still_revokes_unfenced_pending_commands(tmp_path,persisted_state):
+    class OwnedCrash(BaseException):pass
+    path=tmp_path/'gateway.sqlite3';clock=Clock();device=Device()
+    with CommandGateway(path,binding(),device,clock=clock) as gateway:
+        lease=gateway.acquire('run-one',ttl=20)
+        def crash_before_write():raise OwnedCrash('owned interrupted admitted command')
+        device.before_write=crash_before_write
+        with pytest.raises(OwnedCrash):dispatch(gateway,lease)
+        if persisted_state=='idle':
+            # Represent an inconsistent persisted idle journal with unsettled work.
+            with gateway._transaction():
+                gateway._db.execute("UPDATE gateway SET state='idle',owner=NULL,lease_expires=0")
+        assert gateway.journal()[0]['state']=='pending'
+    with CommandGateway(path,binding(),Device(),clock=clock) as restarted:
+        state=restarted.snapshot()
+        assert state['state']=='recovery_required' and state['epoch']>lease['epoch']
+        with pytest.raises(GatewayError):dispatch(restarted,lease)
+        assert restarted.lease_events()==[]
+
+
+@pytest.mark.parametrize('legacy',[False,True])
+@pytest.mark.parametrize('trigger',['expiry','release'])
+def test_selected_stop_does_not_collide_with_an_authored_predictable_old_stop_id(tmp_path,legacy,trigger):
+    if legacy:
+        from tests.test_lab_gateway import Clock as LegacyClock,Device as LegacyDevice,binding as legacy_binding
+        clock=LegacyClock();device=LegacyDevice(clock);config=legacy_binding()
+        config['lease_policy']={'on_expiry':'local_stop','on_release':'local_stop'}
+    else:
+        clock=Clock();device=Device();config=selected(on_expiry='local_stop',on_release='local_stop')
+    with CommandGateway(tmp_path/'gateway.sqlite3',config,device,clock=clock) as gateway:
+        lease=gateway.acquire('run-one',ttl=20)
+        identity={'endpoint_id':lease['endpoint_id'],'owner':lease['owner'],'lease_epoch':lease['epoch'],
+                  'lease_expires':lease['expires_at'],'trigger':trigger}
+        event_id='authored-release' if trigger=='release' else 'expiry:'+hashlib.sha256(
+            json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        event_key=json.dumps([trigger,event_id],separators=(',',':'))
+        old_stop_id='lease-stop:'+hashlib.sha256(event_key.encode()).hexdigest()
+        command={'parameters':{'voltage':{'value':1,'unit':'V'}}} if legacy else {'payload':payload()}
+        gateway.dispatch(old_stop_id,owner=lease['owner'],epoch=lease['epoch'],expires_at=1010.,**command)
+        if trigger=='expiry':
+            if legacy:clock.now=1021.
+            else:clock.value=1021.
+            receipt=gateway.watchdog_tick()[0]
+        else:
+            receipt=gateway.release(event_id,owner=lease['owner'],epoch=lease['epoch'])
+            assert gateway.release(event_id,owner=lease['owner'],epoch=lease['epoch'])==receipt
+        assert receipt['state']=='completed' and receipt['stop_command_id']!=old_stop_id
+        assert [row['kind'] for row in device.effects]==['command','local_stop']
+        assert gateway.watchdog_tick()==[]
+
+
+def test_stop_identity_skips_an_occupied_random_candidate_and_commits_before_write(tmp_path,monkeypatch):
+    path=tmp_path/'gateway.sqlite3';candidates=[uuid.UUID('a'*32),uuid.UUID('b'*32)]
+    occupied='lease-stop:'+candidates[0].hex;fresh='lease-stop:'+candidates[1].hex
+    admitted=[]
+    class InspectingDevice(Device):
+        def exchange(self,request,**kwargs):
+            if request['kind']=='local_stop':
+                with sqlite3.connect(path) as reader:
+                    assert reader.execute('SELECT state FROM lease_events WHERE stop_command_id=?',
+                                          (request['command_id'],)).fetchone()[0]=='executing'
+                    assert reader.execute('SELECT state FROM commands WHERE command_id=?',
+                                          (request['command_id'],)).fetchone()[0]=='pending'
+                admitted.append(request['command_id'])
+            return super().exchange(request,**kwargs)
+    device=InspectingDevice()
+    with CommandGateway(path,selected(on_release='local_stop'),device,clock=Clock()) as gateway:
+        lease=gateway.acquire('run-one',ttl=20)
+        gateway.dispatch(occupied,owner=lease['owner'],epoch=lease['epoch'],payload=payload(),expires_at=1010.)
+        sequence=iter(candidates)
+        monkeypatch.setattr(uuid,'uuid4',lambda:next(sequence))
+        receipt=gateway.release('release-one',owner=lease['owner'],epoch=lease['epoch'])
+        assert receipt['stop_command_id']==fresh and admitted==[fresh]
+        assert [row['command_id'] for row in gateway.journal()]==[occupied,fresh]
+        assert [row['kind'] for row in device.effects]==['command','local_stop']

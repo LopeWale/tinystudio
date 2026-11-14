@@ -233,7 +233,11 @@ class CommandGateway:
                     self._db.execute("INSERT INTO gateway VALUES(1,?,0,'idle',NULL,0,?,NULL)", (encoded, now))
                 elif state["binding"] != encoded:
                     raise GatewayError("journal is bound to a different endpoint/operator/configuration")
-                elif state["state"] == "owned" or self._db.execute("SELECT 1 FROM commands WHERE state='pending' LIMIT 1").fetchone():
+                # An existing recovery fence already revokes pending commands.
+                # Preserve it so committed, unclaimed lease actions stay current.
+                elif state["state"] != "recovery_required" and (
+                        state["state"] == "owned" or self._db.execute(
+                            "SELECT 1 FROM commands WHERE state='pending' LIMIT 1").fetchone()):
                     self._recovery("restart_with_ownership_or_pending_command")
                 self._leases.recover()
             self.transport = transport if transport is not None else transport_for(self._binding)
