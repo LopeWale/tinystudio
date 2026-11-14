@@ -182,7 +182,7 @@ class CommandGateway:
                 identity={'kind':kind,'host':config['host'],'port':config.get('port',502 if kind=='modbus' else None)}
                 if kind=='modbus':identity['device_id']=config.get('device_id',1)
             elif kind=='mqtt':
-                identity={'kind':kind,'host':config['host'],'port':config.get('port',1883),'topic':config['topic']}
+                identity={'kind':kind,'host':config['host'],'port':config.get('port',1883),'command_topic':config['topic']}
             elif kind=='can':identity={'kind':kind,'interface':config['interface'],'channel':config['channel']}
             elif kind=='custom':identity={'kind':kind,'identity':config['identity']}
         paths=GatewayStoragePaths(self.path)

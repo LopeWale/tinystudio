@@ -96,6 +96,32 @@ def test_native_failure_keeps_partial_delivery_evidence_and_consumes_id(tmp_path
         assert len(device.effects)==1
 
 
+@pytest.mark.parametrize('native_first',[False,True])
+def test_mqtt_profiles_share_the_existing_legacy_endpoint_lock(tmp_path,native_first):
+    from types import SimpleNamespace
+    from tests.test_lab_gateway import binding as legacy_binding
+    from tinystudio.lab.gateway import GatewayBusy
+    from tinystudio.lab.gateway_configuration import GatewayStoragePaths
+    topic='owned-bench/commands'
+    legacy=legacy_binding()
+    legacy['transport']={'kind':'mqtt','host':'127.0.0.1','port':1883,
+                         'command_topic':topic,'ack_topic':'owned-bench/acks'}
+    native=binding()
+    native['transport']={'kind':'mqtt','host':'127.0.0.1','port':1883,'topic':topic}
+    first,second=(native,legacy) if native_first else (legacy,native)
+    device=SimpleNamespace(kind='mqtt')
+    with CommandGateway(tmp_path/'first.sqlite3',first,device,clock=Clock()) as gateway:
+        gateway.acquire('first-run',ttl=20)
+        expected=GatewayStoragePaths(tmp_path/'first.sqlite3').endpoint_lock(
+            {'kind':'mqtt','host':'127.0.0.1','port':1883,'command_topic':topic})
+        with pytest.raises(GatewayBusy):
+            with CommandGateway(tmp_path/'second.sqlite3',second,device,clock=Clock()) as other:
+                other.acquire('second-run',ttl=20)
+        assert expected.exists()
+    with CommandGateway(tmp_path/'second.sqlite3',second,device,clock=Clock()) as other:
+        assert other.acquire('second-run',ttl=20)['owner']=='second-run'
+
+
 def test_native_unconfigured_stop_revokes_authority_without_claiming_a_stop(tmp_path):
     device=Device()
     with CommandGateway(tmp_path/'gateway.sqlite3',binding(),device,clock=Clock()) as gateway:
