@@ -328,6 +328,19 @@ it.each(["18446744073709551615", "-9223372036854775808", "9007199254740993"])(
         screen.getByRole("region", { name: "Retained runtime probe scope" }),
       ).getByText(seed),
     ).toBeVisible();
+    // Evidence registration runs in a passive React effect. A visible report
+    // does not establish that the registry has completed that separate step.
+    await waitFor(() =>
+      expect(
+        f.evidence
+          .snapshot()
+          .some(
+            (entry) =>
+              (entry.data as any).report?.integer_encoding ===
+              "safe_numbers_or_decimal_strings",
+          ),
+      ).toBe(true),
+    );
     const retained = f.evidence
       .snapshot()
       .find(

@@ -56,6 +56,7 @@ import {
   HardwareDiscoveryFields,
   HardwareDiscoveryResult,
 } from "./hardware-discovery";
+import { RecoveredEvidencePanel } from "./recovered-evidence";
 import {
   StatisticsPlanning,
   RetainedStatisticsPlanning,
@@ -2416,6 +2417,7 @@ function RunEvidence({
           </Evidence>
         )}
         {run?.error != null && <pre role="alert">{json(run.error)}</pre>}
+        {run && <RecoveredEvidencePanel run={run} />}
         <SegmentedControl
           kind="tabs"
           variant="tray"

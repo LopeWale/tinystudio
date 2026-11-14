@@ -68,6 +68,11 @@ function mount(runs: any[] = []) {
       if (path === "/api/lab/targets")
         return [{ id: "local", name: "Explicit execution target" }];
       if (path === "/api/lab/runs") return runs;
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?")) return { events: [], next_after: 0 };
       const run = runs.find((item) => path === `/api/lab/runs/${item.id}`);
       return run ?? [];

@@ -253,9 +253,92 @@ Raw observations are written before optional shadow inference. A receive result
 that fails clock validation before normalization remains separately retained as
 unprocessed evidence. The audit distinguishes raw and processed record counts
 and reports native close errors; it does not establish complete collection or a
-physical stop. Forced termination, lease loss and host failure require separate
-recovery and can prevent publication; arbitrary partial outputs never establish
-a successful experiment.
+physical stop. Forced termination, lease loss and host failure can prevent normal
+publication. The host spool described below retains available bytes for separate
+recovery; arbitrary partial outputs never establish a successful experiment.
+
+Acquisition parameters may select `evidence: {flush_records: 1, fsync: true}`
+(the default). A positive `flush_records` selects a batch boundary; `null` or
+`"on_close"` flushes at close, and `fsync: false` omits explicit file sync. The
+audit distinguishes completed newline writes, Python-buffer flushes and actual
+file-descriptor `fsync` acknowledgements, including pending records and failures.
+These acknowledgements do not qualify storage hardware against power loss.
+Observation availability marks decoding and validation before evidence commit
+and optional inference; native read completion and prediction availability have
+separate timestamps.
+
+### Retained host evidence and archive recovery
+
+Native hardware acquisition and discovery use a persistent host evidence spool
+by default. Other engines can opt in. The operator profile selects
+`evidence_spool: {enabled: true, root: "/operator/chosen/location", max_bytes: null,
+retention: "keep"}`. `enabled: false` explicitly selects temporary execution.
+`root` defaults to the configured host evidence location; shared path resolution
+uses `RuntimePaths.laboratory_evidence_spool`, and the environment override is
+`TINYSTUDIO_LAB_EVIDENCE_DIR`. With R2 storage, supply an explicit persistent
+location through this override, the operator profile, or the runner work root:
+the ordinary R2 data directory is a disposable cache. A container or Kubernetes
+location also needs persistent operator-managed storage; configuring its name
+does not verify a mount's durability.
+
+`max_bytes` is an optional logical-file-byte admission budget, not a filesystem
+quota or sample-size limit. Existing oversized evidence remains inspectable and
+exportable. Retention is recorded metadata (`"keep"` or nonnegative seconds);
+this implementation does not automatically prune evidence. The private spool
+also retains execution inputs and source files, so monitor its disk usage.
+
+The initial public manifest is committed before execution. Confirmed process
+cleanup removes the private execution context; unknown cleanup keeps it private.
+A confirmed server acknowledgement is recorded separately from local cleanup.
+Snapshots retain file hashes, byte lengths, newline counts and partial-tail byte
+counts without repairing JSONL or interpreting those counts as observations.
+An unreadable or interrupted entry appears as a listing diagnostic and does not
+hide other retained attempts. A spool entry never grants authority to replay an
+attempt.
+
+Inspect and export on the device host without a user project credential:
+
+```sh
+tinystudio lab spool-list --root /operator/chosen/location
+tinystudio lab spool-inspect SPOOL_KEY --root /operator/chosen/location
+tinystudio lab spool-snapshot SPOOL_KEY --root /operator/chosen/location
+tinystudio lab spool-export SPOOL_KEY capture.zip --manifest-sha256 SNAPSHOT_SHA256 --root /operator/chosen/location
+```
+
+Export checks the selected snapshot and fails if files change. It contains only
+`manifest.json` and the declared `evidence/` files, preserving exact bytes.
+It excludes private context, execution source, staged inputs and runtime logs.
+Treat evidence content itself according to the experiment's data policy.
+
+On the researcher client, use the ordinary project API credential and transport
+(including configured Cloudflare Access settings):
+
+```sh
+tinystudio lab recover-archive capture.zip --project research --idempotency-key recovery-1 --preview-only
+tinystudio lab recover-archive capture.zip --project research --idempotency-key recovery-1
+tinystudio lab recovered-evidence RUN_ID --project research
+```
+
+The client verifies the archive and streams its files to project artifact storage.
+The current project input endpoint accepts at most 512 MiB per file; larger
+uploads return HTTP 413. The client obtains a server preview and saves an exact
+attach request in a private durable journal beside the archive
+(`.recovery-request.json`). `--request-file` selects
+another journal location. Retain it and retry the same command and key after an
+uncertain response. A prepared request is retried unchanged; a completed journal
+returns the previously acknowledged receipt even if the archive is unavailable.
+It is not a fresh check of server object availability. For an intentional
+additional association, choose a different key and a separate `--request-file`;
+an existing journal remains bound to its original request.
+
+The server independently checks project/run/attempt/target/specification identity,
+artifact hashes, sizes and JSONL byte facts before committing an append-only
+`server.evidence_recovered` association. Recovery is labelled
+`operator_recovered_evidence`; it does not renew a lease, change run state or
+results, attest the runtime, establish a physical stop, or register a model.
+The run page displays these receipts separately, including hashes, original
+producer claims and verified byte downloads. Portable bundles carry the receipts,
+producer manifests and evidence as historical operator-supplied material.
 
 Collection choices `samples`, `duration`, `timeout`, `interval`, `stale_after`,
 `max_frame_bytes` and `max_queue_frames` are authored parameters. A null sample

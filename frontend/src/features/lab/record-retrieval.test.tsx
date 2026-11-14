@@ -75,6 +75,11 @@ function mount(
     get: vi.fn(async (path: string, signal?: AbortSignal): Promise<any> => {
       if (path.includes("/records?")) return read(path, signal);
       if (path === "/api/lab/runs") return runs;
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?")) return { events: [], next_after: 0 };
       const run = runs.find((run) => path === `/api/lab/runs/${run.id}`);
       if (run) return run;

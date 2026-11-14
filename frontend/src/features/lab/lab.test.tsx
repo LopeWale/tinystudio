@@ -41,6 +41,11 @@ function fixture() {
       if (path === "/api/lab/runs" || path === "/api/lab/operations") return [];
       if (path === "/api/lab/targets")
         return [{ id: "local", name: "Local computer" }];
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?")) return { events: [], next_after: 0 };
       if (path.includes("/records?")) return { records: [] };
       return { id: "run-1", definition_id: row.id, state: "running" };
@@ -972,6 +977,11 @@ describe("laboratory authoring and execution", () => {
         return new Promise((resolve) => {
           resolveStatus = resolve;
         });
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?"))
         return completionCommitted
           ? {
@@ -1029,6 +1039,11 @@ describe("laboratory authoring and execution", () => {
     const { api, studio } = runFixture("succeeded");
     const baseGet = api.get.getMockImplementation()!;
     api.get.mockImplementation(async (path, signal) => {
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?"))
         return {
           events: [
@@ -1260,6 +1275,11 @@ describe("laboratory authoring and execution", () => {
           throw status === undefined
             ? new TypeError("offline")
             : Object.assign(new Error("offline"), { status });
+        if (path.endsWith("/recovered-evidence"))
+          return {
+            classification: "operator_recovered_evidence",
+            references: [],
+          };
         if (path.includes("/events?")) {
           const after = Number(path.split("after=")[1]);
           return {
@@ -1639,6 +1659,11 @@ describe("laboratory authoring and execution", () => {
       if (path === "/api/lab/targets") return [{ id: "local", name: "Local" }];
       if (path === "/api/lab/runs")
         return [{ id: "observed-run", state: "running" }];
+      if (path.endsWith("/recovered-evidence"))
+        return {
+          classification: "operator_recovered_evidence",
+          references: [],
+        };
       if (path.includes("/events?"))
         return {
           events: [
@@ -1671,7 +1696,7 @@ describe("laboratory authoring and execution", () => {
       path.startsWith("/api/lab/runs/observed-run"),
     );
     view.unmount();
-    expect(reads.length).toBe(2);
+    expect(reads.length).toBe(3);
     expect(reads.every(([, signal]) => signal?.aborted)).toBe(true);
   });
   it("exports a completed run through the scoped client and registers run lineage", async () => {
