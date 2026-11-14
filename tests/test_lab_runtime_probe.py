@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -302,6 +303,166 @@ def test_failed_execution_preserves_the_actual_stage_and_exception_receipt(tmp_p
     assert report['status'] == 'failed' and report['stage'] == 'training_and_reload'
     assert report['receipt']['checks']['base_state'] is False
     assert not any(row.get('stage') == 'evidence_verification' for row in report['stages'])
+    assert report['evidence'].get('completed_producer_stages', []) == []
+
+
+@pytest.mark.parametrize('comparison', [{'mode': 'bitwise'}, {'mode': 'allclose', 'rtol': 0., 'atol': .0001}])
+def test_failed_reload_retains_completed_training_and_saved_output_evidence(tmp_path, monkeypatch, comparison):
+    from tinystudio.core.file_manifest import directory_manifest
+    from tinystudio.lab import compatibility
+    from tinystudio.training.quantization import ReloadVerificationError
+    stub_prerequisites(monkeypatch)
+    selected = retained_spec(tmp_path)
+    selected['definition']['parameters']['reload_comparison'] = comparison
+    saved = {}
+    receipt = {'status': 'failed', 'comparison_policy': comparison,
+               'checks': {'base_state': False}, 'diagnostics': [{'code': 'controlled_reload_mismatch'}]}
+
+    def fail(child, output_dir, emit, cancelled):
+        output_dir.mkdir(parents=True)
+        for name, content in {
+            'adapter/adapter.safetensors': b'completed adapter bytes',
+            'adapter/tokenizer.json': b'completed tokenizer bytes',
+            'quantized-base/model.safetensors': b'retained packed NF4 bytes',
+            'nf4-policy.json': b'{"base_directory":"quantized-base"}',
+            'reload-probes.safetensors': b'completed live probe bytes',
+            'partitions.json': b'{"train":[0,1],"validation":[2]}',
+        }.items():
+            path = output_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            saved[name] = content
+        # These source/temporary files must never be swept into partial outputs.
+        for name in ('source-model/private-source.bin', 'pretrained-input/private-source.bin', 'snapshot.jsonl'):
+            path = output_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'not a completed output')
+        manifest = success_manifest(child)
+        manifest.pop('runtime_verification')  # The producer has not reloaded yet.
+        manifest.update(trained_directory='adapter', trained_files=directory_manifest(output_dir / 'adapter'))
+        manifest['quantization'].update(directory='quantized-base', files=directory_manifest(output_dir / 'quantized-base'))
+        manifest['reload_probes'] = {'file': 'reload-probes.safetensors',
+                                    'sha256': hashlib.sha256(saved['reload-probes.safetensors']).hexdigest()}
+        saved['pretrained.json'] = json.dumps(manifest).encode()
+        (output_dir / 'pretrained.json').write_bytes(saved['pretrained.json'])
+        raise ReloadVerificationError('controlled saved-policy reload mismatch', receipt)
+
+    monkeypatch.setattr(compatibility, 'execute_pretrained', fail)
+    result = module().execute_runtime_probe(selected, tmp_path / 'output', lambda row: None, lambda: False)
+    report = read_report(result)
+    assert report['status'] == 'failed' and report['stage'] == 'training_and_reload'
+    assert report['error'] == {'type': 'ReloadVerificationError', 'message': 'controlled saved-policy reload mismatch'}
+    assert report['receipt'] == receipt and report['qualification']['qualified'] is False
+    assert result['qualification']['qualified'] is False and result['metrics']['runtime_probe_verified'] is False
+    assert report['scope']['reload_comparison'] == comparison
+    assert report['evidence']['optimization']['adapter_changed'] is True
+    assert report['evidence']['measured_steps'] == {'trainer_result': None, 'retained_manifest': 3}
+    assert report['evidence']['runtime_verification'] == receipt
+    assert result['metrics']['training_steps'] == 3
+    assert report['evidence']['completed_producer_stages'] == [
+        {'stage': 'optimizer_training', 'status': 'completed', 'steps': 3, 'basis': 'pretrained.json'},
+        {'stage': 'output_save', 'status': 'completed', 'directory': 'adapter', 'basis': 'pretrained.json:trained_files'},
+    ]
+    assert report['stages'][-1] == {'stage': 'training_and_reload', 'status': 'failed'}
+    assert not any(row['stage'] == 'evidence_verification' for row in report['stages'])
+    outputs = {item['role']: item for item in result['artifacts']}
+    assert outputs.keys() == {'runtime_probe', 'pretrained_manifest', 'runtime_probe_partial_training'}
+    manifest_artifact = outputs['pretrained_manifest']
+    assert report['evidence']['pretrained_manifest_sha256'] == manifest_artifact['sha256']
+    for item in outputs.values():
+        assert item['visibility'] == 'evaluation'
+        assert hashlib.sha256(Path(item['path']).read_bytes()).hexdigest() == item['sha256']
+    inventory = report['evidence']['retained_training_files']
+    assert {row['path']: row['sha256'] for row in inventory} == {
+        name: hashlib.sha256(content).hexdigest() for name, content in saved.items()}
+    with tarfile.open(outputs['runtime_probe_partial_training']['path']) as bundle:
+        assert set(bundle.getnames()) == set(saved)
+        for name, content in saved.items():
+            assert bundle.extractfile(name).read() == content
+
+
+@pytest.mark.parametrize('manifest_bytes', [None, b'{broken manifest', b'{"format":"unknown","metrics":{"steps":91}}'])
+def test_partial_files_do_not_invent_completed_training_or_save(tmp_path, monkeypatch, manifest_bytes):
+    from tinystudio.lab import compatibility
+    from tinystudio.training.quantization import ReloadVerificationError
+    stub_prerequisites(monkeypatch)
+
+    def fail(child, output_dir, emit, cancelled):
+        output_dir.mkdir(parents=True)
+        (output_dir / 'reload-probes.safetensors').write_bytes(b'partial live probe')
+        if manifest_bytes is not None:
+            (output_dir / 'pretrained.json').write_bytes(manifest_bytes)
+        raise ReloadVerificationError('original failed operation', {'status': 'failed'})
+
+    monkeypatch.setattr(compatibility, 'execute_pretrained', fail)
+    result = module().execute_runtime_probe(retained_spec(tmp_path), tmp_path / 'output', lambda row: None, lambda: False)
+    report = read_report(result)
+    assert report['status'] == 'failed' and result['qualification']['qualified'] is False
+    assert report['error']['message'] == 'original failed operation'
+    assert report['evidence'].get('completed_producer_stages', []) == []
+    assert result['metrics']['training_steps'] is None
+    bundle_artifact = next(row for row in result['artifacts'] if row['role'] == 'runtime_probe_partial_training')
+    with tarfile.open(bundle_artifact['path']) as bundle:
+        expected = {'reload-probes.safetensors'} | ({'pretrained.json'} if manifest_bytes is not None else set())
+        assert set(bundle.getnames()) == expected
+
+
+def test_partial_retention_error_preserves_reload_failure_and_publishes_no_failed_bundle(tmp_path, monkeypatch):
+    from tinystudio.lab import compatibility
+    from tinystudio.training.quantization import ReloadVerificationError
+    stub_prerequisites(monkeypatch)
+
+    def fail(child, output_dir, emit, cancelled):
+        output_dir.mkdir(parents=True)
+        (output_dir / 'pretrained.json').write_text(json.dumps(success_manifest(child)))
+        (output_dir / 'reload-probes.safetensors').write_bytes(b'live probe bytes')
+        raise ReloadVerificationError('primary reload failure', {'status': 'failed'})
+
+    def full_disk(*args, **kwargs):
+        raise OSError('controlled no space for partial evidence bundle')
+
+    monkeypatch.setattr(compatibility, 'execute_pretrained', fail)
+    monkeypatch.setattr(module().tarfile, 'open', full_disk)
+    result = module().execute_runtime_probe(retained_spec(tmp_path), tmp_path / 'output', lambda row: None, lambda: False)
+    report = read_report(result)
+    assert report['error'] == {'type': 'ReloadVerificationError', 'message': 'primary reload failure'}
+    assert report['receipt'] == {'status': 'failed'} and result['qualification']['qualified'] is False
+    assert {row['role'] for row in result['artifacts']} == {'runtime_probe', 'pretrained_manifest'}
+    diagnostic = next(row for row in report['diagnostics'] if row['code'] == 'training_evidence_retention_failed')
+    assert diagnostic['type'] == 'OSError' and 'controlled no space' in diagnostic['message']
+
+
+def test_partial_weight_inventory_and_archive_hashes_stream_without_whole_file_reads(tmp_path, monkeypatch):
+    paths = module().RuntimeProbePaths(tmp_path)
+    source = paths.training / 'quantized-base' / 'model.safetensors'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'controlled retained weight bytes' * 100000)
+    archive = tmp_path / 'runtime-partial-training.tar'
+    read_bytes = Path.read_bytes
+
+    def forbid_weight_or_archive_materialization(path):
+        if path in {source, archive}:
+            pytest.fail('partial weight and archive hashes must stream without whole-file read_bytes')
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, 'read_bytes', forbid_weight_or_archive_materialization)
+    receipt = {'status': 'failed', 'checks': {'base_state': False}}
+    report = {'stage': 'training_and_reload', 'status': 'failed', 'receipt': receipt,
+              'scope': {}, 'evidence': {}, 'diagnostics': []}
+    artifacts = []
+    module()._retain_failed_training(paths, report, artifacts)
+    assert paths.partial_training_archive == archive
+    assert report['status'] == 'failed' and report['receipt'] == receipt
+    assert report['evidence']['completed_producer_stages'] == []
+    assert report['diagnostics'] == []
+    with source.open('rb') as stream:
+        source_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
+    with archive.open('rb') as stream:
+        archive_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
+    assert report['evidence']['retained_training_files'] == [
+        {'path': 'quantized-base/model.safetensors', 'sha256': source_hash}]
+    assert artifacts == [{'name': archive.name, 'path': str(archive), 'media_type': 'application/x-tar',
+                          'sha256': archive_hash, 'role': 'runtime_probe_partial_training', 'visibility': 'evaluation'}]
 
 
 def test_failed_fixture_training_retains_exact_generated_model_and_snapshot(tmp_path, monkeypatch):

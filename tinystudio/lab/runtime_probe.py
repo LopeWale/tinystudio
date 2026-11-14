@@ -93,6 +93,10 @@ class RuntimeProbePaths:
     def training(self):
         return self.root / 'training'
 
+    @property
+    def partial_training_archive(self):
+        return self.root / 'runtime-partial-training.tar'
+
 
 def implementation_sha256():
     """One composite implementation identity shared by reports and plugins."""
@@ -366,6 +370,81 @@ def _observed_evidence(manifest, inputs, result=None):
                                'retained_manifest': manifest.get('metrics', {}).get('steps')}}
 
 
+def _retain_failed_training(paths, report, artifacts):
+    """Retain known producer outputs without publishing a qualified model.
+
+    The producer writes pretrained.json after training and saving, but returns
+    its artifact list only after reload succeeds. Inputs and checkpoints are
+    deliberately outside this inventory; absent outputs imply no completion.
+    """
+    from tinystudio.core.file_manifest import directory_manifest
+
+    if not paths.training.exists():
+        return
+    if paths.training.is_symlink() or not paths.training.is_dir():
+        raise ValueError('partial training evidence requires an owned regular directory')
+    manifest_path = paths.training / 'pretrained.json'
+    manifest = None
+    if manifest_path.is_symlink():
+        raise ValueError('partial training evidence must not contain symbolic links')
+    if manifest_path.is_file():
+        retained = {**artifact(manifest_path, 'pretrained_manifest'), 'visibility': 'evaluation'}
+        artifacts.append(retained)
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            observed = _observed_evidence(manifest, report['scope'].get('inputs', []))
+            report['evidence'].update(observed)
+        except (ValueError, TypeError, AttributeError) as exc:
+            report['diagnostics'].append({'stage': report['stage'], 'code': 'training_manifest_unreadable',
+                                          'type': type(exc).__name__, 'message': str(exc)})
+            manifest = None
+        report['evidence']['pretrained_manifest_sha256'] = retained['sha256']
+    if report['receipt'] is not None:
+        # A failed measured reload supersedes any earlier manifest receipt.
+        report['evidence']['runtime_verification'] = deepcopy(report['receipt'])
+    completed = report['evidence']['completed_producer_stages'] = []
+    if manifest is not None and (manifest.get('format'), manifest.get('output_kind')) == (
+            'tinystudio.pretrained.v2', 'quantized_adapter'):
+        steps = manifest.get('metrics', {}).get('steps')
+        if type(steps) is int and steps > 0:
+            completed.append({'stage': 'optimizer_training', 'status': 'completed', 'steps': steps,
+                              'basis': 'pretrained.json'})
+        if manifest.get('trained_directory') == 'adapter' and (paths.training / 'adapter').is_dir():
+            if directory_manifest(paths.training / 'adapter') == manifest.get('trained_files'):
+                completed.append({'stage': 'output_save', 'status': 'completed', 'directory': 'adapter',
+                                  'basis': 'pretrained.json:trained_files'})
+
+    sources = []
+    for name in ('pretrained.json', 'partitions.json', 'nf4-policy.json', 'reload-probes.safetensors',
+                 'runtime-verification.json', 'adapter', 'quantized-base'):
+        path = paths.training / name
+        candidates = sorted(path.rglob('*')) if path.is_dir() and not path.is_symlink() else [path]
+        for source in candidates:
+            if source.is_symlink():
+                raise ValueError('partial training evidence must not contain symbolic links')
+            if source.is_file():
+                sources.append(source)
+    if not sources:
+        return
+    target = paths.partial_training_archive
+    inventory = []
+    with tarfile.open(target, 'w') as bundle:
+        for source in sources:
+            name = source.relative_to(paths.training).as_posix()
+            info = bundle.gettarinfo(str(source), arcname=name)
+            info.mtime, info.uid, info.gid, info.uname, info.gname = 0, 0, 0, '', ''
+            with source.open('rb') as handle:
+                bundle.addfile(info, handle)
+                handle.seek(0)
+                checksum = hashlib.file_digest(handle, 'sha256').hexdigest()
+            inventory.append({'path': name, 'sha256': checksum})
+    with target.open('rb') as handle:
+        checksum = hashlib.file_digest(handle, 'sha256').hexdigest()
+    artifacts.append({'name': target.name, 'path': str(target), 'media_type': 'application/x-tar',
+        'sha256': checksum, 'role': 'runtime_probe_partial_training', 'visibility': 'evaluation'})
+    report['evidence']['retained_training_files'] = inventory
+
+
 def _verify_evidence(manifest, result, program, inputs, selected):
     def require(condition, message):
         if not condition:
@@ -457,6 +536,7 @@ def execute_runtime_probe(spec, output_dir, emit, cancelled):
         'spec_digest': runtime_context.get('spec_digest'), 'profile': runtime_context.get('profile', {})})
     child_result = None
     fixture_artifacts = []
+    partial_training_artifacts = []
 
     def record_cancellation(exc):
         report['status'] = 'cancelled'
@@ -561,6 +641,12 @@ def execute_runtime_probe(spec, output_dir, emit, cancelled):
             report['receipt'] = deepcopy(exc.receipt)
         if report['stages']:
             report['stages'][-1]['status'] = 'failed'
+        if child_result is None and report['stage'] == 'training_and_reload':
+            try:
+                _retain_failed_training(paths, report, partial_training_artifacts)
+            except Exception as retention_error:
+                report['diagnostics'].append({'stage': report['stage'], 'code': 'training_evidence_retention_failed',
+                    'type': type(retention_error).__name__, 'message': str(retention_error)})
     qualified = report['status'] == 'verified'
     report['qualification'] = _qualification(report)
     if report['error']:
@@ -573,8 +659,11 @@ def execute_runtime_probe(spec, output_dir, emit, cancelled):
     _write_report(paths, report)
     emit({'event': 'runtime_probe_complete', 'status': report['status'], 'qualified': qualified})
     return {'records': report['stages'], 'metrics': {'runtime_probe_status': report['status'], 'runtime_probe_verified': qualified,
-        'training_steps': child_result.get('metrics', {}).get('steps') if child_result else None},
+        'training_steps': (child_result.get('metrics', {}).get('steps') if child_result else
+                           next((row['steps'] for row in report['evidence'].get('completed_producer_stages', [])
+                                 if row['stage'] == 'optimizer_training'), None))},
         'artifacts': [{**artifact(paths.report, 'runtime_probe'), 'visibility': 'evaluation'},
                       *fixture_artifacts,
+                      *partial_training_artifacts,
                       *(child_result.get('artifacts', []) if child_result else [])],
         'qualification': _safe(report['qualification'])}
