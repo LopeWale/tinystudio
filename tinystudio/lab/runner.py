@@ -852,16 +852,26 @@ class Runner:
                 managed_selection = selected.emulator
                 if managed_selection is None:
                     session_bridge=HardwareSessionBridge(binding,authority,SessionBridgePaths.evidence_in_work(work),runtime_secrets=runtime_secrets)
+                    session_bridge.start()
                 else:
                     from .hardware_emulator_selection import EmulatorProcessBinding
-                    from .hardware_session_runtime import HardwareSessionRuntime
+                    from .hardware_session_runtime import HardwareSessionRuntime, HardwareSessionRuntimeError
+                    from .attempt_control import AttemptAuthorityLost
                     emulator_binding = EmulatorProcessBinding.from_grants(
                         operator.get('engine_grants', {}).get(engine, {}), managed_selection.binding_id)
                     session_bridge = HardwareSessionRuntime(binding, authority, work, input_paths=paths,
                         emulator_selection=managed_selection, emulator_binding=emulator_binding,
                         runtime_secrets=runtime_secrets, emulator_runtime_secrets=emulator_binding.select_runtime_secrets(
                             operator.get('engine_secrets', {}).get(engine, {})))
-                session_bridge.start()
+                    try:
+                        session_bridge.start()
+                    except HardwareSessionRuntimeError as cause:
+                        if (cause.primary_error_type == AttemptAuthorityLost.__name__
+                                and heartbeat.cancelled.is_set()
+                                and authority.snapshot()['revocation_reason'] == 'server_requested_cancellation'
+                                and session_bridge.cleanup_confirmed):
+                            raise AttemptCancelled('server requested cancellation') from None
+                        raise
                 observe_managed_process()
                 context['_runtime_grants']={'native_execution':True}
                 context['_runtime_secrets']={}
@@ -1032,7 +1042,10 @@ class Runner:
                 try:close_parent_session()
                 except Exception as cause:
                     state,result,error='failed',None,'parent session cleanup/evidence unconfirmed: '+type(cause).__name__
-                cleanup_confirmed=cleanup_confirmed and session_bridge.cleanup_confirmed
+                parent_cleanup_confirmed = session_bridge.cleanup_confirmed
+                cleanup_confirmed=cleanup_confirmed and parent_cleanup_confirmed
+                if not parent_cleanup_confirmed:
+                    state,result,error='failed',None,'parent session cleanup is unconfirmed; inspect retained host evidence'
             if evidence_recorder is not None:
                 try:
                     evidence_recorder.mark_cleanup(cleanup_confirmed)

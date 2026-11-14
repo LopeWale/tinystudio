@@ -631,6 +631,59 @@ def test_startup_systemexit_keeps_safe_code_and_cleanup_without_private_context(
     assert components.emulator.close_calls == 1 and runtime.cleanup_confirmed
 
 
+def test_actual_retention_sigint_propagates_after_real_owned_process_cleanup(tmp_path, monkeypatch):
+    import signal
+    components = Components(tmp_path, authority())
+    runtime = HardwareSessionRuntime(binding(tmp_path), components.control, components.work, input_paths={},
+        emulator_selection=emulator_selection(argv=['-c', 'import time; time.sleep(30)'], shutdown_grace_seconds=.1),
+        emulator_binding=emulator_binding(), bridge_factory=components.bridge_factory).start()
+    result = runtime.close()
+    pid = result['emulator']['observation']['pid']
+    with pytest.raises(ProcessLookupError): os.kill(pid, 0)
+    observed = []
+    def interrupt(*args, **kwargs):
+        observed.append(runtime.cleanup_confirmed)
+        os.kill(os.getpid(), signal.SIGINT)
+        raise AssertionError('SIGINT did not interrupt retention')
+    monkeypatch.setattr(runtime, '_retain_known', interrupt)
+    with pytest.raises(KeyboardInterrupt) as caught: runtime.retain_artifacts(tmp_path / 'retained')
+    assert observed == [True]
+    assert caught.value.args == () and caught.value.__context__ is None and caught.value.__cause__ is None
+    assert runtime.close() == result and runtime.cleanup_confirmed
+
+
+@pytest.mark.parametrize('code,expected', [(None, None), (0, 0), (7, 7), ('private-retention-exit-secret', 1)])
+def test_retention_systemexit_preserves_safe_code_without_private_context(tmp_path, monkeypatch, code, expected):
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path)).start()
+    runtime.close()
+    def exit_retention(*args, **kwargs): raise SystemExit(code)
+    monkeypatch.setattr(runtime, '_retain_known', exit_retention)
+    with pytest.raises(SystemExit) as caught: runtime.retain_artifacts(tmp_path / 'retained')
+    assert caught.value.code == expected
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert 'private-retention-exit-secret' not in str(caught.value) + json.dumps(runtime.close())
+
+
+def test_regular_retention_failure_keeps_already_verified_artifact_metadata(tmp_path, monkeypatch):
+    components = Components(tmp_path, authority())
+    runtime = components.runtime(binding(tmp_path)).start()
+    runtime.close()
+    original, verified = runtime._retain_known, []
+    def fail_second(*args, **kwargs):
+        if verified: raise OSError('private-retention-diagnostic')
+        artifact = original(*args, **kwargs)
+        verified.append(artifact)
+        return artifact
+    monkeypatch.setattr(runtime, '_retain_known', fail_second)
+    with pytest.raises(HardwareSessionRuntimeError) as caught: runtime.retain_artifacts(tmp_path / 'retained')
+    assert caught.value.phase == 'artifact_retention' and caught.value.primary_error_type == 'OSError'
+    assert caught.value.artifacts == verified and len(verified) == 1
+    assert hashlib.sha256(Path(verified[0]['path']).read_bytes()).hexdigest() == verified[0]['sha256']
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert 'private-retention-diagnostic' not in str(caught.value)
+
+
 @pytest.mark.parametrize('raw_visibility', [None, 'truth'])
 def test_actual_owned_tcp_emulator_real_ipc_stop_before_process_close_and_asset_custody(tmp_path, raw_visibility):
     with socket.socket() as port_owner:

@@ -37,6 +37,15 @@ class HardwareSessionRuntimeError(RuntimeError):
         self.artifacts = deepcopy(artifacts or [])
 
 
+def _public_shutdown(error):
+    """Retain caller shutdown types without carrying private native arguments."""
+    if isinstance(error, KeyboardInterrupt): return KeyboardInterrupt()
+    if isinstance(error, SystemExit):
+        code = error.code
+        return SystemExit(code if code is None or type(code) is int else 1)
+    return None
+
+
 def _encoded(value):
     return (json.dumps(value, sort_keys=True, allow_nan=False) + '\n').encode('utf-8')
 
@@ -231,12 +240,8 @@ class HardwareSessionRuntime:
             primary = {'phase': self._phase, 'type': type(error).__name__}
             self._primary = primary
             self.close()
-            if isinstance(error, KeyboardInterrupt):
-                public_error = KeyboardInterrupt()
-            elif isinstance(error, SystemExit):
-                code = error.code
-                public_error = SystemExit(code if code is None or type(code) is int else 1)
-            else:
+            public_error = _public_shutdown(error)
+            if public_error is None:
                 public_error = HardwareSessionRuntimeError(primary['phase'], primary['type'], self._summary)
         # Raise outside the native exception handler: even __context__ must not
         # retain the original exception's private diagnostic/credential text.
@@ -480,7 +485,9 @@ class HardwareSessionRuntime:
             if self.workspace is not None and self._writer_quiescence()['all_writers_quiescent'] and self._workspace['status'] == 'sealed':
                 artifacts.extend(self.workspace.retain_artifacts(destination, visibility=visibility))
         except BaseException as error:
-            public_error = HardwareSessionRuntimeError('artifact_retention', type(error).__name__, self._summary, artifacts=artifacts)
+            public_error = _public_shutdown(error)
+            if public_error is None:
+                public_error = HardwareSessionRuntimeError('artifact_retention', type(error).__name__, self._summary, artifacts=artifacts)
         else:
             self._retained[key] = deepcopy(artifacts)
             return artifacts

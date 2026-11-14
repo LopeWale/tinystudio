@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import threading
 from types import SimpleNamespace
 import uuid
 
@@ -186,6 +187,75 @@ def test_unconfirmed_parent_cleanup_never_publishes_a_successful_child(tmp_path,
     assert 'cleanup is unconfirmed' in transport.finish['error']
     with socket.socket() as probe:
         assert probe.connect_ex(('127.0.0.1', port)) != 0
+
+
+@pytest.mark.parametrize('scenario,expected,primary', [
+    ('cancel', 'cancelled', 'AttemptAuthorityLost'),
+    ('cleanup_unknown', 'failed', 'AttemptAuthorityLost'),
+    ('genuine_error', 'failed', 'ValueError'),
+    ('expired_before_cancel', 'failed', 'AttemptAuthorityLost'),
+])
+def test_startup_cancellation_preserves_primary_reason_and_cleanup_proof(tmp_path, monkeypatch, scenario, expected, primary):
+    from tinystudio.lab.hardware_session_runtime import HardwareSessionRuntime
+    from tinystudio.lab.managed_emulator import ManagedEmulatorProcess
+    runner, transport, attempt, root, port = fixture(tmp_path, startup=None)
+    attempt['spec']['definition']['parameters']['emulator']['readiness']['marker']['value'] = 'never-produced-ready-line'
+    attempt['spec_digest'] = checksum(attempt['spec'])
+    delivered = threading.Event()
+    readiness_entered = threading.Event()
+    first_reason = []
+    original_post, original_ready = transport.post, ManagedEmulatorProcess.wait_ready
+    def post(path, **kwargs):
+        if path.endswith('/heartbeat') and readiness_entered.is_set():
+            ledger = HardwareSessionRuntimePaths(root / 'work').emulator.lifecycle
+            rows = [json.loads(line) for line in ledger.read_bytes().split(b'\n')[:-1] if line] if ledger.exists() else []
+            if any(row.get('event') == 'launched' for row in rows):
+                delivered.set()
+                return httpx.Response(200, json={'cancel_requested': True, 'lease_seconds': 60},
+                    request=httpx.Request('POST', 'http://127.0.0.1' + path))
+        return original_post(path, **kwargs)
+    def readiness(process):
+        if scenario == 'expired_before_cancel':
+            process.control.revoke('lease_expired', termination='expiry')
+        readiness_entered.set()
+        assert delivered.wait(3), 'owned cancellation was not delivered after launch'
+        # The response is observed by the heartbeat after the transport returns.
+        assert process.control.snapshot()['revoked'] or _wait_for_cancel(process.control)
+        first_reason.append(process.control.snapshot()['revocation_reason'])
+        if scenario == 'genuine_error':
+            raise ValueError('independent selected-readiness failure')
+        return original_ready(process)
+    transport.post = post
+    monkeypatch.setattr(ManagedEmulatorProcess, 'wait_ready', readiness)
+    if scenario == 'cleanup_unknown':
+        # Owned resources really close; only the parent's cleanup proof is lost.
+        monkeypatch.setattr(HardwareSessionRuntime, 'cleanup_confirmed', property(lambda self: False))
+    runner.execute_attempt(attempt, root)
+    assert first_reason == ['lease_expired' if scenario == 'expired_before_cancel' else 'server_requested_cancellation']
+    assert delivered.is_set() and transport.finish['state'] == expected, transport.finish
+    assert transport.finish['result'] is None and not transport.uploads
+    if expected == 'cancelled':
+        assert transport.finish['error'] is None
+    else:
+        assert transport.finish['error'] is not None
+    manifest = json.loads(HardwareSessionRuntimePaths(root / 'work').manifest.read_text())
+    assert manifest['primary_error']['type'] == primary
+    assert manifest['cleanup_confirmed'] and manifest['bridge']['status'] == 'not_constructed'
+    assert not (root / 'context.json').exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(manifest['emulator']['observation']['pid'], 0)
+    with socket.socket() as probe:
+        assert probe.connect_ex(('127.0.0.1', port)) != 0
+
+
+def _wait_for_cancel(control):
+    import time
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if control.snapshot()['revoked']:
+            return True
+        time.sleep(.001)
+    return False
 
 
 def test_registered_api_to_native_supervisor_and_managed_peer(integrated, tmp_path):
