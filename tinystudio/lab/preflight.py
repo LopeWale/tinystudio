@@ -40,8 +40,8 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
         if enabled:
             check('evidence_storage',not spool.get('requires_explicit_root') or spool.get('root_configured') is True,
                   'Configure a persistent evidence_spool.root or TINYSTUDIO_LAB_EVIDENCE_DIR on the selected R2 execution host; its disposable cache is not a durable capture location.')
-    check("physical_control", definition.operating_mode != "physical_control",
-          "Physical control requires run-to-gateway binding and qualification; this integration is not implemented.")
+    check("physical_control", definition.operating_mode != "physical_control" or engine == "hardware.session",
+          "Physical control requires the hardware.session parent authority bridge and its selected host binding; other engines do not implement this integration.")
     check("coordinator", not (definition.components or definition.connections) or engine == "system.cosim",
           "Connected components require the system.cosim clock coordinator.")
     if engine == 'hardware.discover':
@@ -58,6 +58,23 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
                             for binding in bindings)
             check('hardware_binding', permitted,
                   'Configure the exact binding and discovery method on the selected execution host; this declaration does not qualify a device.')
+    if engine == 'hardware.session':
+        from .hardware_session_engine import validate_selection
+        check('hardware_session_native_execution', capabilities.get('hardware_session_native_execution') is True,
+              'hardware.session requires the selected runner operator\'s explicit native_execution grant; authored definitions cannot grant authority.')
+        try:
+            selected = validate_selection(definition.model_dump())
+        except (ValueError, TypeError, KeyError) as error:
+            check('hardware_session_selection', False, str(error))
+        else:
+            check('hardware_session_selection', True,
+                  'Supervisor choices use the implemented native/trusted_native bridge; this is a trusted same-UID contract, not source isolation or physical qualification.')
+            bindings = capabilities.get('hardware_session_bindings')
+            permitted = isinstance(bindings, list) and any(
+                isinstance(binding, dict) and binding.get('binding_id') == selected.binding_id
+                for binding in bindings)
+            check('hardware_session_binding', permitted,
+                  'Configure the exact hardware.session binding on the selected execution host; its public profile and capability claims do not establish physical outcomes.')
     if engine == "statistics.plan":
         from .statistics_selection import validate_statistics_selection
         try:
@@ -153,8 +170,8 @@ def execution_checks(definition: ExperimentDefinition, capabilities: dict) -> li
             check("data_pipeline", True,
                   "Observation-triggered availability replay; source clocks and recorded availability are validated at execution.")
     if definition.operating_mode in {"acquisition", "shadow"}:
-        check("acquisition_adapter", engine.startswith("acquisition.") or engine == "hardware.discover",
-              "Acquisition and shadow modes require an acquisition adapter or discovery method with an explicit operator binding.")
+        check("acquisition_adapter", engine.startswith("acquisition.") or engine in {"hardware.discover", "hardware.session"},
+              "Acquisition and shadow modes require an acquisition adapter, discovery method or hardware session with an explicit operator binding.")
     if execution.requirements:
         try:
             limits = capabilities.get("resource_limits_by_backend", {}).get(backend)

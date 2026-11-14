@@ -60,6 +60,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
             "limits", "qualification", "required_attestations", "network_default", "service_account_token",
             "evidence_retention") if key in profile}}
     engine = view["definition"]["engine"]
+    if engine=='hardware.session':
+        view['_hardware_session']=dict(context.get('hardware_session',{}))
     if engine.startswith("learning."):
         visible = [ref for ref in view["definition"].get("inputs", []) if ref.get("visibility", "model") == "model"]
         validation = [ref for ref in view["definition"].get("inputs", []) if engine.startswith("learning.")
@@ -97,6 +99,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
         from .runtime_probe import execute_runtime_probe as run
     elif engine == "hardware.discover":
         from .hardware_discovery_engine import execute_hardware_discovery as run
+    elif engine == 'hardware.session':
+        from .hardware_session_engine import execute_hardware_session as run
     elif engine == "data.pipeline":
         from .data import execute_data as run
     elif engine == "simulation.openmodelica":
@@ -123,6 +127,8 @@ def execute(spec, output_dir, emit, cancelled, *, context=None):
                     stream.write(json.dumps(row, allow_nan=False)+"\n")
             result["artifacts"].append({"name": target.name, "path": str(target), "sha256": digest(target),
                                         "media_type": "application/x-ndjson", "role": "derived_records"})
+            if engine=='hardware.session':
+                result['artifacts'][-1]['visibility']=view['definition']['parameters'].get('artifact_visibility','evaluation')
         result["record_count"] = len(rows)
         result["records"] = len(rows)
     if (engine in {"learning.timeseries", "learning.multimodal", "learning.control_rl", "learning.tool_rl", "learning.language_rl"} or
@@ -150,7 +156,9 @@ def main():
     receipt = verify_runtime(spec, package)
     receipt["context_digest"] = checksum(context)
     receipt["profile_manifest"] = context["profile_manifest"]
-    output.mkdir()
+    # The parent broker retains its independent ledger under this evidence root
+    # before the supervisor starts, including failures before child admission.
+    output.mkdir(exist_ok=spec['definition']['engine']=='hardware.session' and bool(context.get('hardware_session')))
 
     def emit(item):
         serialized = json.dumps(item, allow_nan=False)

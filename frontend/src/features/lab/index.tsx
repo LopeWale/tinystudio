@@ -31,6 +31,7 @@ import {
   makeDefinition,
   parseDefinition,
   evaluationParameters,
+  hardwareSessionInputPatch,
   templates,
   isTerminal,
   type ExperimentDefinition,
@@ -394,6 +395,7 @@ function LabWorkspace() {
                 ? hardwareDiscoveryValid
                 : true);
   const draftParameterEngine = [
+    "hardware.session",
     "learning.pretrained",
     "learning.language_rl",
     "learning.tool_rl",
@@ -1718,7 +1720,18 @@ function LabWorkspace() {
                             }
                             key={`${authoringGeneration}:${definition.engine}`}
                             definition={definition}
-                            onChange={(inputs) => change({ inputs })}
+                            onChange={(inputs) =>
+                              change(
+                                parameterDrafts.has(
+                                  `${authoringGeneration}:${definition.engine}:supervisor`,
+                                )
+                                  ? { inputs }
+                                  : hardwareSessionInputPatch(
+                                      definition,
+                                      inputs,
+                                    ),
+                              )
+                            }
                             onPendingChange={setPendingInputWork}
                             signal={() => lifetime.current?.signal}
                           />

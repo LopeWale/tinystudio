@@ -89,6 +89,27 @@ const input = (
 ): InputExpectation => ({ role, description, required });
 export const templates: Template[] = [
   {
+    id: "hardware.session",
+    name: "Hardware session",
+    domain: "hardware",
+    parameters: {
+      binding_id: "",
+      supervisor: { kind: "recorded", artifact_id: "" },
+      supervisor_parameters: {},
+      evidence: { flush_records: 1, fsync: true },
+      ipc_timeout_seconds: null,
+      artifact_visibility: "evaluation",
+    },
+    inputs: [
+      input(
+        "supervisor",
+        "Recorded decision JSONL or Python source; the selector may reference any attached input role",
+        false,
+      ),
+    ],
+    hint: "Select an operator binding and a frozen supervisor artifact. Edit supervisor JSON to choose recorded or python; Python also selects its callable. Arbitrary supervisor parameters remain authored choices. Native delivery receipts do not qualify physical effects or control stability.",
+  },
+  {
     id: "hardware.discover",
     name: "Hardware discovery",
     domain: "hardware",
@@ -781,6 +802,37 @@ export function defaultVisibility(
         ].includes(role)
       ? "evaluation"
       : "model";
+}
+export function hardwareSessionInputPatch(
+  definition: ExperimentDefinition,
+  inputs: InputBinding[],
+): Partial<ExperimentDefinition> {
+  const patch = { inputs };
+  if (definition.engine !== "hardware.session") return patch;
+  const candidates = inputs.filter((ref) => ref.role === "supervisor");
+  if (
+    candidates.length !== 1 ||
+    definition.inputs.some(
+      (ref) =>
+        ref.artifact_id === candidates[0].artifact_id &&
+        ref.role === "supervisor",
+    )
+  )
+    return patch;
+  const supervisor = definition.parameters.supervisor;
+  if (
+    !supervisor ||
+    typeof supervisor !== "object" ||
+    Array.isArray(supervisor)
+  )
+    return patch;
+  return {
+    inputs,
+    parameters: {
+      ...definition.parameters,
+      supervisor: { ...supervisor, artifact_id: candidates[0].artifact_id },
+    },
+  };
 }
 export function makeDefinition(
   engine = "synthetic.signal",

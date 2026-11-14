@@ -72,6 +72,14 @@ def capabilities(profile_config: dict | None = None, *, work_root: Path | None =
     from .hardware_bindings import HardwareBindingRegistry
     discovery_grants = (profile_config or {}).get('engine_grants', {}).get('hardware.discover', {})
     result['hardware_discovery_bindings'] = HardwareBindingRegistry.from_grants(discovery_grants, 'discovery').discovery_capabilities()
+    from .hardware_session_configuration import HardwareSessionBinding
+    session_grants=(profile_config or {}).get('engine_grants',{}).get('hardware.session',{})
+    if not isinstance(session_grants,dict):raise ValueError('hardware session grants must be an object')
+    result['hardware_session_native_execution']=session_grants.get('native_execution') is True
+    session_bindings=session_grants.get('bindings',{})
+    if not isinstance(session_bindings,dict):raise ValueError('hardware session bindings must be an object')
+    result['hardware_session_bindings']=[HardwareSessionBinding.from_grants(session_grants,key).public_description()
+        for key in session_bindings] if result['hardware_session_native_execution'] else []
     from .spool_configuration import SpoolConfiguration
     result['evidence_spool_by_backend'] = {
         backend:SpoolConfiguration.resolve(profile_config,'hardware.discover',backend,work_root=work_root).advertised()
@@ -114,6 +122,9 @@ def capabilities(profile_config: dict | None = None, *, work_root: Path | None =
         result["engines_by_backend"][backend] = sorted(set(result["engines_by_backend"].get(backend, []) + selected_engines))
         result["engines"] = sorted(set(result["engines"] + selected_engines))
         result["backend_qualification"][backend] = "configured; actual child identity and profile enforcement receipts required"
+    for backend,available in result['engines_by_backend'].items():
+        if backend!='native' or os.name!='posix':
+            result['engines_by_backend'][backend]=[engine for engine in available if engine!='hardware.session']
     return result
 
 
@@ -279,9 +290,10 @@ class AttemptCancelled(Exception):
 
 class LeaseHeartbeat:
     """Lease renewal/cancellation outlives individual downloads, execution and uploads."""
-    def __init__(self, runner, prefix: str, lease: str, root: Path, *, interval: float, deadline: float):
+    def __init__(self, runner, prefix: str, lease: str, root: Path, *, interval: float, deadline: float,authority=None):
         self.runner, self.prefix, self.lease, self.root = runner, prefix, lease, root
         self.interval, self.deadline = interval, deadline
+        self.authority=authority
         self.stop_event = threading.Event()
         self.cancelled = threading.Event()
         self.error: Exception | None = None
@@ -320,6 +332,7 @@ class LeaseHeartbeat:
                 raise self.error
             try:
                 events, offset = self._events()
+                sent_at=time.monotonic()
                 try:
                     status = self.runner.post(self.prefix + "/heartbeat", {"events": events}, self.lease)
                 except Exception:
@@ -327,9 +340,18 @@ class LeaseHeartbeat:
                     raise
                 self.offset = offset
                 if status.get("cancel_requested"):
+                    if self.authority is not None:self.authority.revoke('server_requested_cancellation')
                     self.cancelled.set()
                     (self.root / "cancel").touch()
+                elif self.authority is not None and not self.authority.snapshot()['revoked']:
+                    from .attempt_control import AttemptAuthorityLost
+                    try:self.authority.renew(status.get('lease_seconds'),sent_at=sent_at)
+                    except AttemptAuthorityLost:
+                        # Device admission remains latched off. A still-authorized
+                        # Lab heartbeat can retain data after the supervisor ends.
+                        pass
             except Exception as exc:
+                if self.authority is not None:self.authority.revoke('lab_heartbeat_failed')
                 self.error = exc
                 (self.root / "cancel").touch()
                 raise
@@ -349,9 +371,11 @@ class LeaseHeartbeat:
         if self.cancelled.is_set() and not ignore_cancel:
             raise AttemptCancelled("server requested cancellation")
         if time.monotonic() > self.deadline:
+            if self.authority is not None:self.authority.revoke('selected_execution_deadline_exceeded')
             raise TimeoutError("experiment exceeded selected wall-time budget")
 
     def stop(self):
+        if self.authority is not None:self.authority.revoke('lab_heartbeat_stopped')
         self.stop_event.set()
         if self.thread.is_alive():
             self.thread.join(timeout=35)
@@ -608,9 +632,17 @@ class Runner:
         work = root / "work"
         work.mkdir()
         evidence = work / "evidence"
+        engine=spec['definition']['engine']
+        deadline=time.monotonic()+policy['max_seconds']
+        authority=None
+        if engine=='hardware.session':
+            from .attempt_control import AttemptControl,AttemptIdentity
+            authority=AttemptControl(AttemptIdentity(self.server,attempt['run_id'],attempt['attempt_id'],
+                self.target_id,attempt['spec_digest']),deadline=deadline)
         heartbeat = LeaseHeartbeat(self, prefix, lease, work, interval=self.heartbeat_interval,
-                                   deadline=time.monotonic() + policy["max_seconds"])
+                                   deadline=deadline,authority=authority)
         group = None
+        session_bridge=None;parent_artifacts=[];parent_outcome=None
         state, result, error = "failed", None, None
         verified_audit_result = False
         cleanup_confirmed = True
@@ -632,6 +664,18 @@ class Runner:
             context = {"spec_digest": attempt["spec_digest"], "source_root": str(snapshot.root.resolve()), "input_paths": paths,
                        "_runtime_grants": operator.get("engine_grants", {}).get(engine, {}),
                        "_runtime_secrets": operator.get("engine_secrets", {}).get(engine, {})}
+            if engine=='hardware.session':
+                from .hardware_session_engine import validate_selection
+                from .hardware_session_configuration import HardwareSessionBinding
+                from .hardware_session_bridge import HardwareSessionBridge,SessionBridgePaths
+                selected=validate_selection(spec['definition'])
+                binding=HardwareSessionBinding.from_grants(operator.get('engine_grants',{}).get(engine,{}),selected.binding_id)
+                runtime_secrets=binding.select_runtime_secrets(operator.get('engine_secrets',{}).get(engine,{}))
+                session_bridge=HardwareSessionBridge(binding,authority,SessionBridgePaths.evidence_in_work(work),runtime_secrets=runtime_secrets)
+                session_bridge.start()
+                context['_runtime_grants']={'native_execution':True}
+                context['_runtime_secrets']={}
+                context['hardware_session']=session_bridge.descriptor
             command = [self._python_command(policy["backend"], config), "-m", "tinystudio.lab.execution",str(root/"spec.json"),str(evidence),str(root/"context.json")]
             # Build against an existing context path, then bind its public manifest.
             (root / "context.json").write_text("{}")
@@ -682,9 +726,15 @@ class Runner:
                     captured_out,captured_err = group.logs()
                     stdout.write(captured_out.encode());stderr.write(captured_err.encode())
                     stdout.flush();stderr.flush()
+                if authority is not None:authority.revoke('supervisor_process_exited')
                 group.close()  # Descendants must stop before reading/hashing any final output.
                 cleanup_confirmed = True
                 audit_only = returncode in {CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}
+                if session_bridge is not None:
+                    parent_outcome=session_bridge.close()
+                    cleanup_confirmed=session_bridge.cleanup_confirmed
+                    parent_artifacts=session_bridge.retain_artifacts(evidence,
+                        visibility='evaluation' if audit_only else selected.artifact_visibility)
                 expected_outcome = (cancelled_evidence_outcome() if returncode == CANCELLED_EVIDENCE_EXIT
                                     else failed_evidence_outcome() if returncode == FAILED_EVIDENCE_EXIT else None)
                 def publication_guard():
@@ -722,6 +772,9 @@ class Runner:
                         raise ValueError("successful executor cannot publish an audit outcome")
                     if receipt != expected_receipt or _backend_runtime(policy["backend"], config) != spec["runtime"]:
                         raise ValueError("executor runtime identity receipt mismatch")
+                    if session_bridge is not None:
+                        result.setdefault('artifacts',[]).extend(parent_artifacts)
+                        result['parent_session']=parent_outcome
                     artifacts, total = [], 0
                     for item in result.get("artifacts", []):
                         publication_guard()
@@ -750,10 +803,13 @@ class Runner:
                     error = result.get("execution_error") if returncode == FAILED_EVIDENCE_EXIT else None
                     verified_audit_result = audit_only
         except AttemptCancelled:
+            if authority is not None:authority.revoke('attempt_cancelled')
             state, result, error = "cancelled", None, None
         except Exception as cause:
+            if authority is not None:authority.revoke('attempt_failed')
             error = f"{type(cause).__name__}: {cause}"[:8192]
         finally:
+            if authority is not None:authority.revoke('attempt_cleanup')
             if group is not None:
                 try:
                     group.close()
@@ -761,6 +817,11 @@ class Runner:
                 except Exception as cause:
                     cleanup_confirmed = False
                     state, result, error = "failed", None, f"process cleanup unconfirmed: {cause}"[:8192]
+            if session_bridge is not None:
+                try:session_bridge.close()
+                except Exception as cause:
+                    state,result,error='failed',None,'parent session cleanup/evidence unconfirmed: '+type(cause).__name__
+                cleanup_confirmed=cleanup_confirmed and session_bridge.cleanup_confirmed
             if evidence_recorder is not None:
                 try:
                     evidence_recorder.mark_cleanup(cleanup_confirmed)

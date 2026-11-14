@@ -351,14 +351,16 @@ The run retains the selected plan and operator budgets separately.
 These adapters support local protocol and emulator verification. Wokwi RFC2217
 and Renode SocketCAN still require the simulator's own bridge/session setup;
 their cloud/runtime availability is separate from a successful local transport
-test. A Lab session coordinating telemetry, model decisions, gateway ownership,
-commands and recovery remains additional implementation work.
+test. The `hardware.session` bridge below connects an authored supervisor to
+parent-owned command authority; acquisition streams are not automatically joined
+to a controller or model.
 
 ## Standalone command gateway
 
 The operator-provisioned gateway runs separately from the Lab API and read-only
-acquisition adapters. It currently has no Lab `physical_control` executor,
-session binding or end-to-end control qualification. Standalone release,
+acquisition adapters. Lab `hardware.session` uses the parent-owned bridge
+described below; neither route establishes end-to-end control qualification.
+Standalone release,
 cancellation and observed lease expiry follow an operator-selected lease policy;
 an optional host watchdog checks that policy in the background. Host scheduling
 and SDK waits provide no hard real-time, control-stability or physical-stop
@@ -555,6 +557,122 @@ of physical stopping.
 Verification uses owned software endpoints, native loopback/emulator fixtures and
 controlled failures. It establishes no physical-device, Wokwi/Renode session,
 mounted-volume power-loss or end-to-end Lab control qualification.
+
+## Hardware session supervisors
+
+`hardware.session` runs a recorded decision stream or an authored Python
+supervisor through an attempt-scoped IPC client. It requires native POSIX
+execution with profile `trusted_native`. This is trusted code under the same
+host UID, not process or credential isolation. The parent owns the gateway,
+lease renewal, attempt fencing and cleanup. The child receives an attempt-scoped
+submission capability, without operator gateway credentials or lease-management
+APIs in its supervisor context.
+
+Submitted native operations are sent to the selected binding in every operating
+mode. The authored supervisor controls which proposals it submits or retains
+without sending; the mode label itself does not redirect traffic to a simulator.
+
+On the execution host, provision `profile_config.engine_grants.hardware.session`
+with `native_execution: true` and a `bindings` map. Each binding contains a
+native `gateway_binding` from the standalone reference and an absolute
+operator-chosen `state_directory`. Optional `lease_seconds` and
+`renew_interval_seconds` default to 30 and 5 seconds; they are host choices,
+not scientific requirements. `max_request_bytes` and `max_response_bytes` are
+optional IPC frame-body budgets, defaulting to `null`. `evidence` selects the
+parent's `RecordWritePolicy`. For example, with operator-chosen identities,
+broker and state directory:
+
+```json
+{
+  "native_execution": true,
+  "bindings": {
+    "chosen-session": {
+      "gateway_binding": {
+        "endpoint_id": "bench-mqtt",
+        "operator_id": "bench-operator",
+        "transport": {
+          "kind": "mqtt", "host": "127.0.0.1", "port": 1883,
+          "topic": "owned-bench/commands", "allow_dns": false, "tls": false
+        },
+        "command_profile": {"format": "tinystudio.native-command-profile.v1"},
+        "local_stop": null
+      },
+      "state_directory": "/operator/chosen/session-state",
+      "lease_seconds": 30,
+      "renew_interval_seconds": 5,
+      "max_request_bytes": null,
+      "max_response_bytes": null,
+      "evidence": {"flush_records": 1, "fsync": true}
+    }
+  }
+}
+```
+
+Keep SDK credentials in the separate host configuration
+`profile_config.engine_secrets.hardware.session`, shaped as
+`{"bindings": {"chosen-session": {"username": "OPERATOR_SUPPLIED", "password": "OPERATOR_SUPPLIED"}}}`
+for MQTT authentication when selected. `HardwareSessionBinding.select_runtime_secrets`
+selects only that binding's credentials for the parent transport. They are not
+authored definition parameters and are not supplied in the child context.
+Gateway and IPC byte budgets cover different scopes; neither is a dataset or
+decision-count limit.
+
+In the Lab authoring view choose **Hardware session**, enter the operator binding
+ID and attach the supervisor source in Inputs. The optional `supervisor` role
+fills a genuinely new unique attachment into the selector; the backend accepts
+the explicit artifact ID regardless of its role. Generic parameter JSON remains
+editable for both supervisor kinds. A Python selection uses:
+
+```json
+{
+  "binding_id": "chosen-session",
+  "supervisor": {
+    "kind": "python", "artifact_id": "UPLOADED_SOURCE_ID", "callable": "program"
+  },
+  "supervisor_parameters": {},
+  "evidence": {"flush_records": 1, "fsync": true},
+  "ipc_timeout_seconds": null,
+  "artifact_visibility": "evaluation"
+}
+```
+
+Replace the source ID with its attached frozen input reference and SHA-256.
+Recorded supervisors instead select
+`{"kind": "recorded", "artifact_id": "UPLOADED_SOURCE_ID"}` and consume JSONL
+rows containing exactly `decision_id`, native `payload` and positive finite
+`valid_for_seconds`. There is no fixed row count. Python source can have a
+downloaded filename without `.py`; the engine copies and verifies its bytes
+before loading the selected callable, without timestamp-based bytecode reuse.
+It invokes `program(session, context)`. The public context contains authored
+`definition`, `seed`, arbitrary `supervisor_parameters`, frozen `inputs`, a
+hash-verified `input_paths` map, `output_dir` and the public `profile`.
+
+The supervisor can load a chosen frozen model from `context["input_paths"]`, run
+rules, model inference or software-in-the-loop logic, and issue native queries
+for observations through `session.submit(decision_id, payload,
+valid_for_seconds=...)`. Commands use that same method; `.profile` is a defensive
+public description. The client exposes no acquire, heartbeat, release,
+reconciliation or stop authority. There is no implicit controller, prompt
+priority, prose-to-JSON conversion, model retry, value clamp or stability
+guarantee. Python returns `None` or a finite JSON object; its report and any
+returned records/metrics are retained without inferring observation validity.
+
+`evidence` selects local submission/receipt flush and fsync policy independently
+of the parent's policy; `ipc_timeout_seconds` is positive finite or `null` for
+no selected client timeout. Success artifacts use the authored
+`artifact_visibility` (`model`, `evaluation` or `truth`, default `evaluation`).
+Failed/cancelled local outputs remain audit-only evaluation evidence for later
+explicit curation. Visibility never rewrites raw source, decisions or receipts.
+The engine retains the verified source, raw supervisor report, local timed
+submission/receipt JSONL and manifest. The parent independently retains admission,
+delivery and lease metadata and freezes its evidence after child cleanup.
+File fsync acknowledgements and transport receipts do not prove physical effects,
+power-loss durability or stopping.
+
+Owned verification exercised serial loopback, the actual native Runner child
+and local IPC. It establishes no physical-device, Wokwi/Renode session or CUDA
+qualification. The same definition remains authorable through existing Lab JSON,
+CLI and tools; target capabilities and explicit operator bindings still apply.
 
 ## Data preparation contracts
 

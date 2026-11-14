@@ -66,7 +66,7 @@ def catalog() -> dict:
     from copy import deepcopy
     import importlib.util
     from .catalog import catalog as adapters
-    from .plugins import SCHEMAS, manifest_for, qualification_matrix
+    from .plugins import SCHEMAS, hardware_session_provenance, manifest_for, qualification_matrix
     methods = [
         ("learning.language", "Tiny transformer / recurrent language model", True),
         ("retrieval.index", "Lexical, structured and episode retrieval", True),
@@ -78,6 +78,7 @@ def catalog() -> dict:
         ("statistics.analyze", "Observed study analysis and custom methods", True),
         ("runtime.qualify", "Measured runtime training and reload probes", True),
         ("hardware.discover", "Operator-bound device and SunSpec discovery", True),
+        ("hardware.session", "Attempt-bound native hardware command sessions", True),
         ("deployment.benchmark", "Measured host inference and portable package", True),
         ("learning.language_rl", "Autoregressive tool-language PPO / GRPO", True),
         ("learning.timeseries", "Time-series learning", Path(__file__).with_name("timeseries.py").exists()),
@@ -98,6 +99,12 @@ def catalog() -> dict:
             "qualification": "unqualified", "reason": "Implementation pending" if not implemented else
             "Optional dependencies missing: " + ", ".join(missing) if missing else None,
             "qualification_reason": "Availability is not an execution receipt; method-specific selections have additional prerequisites."})
+        if id_ == "hardware.session":
+            method_rows[-1].update(requires_operator_binding=True,
+                execution_profiles={"native": ["trusted_native"]},
+                parameters_schema_ref="tinystudio.lab.hardware-session-parameters.v1",
+                provenance=hardware_session_provenance(),
+                qualification_reason="Trusted-native same-UID execution requires an explicit host grant and selected binding; delivery receipts do not prove physical outcomes or source isolation.")
     method_rows = [{**row, "manifest": manifest_for(row)} for row in method_rows]
     from .statistics_selection import method_catalog
     from .runtime_probe import method_catalog as runtime_methods
@@ -337,7 +344,7 @@ def submit(db: Session, project: str, definition_id: str, revision: int, target_
     integrity = selection_integrity(body.model_dump(), manifest)
     if not integrity["passed"]:
         raise LabError("; ".join(item["message"] for item in integrity["checks"] if not item["passed"]), 409)
-    if body.operating_mode == "physical_control":
+    if body.operating_mode == "physical_control" and body.engine != "hardware.session":
         raise LabError("physical control requires a qualified gateway ownership adapter; no physical endpoint is bound")
     backend, profile = body.execution.backend, body.execution.profile
     profiles = target.capabilities.get("profiles_by_backend", {"native": ["trusted_native"]})
