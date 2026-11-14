@@ -12,7 +12,7 @@ import typer
 from tinystudio.config import ClientConfig
 
 from .runner import run as run_runner, validate_url
-from .client_paths import RuntimeApiPaths, HardwareApiPaths, path_identifier, runtime_definition
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths, path_identifier, runtime_definition
 from .study_import_paths import StudyImportPaths
 
 app = typer.Typer(no_args_is_help=True, help="Portable experiment authoring, evidence and execution targets.")
@@ -61,6 +61,84 @@ def runtime_methods(project: str = typer.Option(..., "--project", "-p")):
 def hardware_discovery_methods(project: str = typer.Option(..., '--project', '-p')):
     """Inspect discovery schemas without contacting instruments; use define/preflight/run explicitly."""
     show(call('GET', project, HardwareApiPaths(base='').discovery_methods))
+
+
+def _local_spool(root):
+    from .evidence_spool import EvidenceSpool,SpoolPolicy
+    from .spool_configuration import SpoolConfiguration
+    try:
+        if root is None:
+            selected=SpoolConfiguration.resolve(None,'hardware.discover','native')
+            selected.require_ready()
+            policy=selected.policy
+        else:policy=SpoolPolicy(True,root)
+        if not policy.root.exists():raise ValueError('no evidence spool exists at the selected location')
+        return EvidenceSpool(policy)
+    except (ValueError,OSError) as error:raise typer.BadParameter(str(error)) from error
+
+
+@app.command('spool-list')
+def spool_list(root:Path|None=typer.Option(None,'--root')):
+    """Inspect host-local evidence manifests using the operator's filesystem account."""
+    show(_local_spool(root).list_attempts())
+
+
+@app.command('spool-inspect')
+def spool_inspect(key:str,root:Path|None=typer.Option(None,'--root')):
+    """Read a retained manifest; this does not refresh files or contact the origin."""
+    show(_local_spool(root).open_attempt(key).inspect())
+
+
+@app.command('spool-snapshot')
+def spool_snapshot(key:str,root:Path|None=typer.Option(None,'--root')):
+    """Hash current retained bytes and preserve partial tails without inferring completion."""
+    show(_local_spool(root).open_attempt(key).snapshot())
+
+
+@app.command('spool-export')
+def spool_export(key:str,output:Path,manifest_sha256:str=typer.Option(...,'--manifest-sha256'),
+                 root:Path|None=typer.Option(None,'--root')):
+    """Export the exact selected snapshot; user API credentials are unnecessary."""
+    show(_local_spool(root).open_attempt(key).export(output,expected_manifest_digest=manifest_sha256))
+
+
+@app.command('recovered-evidence')
+def recovered_evidence(run_id:str,project:str=typer.Option(...,'--project','-p')):
+    """Inspect independently attached recovery receipts and source-attempt provenance."""
+    show(call('GET',project,RecoveredEvidencePaths(base='').references(run_id)))
+
+
+@app.command('recover-evidence-preview')
+def recovered_evidence_preview(run_id:str,file:Path,project:str=typer.Option(...,'--project','-p')):
+    """Verify uploaded manifest/file references without publishing a recovery association."""
+    show(call('POST',project,RecoveredEvidencePaths(base='').preview(run_id),json.loads(file.read_text())))
+
+
+@app.command('recover-evidence')
+def attach_recovered_evidence(run_id:str,file:Path,project:str=typer.Option(...,'--project','-p')):
+    """Attach an exact preview/key request; retain this request when retrying an uncertain response."""
+    show(call('POST',project,RecoveredEvidencePaths(base='').attach(run_id),json.loads(file.read_text())))
+
+
+@app.command('recover-archive')
+def recover_archive(file:Path,project:str=typer.Option(...,'--project','-p'),
+                    idempotency_key:str=typer.Option(...,'--idempotency-key'),
+                    request_file:Path|None=typer.Option(None,'--request-file'),
+                    preview_only:bool=typer.Option(False,'--preview-only')):
+    """Import an operator-exported spool on the researcher client; preserve the request file for retries.
+
+    Device hosts can export without holding a user project credential. This
+    command uses the researcher's ordinary authenticated project transport.
+    """
+    from .evidence_recovery_client import RecoveryArchiveClient,RecoveryImportPaths
+    journal=request_file if request_file is not None else RecoveryImportPaths(file).request
+    try:
+        with client() as http:
+            result=RecoveryArchiveClient(http,path(project,'')).import_archive(file,
+                idempotency_key=idempotency_key,request_path=journal,preview_only=preview_only)
+    except (ValueError,OSError,httpx.HTTPError) as error:
+        raise typer.BadParameter(f'{error}; retain {journal} and retry with the same request and idempotency key') from error
+    show(result)
 
 
 @app.command("runtime-define")

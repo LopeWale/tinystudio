@@ -18,10 +18,11 @@ from tinystudio.api.deps import current_user, get_db, project_dep, require_admin
 from tinystudio.auth import Principal
 from tinystudio.db.models import Project
 from . import service as svc
-from .client_paths import RuntimeApiPaths, HardwareApiPaths
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths
 from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, LabTarget
 from .study_import_paths import StudyImportPaths
 from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
+from .recovered_evidence import RecoveryPreviewRequest, RecoveryAttachRequest, RecoveryParserLimits
 
 router = APIRouter()
 project_routes = APIRouter(prefix="/api/p/{slug}/lab", tags=["laboratory"])
@@ -318,7 +319,9 @@ def enroll_target(body: TargetEnrollment, db: DB, project: ProjectDep):
 
 @project_routes.post("/targets/{id_}/recover")
 def recover_target(id_: str, db: DB, project: ProjectDep):
-    return {"recovered": svc.recover(db, svc.resolve_target(db, project.id, id_))}
+    result = {"recovered": svc.recover(db, svc.resolve_target(db, project.id, id_))}
+    db.commit()
+    return result
 
 
 @project_routes.get("/runs")
@@ -336,6 +339,27 @@ def submit(body: Submission, db: DB, project: ProjectDep):
 @project_routes.get("/runs/{id_}")
 def run(id_: str, db: DB, project: ProjectDep):
     return svc.run_dict(db, svc.get_run(db, project.id, id_))
+
+
+@project_routes.get(RecoveredEvidencePaths(base='').references_route)
+def recovered_evidence(id_:str,db:DB,project:ProjectDep):
+    from .recovered_evidence import recovery_references, CLASSIFICATION
+    svc.get_run(db,project.id,id_)
+    return {'classification':CLASSIFICATION,'references':recovery_references(db,id_)}
+
+
+@project_routes.post(RecoveredEvidencePaths(base='').preview_route)
+def preview_recovered_evidence(id_:str,body:RecoveryPreviewRequest,db:DB,project:ProjectDep):
+    from .recovered_evidence import preview_recovered_evidence as preview
+    return preview(db,project.id,id_,body,limits=RecoveryParserLimits.from_environment())
+
+
+@project_routes.post(RecoveredEvidencePaths(base='').attach_route,status_code=201)
+def attach_recovered_evidence(id_:str,body:RecoveryAttachRequest,db:DB,project:ProjectDep,author:AuthorDep):
+    from .recovered_evidence import attach_recovered_evidence as attach
+    result=attach(db,project.id,id_,body,author.user.id,limits=RecoveryParserLimits.from_environment())
+    db.commit()
+    return result
 
 
 @project_routes.get("/runs/{id_}/events")
@@ -487,7 +511,12 @@ def copy_upload(file: UploadFile, root: Path, maximum: int) -> Path:
 def upload_input(db: DB, project: ProjectDep, file: UploadFile = File(...)):
     with tempfile.TemporaryDirectory(prefix="ts-lab-upload-") as root:
         path = copy_upload(file, Path(root), 512 * 1024**2)
-        return svc.artifact_dict(svc.store_artifact(db, project.id, path, file.filename or "input.bin", file.content_type or "application/octet-stream"))
+        result = svc.artifact_dict(svc.store_artifact(db, project.id, path, file.filename or "input.bin", file.content_type or "application/octet-stream"))
+        # A recovery client persists this identity before its attach request.
+        # Commit before acknowledging it, so that identity is already visible
+        # to independent verification and a failed commit cannot return 201.
+        db.commit()
+        return result
 
 
 @data_bridge_routes.post("/inputs/from-snapshot", status_code=201)

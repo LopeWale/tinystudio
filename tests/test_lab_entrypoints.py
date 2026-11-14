@@ -35,6 +35,7 @@ def test_shared_lab_catalog_uses_authenticated_project_transport():
             "lab_study_records", "lab_study_record", "lab_study_manifest",
             "lab_study_import_preview", "lab_study_import",
             "lab_run", "lab_events", "lab_cancel", "lab_retry", "lab_targets",
+            "lab_recovered_evidence", "lab_recovered_evidence_preview", "lab_recovered_evidence_attach",
             "lab_export", "lab_operation", "lab_import", "lab_recover",
             "lab_operations", "lab_operation_cancel", "lab_operation_retry",
             "lab_promote_dataset",

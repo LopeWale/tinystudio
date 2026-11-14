@@ -27,6 +27,30 @@ class HardwareApiPaths(LabApiPaths):
         return self.base + "/hardware/discovery-methods"
 
 
+@dataclass(frozen=True)
+class RecoveredEvidencePaths(LabApiPaths):
+    @property
+    def references_route(self):
+        return self.base + '/runs/{id_}/recovered-evidence'
+
+    @property
+    def preview_route(self):
+        return self.references_route + '/preview'
+
+    @property
+    def attach_route(self):
+        return self.references_route
+
+    def references(self,run_id):
+        return self.references_route.replace('{id_}',path_identifier(run_id))
+
+    def preview(self,run_id):
+        return self.preview_route.replace('{id_}',path_identifier(run_id))
+
+    def attach(self,run_id):
+        return self.attach_route.replace('{id_}',path_identifier(run_id))
+
+
 def runtime_definition(name: str, parameters: dict, execution: dict, inputs: list[dict] | None = None) -> dict:
     """Wrap authored settings and retain an explicit seed across generic normalization."""
     definition = {"name": name, "engine": "runtime.qualify", "domain": "runtime", "mode": "offline",

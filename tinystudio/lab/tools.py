@@ -1,5 +1,5 @@
 """MCP and assistant methods are thin clients of laboratory HTTP services."""
-from .client_paths import RuntimeApiPaths, HardwareApiPaths, path_identifier, runtime_definition
+from .client_paths import RuntimeApiPaths, HardwareApiPaths, RecoveredEvidencePaths, path_identifier, runtime_definition
 from .study_import_paths import StudyImportPaths
 
 def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
@@ -200,6 +200,30 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
         """Reconnect to durable run events after a sequence identifier."""
         return call("GET", f"/api/lab/runs/{path_identifier(run_id)}/events?after={after}")
 
+    def lab_recovered_evidence(run_id: str) -> dict:
+        """Inspect operator-supplied recovered evidence and its original source-attempt associations."""
+        return call('GET',RecoveredEvidencePaths().references(run_id))
+
+    def lab_recovered_evidence_preview(run_id: str, request: dict) -> dict:
+        """Verify uploaded snapshot bytes and existing run/attempt identity before attachment.
+
+        Supply source_attempt_id, target_id, spec_digest, manifest artifact
+        id/hash/size and exact named file artifact references. This verifies byte
+        custody; experimental independence and physical outcomes remain authored
+        or unverified. Use the retained digest with an unchanged attach request.
+        """
+        return call('POST',RecoveredEvidencePaths().preview(run_id),json=request)
+
+    def lab_recovered_evidence_attach(run_id: str, request: dict) -> dict:
+        """Attach an inspected snapshot with its preview_digest and stable idempotency_key.
+
+        Preserve the complete request when retrying an uncertain response. This
+        adds a recovery receipt and history association while preserving the
+        original execution state and artifact attribution. It grants no runner
+        authority and performs no device commands or model registration.
+        """
+        return call('POST',RecoveredEvidencePaths().attach(run_id),json=request)
+
     def lab_cancel(run_id: str) -> dict:
         """Request cancellation; running work ends only after runner acknowledgement or lease recovery."""
         return call("POST", f"/api/lab/runs/{path_identifier(run_id)}/cancel", json={})
@@ -261,12 +285,12 @@ def tool_specs(studio, ToolSpec, *, include_data_bridges=False):
 
     methods = [lab_catalog, lab_definitions, lab_runtime_methods, lab_runtime_define, lab_hardware_discovery_methods, lab_statistics_methods, lab_statistics_define,
                lab_analysis_methods, lab_study_analysis_input, lab_analysis_define, lab_study_analysis_result,
-               lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
+               lab_define, lab_preflight, lab_submit, lab_run, lab_events, lab_recovered_evidence, lab_recovered_evidence_preview, lab_recovered_evidence_attach, lab_cancel, lab_retry, lab_targets, lab_export, lab_operation, lab_import, lab_recover, lab_operations, lab_operation_cancel, lab_operation_retry, lab_promote_dataset, lab_repository_input,
                lab_studies, lab_study, lab_study_save, lab_study_revisions, lab_study_records, lab_study_record, lab_study_manifest,
                lab_study_import_preview, lab_study_import]
     if include_data_bridges:
         methods += [lab_snapshot_input, lab_model_input]
     return [ToolSpec(f.__name__, f.__doc__, f, read_only=f in {lab_catalog, lab_definitions, lab_runtime_methods, lab_hardware_discovery_methods, lab_statistics_methods, lab_analysis_methods, lab_run, lab_events, lab_targets, lab_preflight, lab_operation, lab_operations,
-                                                          lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest, lab_study_import_preview},
-                     long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input, lab_study_analysis_input})
+                                                          lab_studies, lab_study, lab_study_revisions, lab_study_records, lab_study_manifest, lab_study_import_preview, lab_recovered_evidence, lab_recovered_evidence_preview},
+                     long_running=f in {lab_submit, lab_retry, lab_export, lab_import, lab_operation_retry, lab_promote_dataset, lab_repository_input, lab_study_analysis_input, lab_recovered_evidence_preview, lab_recovered_evidence_attach})
             for f in methods]
