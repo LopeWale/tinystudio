@@ -350,7 +350,7 @@ def _decode(frame, params, engine):
     if engine=='acquisition.can':
         body={'frame':frame.get('can_frame',{}),'source_timestamp':frame.get('can_frame',{}).get('timestamp')}
         decoder=params.get('decode','frame')
-        if decoder=='frame':return None,body
+        if decoder=='frame' or body['frame'].get('is_error_frame') is True:return None,body
         if frame.get('truncated'):raise ValueError('frame_truncated')
         formats={'uint8':'B','int8':'b','uint16':'H','int16':'h','uint32':'I','int32':'i','float32':'f','float64':'d'}
         if decoder not in formats:raise ValueError('unsupported CAN payload decode')
@@ -382,6 +382,13 @@ def _decode(frame, params, engine):
         else:raise ValueError('unsupported register decode')
         return _finite(value),{}
     wire=frame.get('wire',b'')
+    if engine=='acquisition.serial' and frame.get('framing') is not None:
+        framing=SerialFraming.from_dict(frame['framing'])
+        if framing.kind=='delimiter':
+            if frame.get('frame_complete') is not True or frame.get('frame_continuation'):
+                raise ValueError('incomplete_serial_frame')
+            if not wire.endswith(framing.delimiter):raise ValueError('missing_serial_frame_delimiter')
+            wire=wire[:-len(framing.delimiter)]
     decoder=params.get('decode','json')
     if decoder=='decimal_text':return _finite(wire.decode('utf-8')),{}
     if decoder not in {'json','json_object'}:raise ValueError('unsupported telemetry payload decode')
@@ -564,6 +571,8 @@ def execute_acquisition(spec, output_dir, emit, cancelled, *, transport_factory=
                             body=frame['retained_record'];value=_finite(body.get('value'))
                         else:value,body=_decode(frame,params,definition['engine'])
                         row.update(value=value,observed=value is not None,quality='good' if value is not None else 'frame_only')
+                        if definition['engine']=='acquisition.can' and frame.get('can_frame',{}).get('is_error_frame') is True:
+                            row['quality_flags'].append('can_error_frame')
                         if frame.get('truncated') or frame.get('evidence_truncated'):row['quality_flags'].append('wire_evidence_truncated')
                     except (ValueError,UnicodeDecodeError,TypeError) as exc:
                         row['quality']='invalid';row['quality_flags'].append(str(exc)[:200])

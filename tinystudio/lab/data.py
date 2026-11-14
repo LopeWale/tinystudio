@@ -247,6 +247,7 @@ def normalize(acquired, parameters, clocks):
     for item in acquired:
         truth = {key: value for key, value in item["record"].items() if key in {"ground_truth", "true_value", "injected_fault"}}
         original = {key: value for key, value in item["record"].items() if key not in truth}
+        inherited_future_aware = _boolean(original.get("future_aware", False), "future_aware")
         inherited_protection = source_protection(original, visibility=item.get("visibility", "model"),
                                                  role=item.get("role", "source"))
         projected = {name: original.get(selected) if isinstance(selected, str) else selected.resolve(original)
@@ -319,6 +320,7 @@ def normalize(acquired, parameters, clocks):
         units = str(field("units") or parameters.get("units", "unitless"))
         protection = source_protection(original, visibility=inherited_protection,
                                        role=item.get("role", "source"))
+        projected_future_aware = _boolean(original.get("future_aware", False), "future_aware")
         row = {**original, "record_id": source_id, "source_record_id": source_id,
             "source_record_ids": [source_id], "source_artifact_id": item["source"], "source_sha256": item["source_sha256"],
             "source_visibility": protection, "source_role": original.get("source_role", item.get("role", "source")),
@@ -333,7 +335,7 @@ def normalize(acquired, parameters, clocks):
             "source_missing_mask": original.get("missing_mask", {"value": missing}), "missing_mask": {"value": missing},
             "estimated": not observed and value is not None,
             "estimation_method": None if observed or value is None else "provided estimate",
-            "future_aware": _boolean(original.get("future_aware", False), "future_aware"),
+            "future_aware": inherited_future_aware or projected_future_aware,
             "value_origin": "measured" if observed else "missing" if value is None else "provided_estimate"}
         for name in CLOCK_FIELDS:
             if name in {"clock_domain", "clock_units"}:

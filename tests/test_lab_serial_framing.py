@@ -8,6 +8,7 @@ import pytest
 from tinystudio.lab.acquisition import SerialReader
 from tinystudio.lab.engine import ExecutionCancelled
 from tinystudio.lab.serial_framing import SerialFraming
+from tests.test_lab_acquisition import run, spec
 
 
 def binding(framing=None):
@@ -99,3 +100,59 @@ def test_partial_bytes_survive_native_read_exception():
         assert frame['fatal_transport_error']['message']=='owned serial disconnect'
         assert frame['truncated'] and not frame['frame_complete']
     finally:reader.close()
+
+
+@pytest.mark.parametrize('delimiter,payload,decode,value', [
+    (b'\x00', b'{"value":42}', 'json', 42),
+    (b'END', b'-.125', 'decimal_text', -.125),
+    (b'\r\n', b'{"value":-1.25}', 'json', -1.25),
+])
+def test_complete_delimited_frame_decodes_payload_and_retains_exact_wire(tmp_path, delimiter, payload, decode, value):
+    import base64
+    pytest.importorskip('serial')
+    selected = {'kind': 'delimiter', 'delimiter_hex': delimiter.hex()}
+    reader = SerialReader(binding(selected), .1, None)
+    wire = payload + delimiter
+    try:
+        reader.port.write(wire)
+        frame = reader.read(0)
+    finally:
+        reader.close()
+    _, rows, raw, *_ = run(tmp_path, spec(samples=1, decode=decode), [frame])
+    assert rows[0]['value'] == value and rows[0]['observed'] is True
+    assert rows[0]['quality'] == 'good'
+    assert base64.b64decode(raw[0]['wire_base64']) == wire
+    assert raw[0]['transport_metadata']['wire_sha256'] == hashlib.sha256(wire).hexdigest()
+    assert raw[0]['transport_metadata']['framing'] == selected
+    assert raw[0]['transport_metadata']['frame_complete'] is True
+
+
+def test_delimiter_split_by_timeout_never_decodes_a_tail_as_a_measurement(tmp_path):
+    import base64
+    pytest.importorskip('serial')
+    reader = SerialReader(binding({'kind': 'delimiter', 'delimiter_hex': '454e44'}), .1, None)
+    try:
+        reader.port.write(b'42E')
+        prefix = reader.read(0)
+        reader.port.write(b'ND')
+        tail = reader.read(0)
+    finally:
+        reader.close()
+    _, rows, raw, *_ = run(tmp_path, spec(samples=2, decode='decimal_text'), [prefix, tail])
+    assert all(row['value'] is None and row['observed'] is False for row in rows)
+    assert all(row['quality'] == 'invalid' for row in rows)
+    assert [base64.b64decode(row['wire_base64']) for row in raw] == [b'42E', b'ND']
+    assert tail['frame_complete'] and tail['frame_continuation']
+
+
+def test_fixed_size_frame_does_not_strip_payload_bytes_as_a_delimiter(tmp_path):
+    pytest.importorskip('serial')
+    wire = b'{"value":42}\x00'
+    reader = SerialReader(binding({'kind': 'fixed_bytes', 'frame_bytes': len(wire)}), .1, None)
+    try:
+        reader.port.write(wire)
+        frame = reader.read(0)
+    finally:
+        reader.close()
+    _, rows, _, *_ = run(tmp_path, spec(samples=1), [frame])
+    assert rows[0]['quality'] == 'invalid' and rows[0]['value'] is None

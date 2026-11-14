@@ -37,6 +37,31 @@ def test_can_measurement_uses_only_the_authored_payload_mapping(tmp_path, decode
     assert base64.b64decode(raw[0]['wire_base64']) == payload
 
 
+@pytest.mark.parametrize('decode', ['frame', 'uint16'])
+def test_can_error_frame_remains_diagnostic_evidence_without_a_numeric_observation(tmp_path, decode):
+    import hashlib
+    from types import SimpleNamespace
+    from tinystudio.lab.hardware_transports import CANReader
+    payload = bytes.fromhex('0000040000000000')
+    message = SimpleNamespace(data=payload, is_error_frame=True, is_remote_frame=False)
+    bus = SimpleNamespace(recv=lambda **kwargs: message, shutdown=lambda: None)
+    reader = CANReader({'endpoint': {'interface': 'fixture', 'channel': 'owned'}}, .1, None,
+                       library=SimpleNamespace(Bus=lambda **kwargs: bus))
+    try:
+        frame = reader.read(.1)
+    finally:
+        reader.close()
+    _, rows, raw, *_ = run(tmp_path, can_spec(decode=decode, byte_offset=2), [frame])
+    assert rows[0]['value'] is None and rows[0]['observed'] is False
+    assert rows[0]['quality'] == 'frame_only'
+    assert 'can_error_frame' in rows[0]['quality_flags']
+    assert raw[0]['observed'] is True
+    assert base64.b64decode(raw[0]['wire_base64']) == payload
+    assert raw[0]['transport_metadata']['wire_sha256'] == hashlib.sha256(payload).hexdigest()
+    assert raw[0]['transport_metadata']['can_frame']['is_error_frame'] is True
+    assert raw[0]['decoded_payload']['frame']['is_error_frame'] is True
+
+
 def test_structured_serial_payload_keeps_multiple_outcomes_for_later_curation(tmp_path):
     payload = b'{"temperature":21.2,"duty":0.1,"status":"ready"}\n'
     result, rows, raw, *_ = run(tmp_path, spec(samples=1, decode='json_object'), [{'wire': payload}])

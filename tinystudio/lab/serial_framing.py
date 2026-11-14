@@ -105,6 +105,7 @@ class FramedSerialReader:
             if complete:break
         if not size:return None
         frame={'wire':bytes(prefix),'wire_scope':'serial_received_bytes',
+               'framing':self.framing.to_dict(),
                'wire_sha256':segment_hash.hexdigest(),'original_wire_bytes':size,
                'evidence_truncated':len(prefix)<size,
                'truncated':len(prefix)<size or not complete or offset>0,
