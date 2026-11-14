@@ -41,7 +41,7 @@ def database():
         raise RuntimeError("lab integration tests need PostgreSQL CREATE DATABASE access; no shared database was modified") from None
     engine = create_engine(admin.url.set(database=name), connect_args={"options": "-c lock_timeout=3000 -c statement_timeout=15000"})
     try:
-        from tinystudio.db.migrate import downgrade, upgrade
+        from tinystudio.db.migrate import downgrade, head_revision, upgrade
         from sqlalchemy import inspect
         upgrade("e8a0b4c32d16", engine.url.render_as_string(hide_password=False))
         legacy_tables = inspect(engine).get_table_names()
@@ -58,7 +58,7 @@ def database():
         upgrade("head", engine.url.render_as_string(hide_password=False))
         with engine.begin() as conn:
             assert conn.execute(select(Project.name).where(Project.id == "migration-sentinel")).scalar() == "Preserved"
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "j3f5a9078c61"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == head_revision()
         assert legacy_schema() == before
         assert {table.name for table in TABLES} <= set(inspect(engine).get_table_names())
         downgrade("e8a0b4c32d16", engine.url.render_as_string(hide_password=False))

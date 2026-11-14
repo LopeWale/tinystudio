@@ -6,10 +6,16 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 
 from tinystudio.config import config
 
 MIGRATIONS = Path(__file__).resolve().parent / "migrations"
+
+
+def head_revision() -> str | None:
+    """Read the single shipped migration head without opening a database."""
+    return ScriptDirectory(str(MIGRATIONS)).get_current_head()
 
 
 def alembic_config(database_url: str | None = None) -> AlembicConfig:

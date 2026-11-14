@@ -34,6 +34,35 @@ function fixture() {
   };
   const api = {
     get: vi.fn(async (path: string, _signal?: AbortSignal): Promise<any> => {
+      if (path === "/api/lab/transfer-policy")
+        return {
+          backend: "local",
+          policy: {
+            per_file: {
+              max_bytes: null,
+              max_files: null,
+            },
+            aggregate: {
+              max_bytes: null,
+              max_files: null,
+            },
+            geometry: {
+              part_bytes: 16777216,
+              concurrency: 4,
+              provider: {
+                name: "cloudflare_r2",
+                minimum_part_bytes: 5242880,
+                maximum_part_bytes: 5363466240,
+                maximum_parts: 10000,
+                maximum_object_bytes: 5492189429760,
+                source: "https://developers.cloudflare.com/r2/platform/limits/",
+              },
+            },
+            signed_url_expiry_seconds: 900,
+            verifier_timeout_seconds: null,
+          },
+          resumable: false,
+        };
       if (path === "/api/lab/catalog")
         return { adapters: [], domains: [], methods: [] };
       if (path === "/api/lab/definitions" || path === "/api/lab/inputs")
@@ -74,9 +103,12 @@ function fixture() {
     upload: vi.fn(async (_path: string, _body: unknown, _options: unknown) => ({
       id: "input-1",
       name: "recording.jsonl",
-      sha256: "checksum-from-server",
-      size: 18,
+      sha256:
+        "00eb969be6e85a0a346f921685103e0d935cfb76c746b1aa03b6ef48caf90dbe",
+      size: 20,
       media_type: "application/x-ndjson",
+      role: "source",
+      visibility: "model",
     })),
   };
   const studio = {
@@ -1855,7 +1887,8 @@ describe("laboratory authoring and execution", () => {
             inputs: [
               {
                 artifact_id: "input-1",
-                sha256: "checksum-from-server",
+                sha256:
+                  "00eb969be6e85a0a346f921685103e0d935cfb76c746b1aa03b6ef48caf90dbe",
                 role: "source",
                 visibility: "model",
               },

@@ -268,12 +268,12 @@ def test_competing_admissions_do_not_create_duplicate_names(evidence):
 def test_migration_refuses_to_discard_historical_bridge_operations(evidence):
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
-    from tinystudio.db.migrate import downgrade
+    from tinystudio.db.migrate import downgrade, head_revision
     factory, project, _, _, _ = evidence
     operation_id = admit(evidence)
     engine = factory.kw["bind"]
     with pytest.raises(DBAPIError, match="retain data bridge operations"):
         downgrade("g0c2d6e54f38", engine.url.render_as_string(hide_password=False))
     with factory() as db:
-        assert db.execute(text("select version_num from alembic_version")).scalar() == "i2e4f8067b50"
+        assert db.execute(text("select version_num from alembic_version")).scalar() == head_revision()
         assert ops.get_operation(db, project, operation_id).state == "queued"
