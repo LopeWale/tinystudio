@@ -63,8 +63,9 @@ Content-addressed publication reads back and verifies stored bytes before publis
 With R2 storage, the Lab input picker hashes the selected file incrementally,
 uploads missing parts directly to signed object-store URLs, and attaches the
 artifact only after a durable background operation has verified its full linear
-SHA-256 and size. Verification uses the existing dispatcher and `tinystudio worker`;
-without an available worker, its committed operation remains queued. The Studio API carries authenticated metadata and controls;
+SHA-256 and size. Verification uses the dispatcher's independent operation
+capacity; if that capacity is unavailable, committed work remains inspectable.
+The Studio API carries authenticated metadata and controls;
 object requests omit Studio/Access credentials and cookies and reject redirects.
 ETags and multipart composite checksums do not establish a whole-file SHA-256.
 Each session owns a unique object key; completion seals its parts, and verified
@@ -132,12 +133,14 @@ attempt lease, but does not restart an exhausted execution clock or device
 authority. The shared RQ job timeout remains a separate seven-day envelope.
 
 Completion uses a durable `attempt_finalize` operation. A 202 ticket is pending,
-not a terminal acknowledgement. The dispatcher and worker stream-verify evidence
+not a terminal acknowledgement. Independent dispatcher workers stream-verify evidence
 outside attempt locks, then recheck authority before committing the outcome and
 operation together. Exact canonical request text preserves numeric values across
 database JSON projections. Lost acknowledgements can be inspected by the same
 attempt identity and request digest; failed, lost or cancelled operations are
-never automatically requeued. Without a worker, finalization remains pending.
+never automatically requeued. Known loss of operation capacity returns 503 for
+new attempt publication and pending runner polls; terminal acknowledgements and
+project diagnostics remain readable.
 
 ## Operator workflow
 
@@ -195,7 +198,20 @@ Cancellation requests termination; a running attempt remains running until ackno
 
 ### Dispatch and RQ workers
 
-The API owns a separate laboratory dispatcher process for its lifetime. It polls committed work, uses bounded database/delivery waits, and shuts down its owned process group. A separate `tinystudio worker` consumes the existing RQ queue; the dispatcher does not execute experiments or bundle transfers itself. PostgreSQL owns run/attempt/operation truth, while Redis carries IDs. Queue outages leave committed work pending. Killing an RQ job alone does not prove experiment-process cleanup; use laboratory cancellation and inspect the lease/recovery state.
+The API owns a separate laboratory dispatcher process for its lifetime. It polls committed work, uses bounded database/delivery waits, and shuts down its owned process group. Inside that process, bounded workers claim `artifact_verify` and `attempt_finalize` directly from PostgreSQL using the existing operation token, generation and publication checks. This capacity remains available when every generic RQ worker is waiting for its experiment to finish publishing. A separate `tinystudio worker` consumes the existing RQ queue for experiments and bundle import/export. PostgreSQL owns run/attempt/operation truth, while Redis carries delivery IDs. Queue outages leave committed delivery work pending. Killing an RQ job alone does not prove experiment-process cleanup; use laboratory cancellation and inspect the lease/recovery state.
+
+`OperationRuntimeConfiguration` in `tinystudio.lab.operation_runtime` centralizes
+these settings. `TINYSTUDIO_LAB_OPERATION_MODE` defaults to `managed`, with
+`TINYSTUDIO_LAB_OPERATION_CAPACITY=1`; capacity zero or mode `disabled` disables
+the dependency executor. `POLL_SECONDS`, `SHUTDOWN_GRACE` and
+`STARTUP_TIMEOUT_SECONDS` use the same environment prefix and default to 0.25,
+3 and 10 seconds. `DELIVERY_ENABLED=0` runs operation capacity without RQ
+delivery. Mode `external` declares separately operated capacity, such as a
+long-lived `tinystudio lab dispatch` process configured in managed mode against
+the same database. Its readiness is an operator declaration, not an observation
+or an inference from the number of generic RQ workers. The capability response
+reports that distinction. `tinystudio lab dispatch --once` only performs a
+delivery pass; it does not own background operation capacity.
 
 Evidence import/export operations use that worker without an RQ target credential. To also deliver experiment runs whose frozen backend is `rq`, set `TINYSTUDIO_LAB_RQ_CREDENTIAL_FILE` on the API/dispatcher and RQ worker hosts to an enrolled credential for that exact target. These store-connected hosts need their normal deployment PostgreSQL/Redis settings. The RQ worker loads credentials locally; job arguments and results contain no credentials or credential-file paths. Its only supported RQ profile is trusted native host execution; RQ is delivery, not isolation. Configure the target explicitly:
 

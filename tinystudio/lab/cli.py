@@ -596,13 +596,11 @@ def runner_resume(root: Path = typer.Argument(..., exists=True, file_okay=False)
 @app.command("dispatch")
 def dispatch(once: bool = False):
     """Deliver committed evidence operations and configured RQ runs; PostgreSQL owns state."""
-    import time
-    from .dispatch import tick
-    while True:
-        show(tick())
-        if once:
-            return
-        time.sleep(2)
+    from .dispatch import run_foreground, tick
+    if once:
+        show(tick())  # Delivery only; this command owns no background capacity.
+        return
+    run_foreground()
 
 
 def register(root: typer.Typer, *, include_data_bridges: bool = False):

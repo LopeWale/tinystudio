@@ -91,6 +91,8 @@ def setup(database, tmp_path, monkeypatch):
         project_id, slug, other_id = project.id, project.slug, other.id
     app = FastAPI()
     install(app, include_data_bridges=True)
+    from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
+    register_operation_runtime(app, OperationRuntimeConfiguration(mode='external'))
     def sessions():
         with database() as db:
             try:

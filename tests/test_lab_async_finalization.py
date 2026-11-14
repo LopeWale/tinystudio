@@ -22,6 +22,8 @@ from tinystudio.lab.models import LabArtifact, LabAttempt, LabEvent, LabOperatio
 @pytest.fixture
 def http(finish_case):
     app=FastAPI();api.install(app)
+    from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
+    register_operation_runtime(app,OperationRuntimeConfiguration(mode='external'))
     def sessions():
         with finish_case['factory']() as db:
             try:yield db;db.commit()

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import select, func
@@ -23,6 +23,7 @@ from .models import LabArtifact, LabAttempt, LabDefinition, LabEvent, LabRun, La
 from .study_import_paths import StudyImportPaths
 from .transfer_configuration import AttemptArtifactApiPaths, TransferPolicy
 from .finalization_configuration import FinalizationApiPaths
+from .operation_runtime import require_operation_runtime, require_pending_operation_runtime
 from .study_import import PreviewRequest as ObservationImportPreview, ImportRequest as ObservationImport
 from .recovered_evidence import RecoveryPreviewRequest, RecoveryAttachRequest, RecoveryParserLimits
 
@@ -669,29 +670,43 @@ def finish(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: s
 
 
 @runner_routes.post(FinalizationApiPaths().collection_route, status_code=202)
-def request_finalization(id_: str, body: Completion, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
-    from .finalization_service import _snapshot_target, finalization_dict, request_finalization as admit
+def request_finalization(id_: str, body: Completion, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+    from .contracts import checksum
+    from .finalization_service import _snapshot_target, finalization_dict, get_finalization, request_finalization as admit
     target = _snapshot_target(target)
     db.commit()
+    try:
+        previous = get_finalization(db, target, id_, x_lab_lease, payload_digest=checksum(body.model_dump()))
+    except svc.LabError as error:
+        if error.status != 404:
+            raise
+    else:
+        if previous.state not in {'queued', 'running'}:
+            return finalization_dict(previous)
+    require_operation_runtime(request.app)
     row = admit(db, target, id_, x_lab_lease, body.state, body.result, body.error)
     db.commit()  # Durable admission precedes its 202 descriptor.
     return finalization_dict(row)
 
 
 @runner_routes.get(FinalizationApiPaths().digest_route)
-def finalization_by_digest(id_: str, payload_digest: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+def finalization_by_digest(id_: str, payload_digest: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
     from .finalization_service import _snapshot_target, finalization_dict, get_finalization
     target = _snapshot_target(target)
     db.commit()
-    return finalization_dict(get_finalization(db, target, id_, x_lab_lease, payload_digest=payload_digest))
+    row = get_finalization(db, target, id_, x_lab_lease, payload_digest=payload_digest)
+    require_pending_operation_runtime(request.app, row)
+    return finalization_dict(row)
 
 
 @runner_routes.get(FinalizationApiPaths().operation_route)
-def finalization_by_id(id_: str, operation_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
+def finalization_by_id(id_: str, operation_id: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default="")):
     from .finalization_service import _snapshot_target, finalization_dict, get_finalization
     target = _snapshot_target(target)
     db.commit()
-    return finalization_dict(get_finalization(db, target, id_, x_lab_lease, operation_id=operation_id))
+    row = get_finalization(db, target, id_, x_lab_lease, operation_id=operation_id)
+    require_pending_operation_runtime(request.app, row)
+    return finalization_dict(row)
 
 
 @runner_routes.post(AttemptArtifactApiPaths.at_runner(runner_api_paths.attempt_route).output_proxy, status_code=201)

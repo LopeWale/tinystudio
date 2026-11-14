@@ -2,19 +2,20 @@
 from typing import Annotated
 import secrets
 
-from fastapi import Depends, Header, Query
+from fastapi import Depends, Header, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from tinystudio.api.deps import get_db, project_dep
 from tinystudio.db.models import Project
-from .models import LabAttempt, LabTarget, LabTransfer
+from .models import LabAttempt, LabOperation, LabTarget, LabTransfer
 from . import service as svc
 from .client_paths import RunnerApiPaths
 from .finalization_configuration import FINALIZATION_PROTOCOL_VERSION
 from .transfer_configuration import AttemptArtifactApiPaths, TransferApiPaths, TransferPolicy
 from .transfer_storage import MultipartArtifactStore, TransferStorageError
+from .operation_runtime import require_operation_runtime, require_pending_operation_runtime
 
 
 DB = Annotated[Session, Depends(get_db)]
@@ -112,15 +113,17 @@ def install(project_routes, runner_routes):
                 'resumable': store.storage.remote, 'policy': TransferPolicy.from_environment().as_dict()}
 
     @runner_routes.get(attempt_paths.policy_route)
-    def runner_policy(id_: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
+    def runner_policy(id_: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
         # Select the protocol before artifact mutation; a target credential
         # alone does not confer authority over another attempt's execution.
         svc.attempt_authority(db, target, id_, x_lab_lease)
         db.commit()
+        runtime = require_operation_runtime(request.app)
         store = _store()
         return {'protocol_version': 1, 'backend': 'r2' if store.storage.remote else 'local',
                 'resumable': store.storage.remote, 'direct_download': store.storage.remote,
                 'finalization_protocol_version': FINALIZATION_PROTOCOL_VERSION,
+                'operation_runtime': runtime,
                 'policy': TransferPolicy.from_environment().as_dict()}
 
     @project_routes.get(project_paths.collection)
@@ -177,7 +180,7 @@ def install(project_routes, runner_routes):
         return _result(_control('abort', db, project.id, session_id, project_authority=True))
 
     @runner_routes.post(runner_paths.collection, status_code=201)
-    def start_output(id_: str, body: TransferRequest, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
+    def start_output(id_: str, body: TransferRequest, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
         from .transfer_service import admit, attempt_identity
         _require_remote()
         run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
@@ -187,6 +190,7 @@ def install(project_routes, runner_routes):
         # admission transaction then acquires project-first locks and rechecks
         # them; project deletion must never wait on a run while we wait on it.
         db.commit()
+        require_operation_runtime(request.app)
         row = admit(db, project_id, body.intent(), body.idempotency_key,
                     attempt_authority=authority, policy=TransferPolicy.from_environment())
         session_id = row.id
@@ -194,8 +198,12 @@ def install(project_routes, runner_routes):
         return _result(_control('initialize', db, project_id, session_id))
 
     @runner_routes.get(runner_paths.session_route)
-    def output(id_: str, session_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
-        return _result(_runner_row(db, target, id_, session_id, x_lab_lease, read_only=True))
+    def output(id_: str, session_id: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
+        row = _runner_row(db, target, id_, session_id, x_lab_lease, read_only=True)
+        operation = db.get(LabOperation, row.operation_id) if row.operation_id else None
+        if operation is not None:
+            require_pending_operation_runtime(request.app, operation)
+        return _result(row)
 
     @runner_routes.post(runner_paths.initialize_route)
     def initialize_output(id_: str, session_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
@@ -213,8 +221,9 @@ def install(project_routes, runner_routes):
         return _control('sign_part', db, target.project_id, session_id, part_number)
 
     @runner_routes.post(runner_paths.complete_route, status_code=202)
-    def complete_output(id_: str, session_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
+    def complete_output(id_: str, session_id: str, request: Request, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
         _runner_row(db, target, id_, session_id, x_lab_lease)
+        require_operation_runtime(request.app)
         return _result(_control('complete', db, target.project_id, session_id))
 
     @runner_routes.post(runner_paths.abort_route)

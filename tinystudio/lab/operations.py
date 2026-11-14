@@ -132,7 +132,7 @@ def _dispatch_limits(db, deadline, cancelled):
     return _dispatch_active(deadline, cancelled)
 
 
-def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_seconds=20) -> list[str]:
+def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_seconds=20, excluded_kinds=()) -> list[str]:
     """Deliver committed IDs with bounded DB waits and cooperative stop/deadline.
 
     Returns IDs whose callbacks completed, including deliveries made before a
@@ -153,6 +153,7 @@ def dispatch_pending(db, enqueue_callback, *, cancelled=lambda: False, timeout_s
         if not _dispatch_limits(reader, deadline, cancelled):
             return []
         ids = list(reader.scalars(select(LabOperation.id).where(LabOperation.state == "queued",
+            LabOperation.kind.not_in(tuple(excluded_kinds)),
             (LabOperation.dispatch_after.is_(None)) | (LabOperation.dispatch_after <= svc.now())).limit(100)))
     sent = []
     for id_ in ids:

@@ -59,6 +59,8 @@ def native_http(tmp_path, monkeypatch):
         # Use the registered application routes, without deployment preparation
         # or the Redis-backed dispatcher. Operation workers are invoked explicitly.
         app = create_app(run_migrations=False, ui=False, laboratory_dispatch=False)
+        from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
+        register_operation_runtime(app, OperationRuntimeConfiguration(mode='external'))
         def sessions():
             with factory() as db:
                 try:

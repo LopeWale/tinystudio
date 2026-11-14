@@ -18,9 +18,16 @@ from tinystudio.services import projects
 
 @pytest.fixture
 def output_api(fixture, monkeypatch):
+    from fastapi import FastAPI, Request
+    from tinystudio.lab.operation_runtime import OperationRuntimeConfiguration, register_operation_runtime
     fixture['store'].storage = SimpleNamespace(remote=True)
     monkeypatch.setattr(transfer_api, '_store', lambda: fixture['store'])
-    return next(route.endpoint for route in runner_routes.routes if route.name == 'start_output')
+    endpoint = next(route.endpoint for route in runner_routes.routes if route.name == 'start_output')
+    app = FastAPI()
+    register_operation_runtime(app, OperationRuntimeConfiguration(mode='external'))
+    request = Request({'type': 'http', 'app': app})
+    return lambda id_, body, db, target, lease: endpoint(id_=id_, body=body, request=request,
+                                                       db=db, target=target, x_lab_lease=lease)
 
 
 def test_output_api_admission_does_not_deadlock_with_active_project_deletion(fixture, output_api, monkeypatch):
