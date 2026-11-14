@@ -281,6 +281,12 @@ class CommandGateway:
             raise
 
     def _recovery(self, reason):
+        state=self._db.execute('SELECT * FROM gateway WHERE id=1').fetchone()
+        if state['state']=='owned':
+            # Retain exact ownership proof in the same durable transaction as
+            # its revocation. Older journals without this proof stay closed.
+            self._db.execute('INSERT INTO lease_revocations VALUES(?,?,?,?,?)',
+                (state['owner'],state['epoch'],state['lease_expires'],state['epoch']+1,reason))
         self._db.execute("UPDATE gateway SET state='recovery_required', epoch=epoch+1, owner=NULL, lease_expires=0, reason=? WHERE id=1", (reason,))
 
     def _now(self):
@@ -544,6 +550,14 @@ class CommandGateway:
 
     def release(self,request_id,*,owner,epoch):
         return self._leases.release(request_id,owner=owner,epoch=epoch)
+
+    def terminate_lease(self,request_id,*,owner,epoch,trigger):
+        """End this exact lease using its selected cancellation/expiry policy.
+
+        An already recorded action for the lease takes precedence. Completed
+        receipts are read-only; uncertain effects require explicit recovery.
+        """
+        return self._leases.terminate(request_id,owner=owner,epoch=epoch,trigger=trigger)
 
     def watchdog_tick(self):return self._leases.tick()
 

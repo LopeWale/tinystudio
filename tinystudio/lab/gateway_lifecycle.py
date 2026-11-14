@@ -35,6 +35,14 @@ class GatewayLeaseLifecycle:
                 stop_command_id TEXT, receipt TEXT, error TEXT,
                 UNIQUE(trigger,event_id));
             CREATE INDEX IF NOT EXISTS lease_events_owner ON lease_events(owner,lease_epoch);
+            CREATE TABLE IF NOT EXISTS lease_revocations (
+                owner TEXT NOT NULL, lease_epoch INTEGER NOT NULL,
+                lease_expires REAL NOT NULL, revocation_epoch INTEGER NOT NULL,
+                reason TEXT NOT NULL, PRIMARY KEY(owner,lease_epoch));
+            CREATE TABLE IF NOT EXISTS lease_termination_requests (
+                trigger TEXT NOT NULL, event_id TEXT NOT NULL, owner TEXT NOT NULL,
+                lease_epoch INTEGER NOT NULL, event_key TEXT NOT NULL,
+                PRIMARY KEY(trigger,event_id));
         ''')
 
     def recover(self):
@@ -83,6 +91,55 @@ class GatewayLeaseLifecycle:
                 raise _error('lease action is pending or uncertain; inspect retained evidence, never replay automatically')
             now,lease=gateway._authority(owner,epoch)
             event_key=self.end(lease,now=now,trigger='release',event_id=event_id)
+        return self.run(event_key)
+
+    def terminate(self,event_id,*,owner,epoch,trigger):
+        gateway=self.gateway
+        gateway._identifier(event_id,'lease event')
+        if type(trigger) is not str or trigger not in {'cancel','expiry'} or type(epoch) is not int or not isinstance(owner,str):
+            raise _error('termination requires cancel/expiry and an owner and integer epoch')
+        with gateway._transaction():
+            # Check authored request identity before considering other events of
+            # this lease. A replay may never bind the same identity to a new run.
+            existing=gateway._db.execute('SELECT * FROM lease_events WHERE trigger=? AND event_id=?',
+                                        (trigger,event_id)).fetchone()
+            alias=gateway._db.execute('SELECT * FROM lease_termination_requests WHERE trigger=? AND event_id=?',
+                                     (trigger,event_id)).fetchone()
+            if any(row is not None and (row['owner']!=owner or row['lease_epoch']!=epoch) for row in (existing,alias)):
+                raise _error('lease event identity belongs to a different immutable request')
+            # Observe local expiry before selecting the lease's durable action.
+            # It, or an in-flight command's cancellation, may have won already.
+            now=gateway._now()
+            prior=gateway._db.execute('SELECT * FROM lease_events WHERE owner=? AND lease_epoch=? ORDER BY rowid LIMIT 1',
+                                     (owner,epoch)).fetchone()
+            if prior is not None:
+                if alias is None:
+                    gateway._db.execute('INSERT INTO lease_termination_requests VALUES(?,?,?,?,?)',
+                                        (trigger,event_id,owner,epoch,prior['event_key']))
+                if prior['state'] in {'completed','superseded'}:return json.loads(prior['receipt'])
+                if prior['state']!='pending':
+                    raise _error('lease action is pending or uncertain; inspect retained evidence, never replay automatically')
+                event_key=prior['event_key']
+            else:
+                state=gateway._db.execute('SELECT * FROM gateway WHERE id=1').fetchone()
+                if state['state']=='owned' and state['owner']==owner and state['epoch']==epoch:
+                    event_key=self.end(state,now=now,trigger=trigger,event_id=event_id)
+                else:
+                    # A failed ordinary command can revoke this lease before
+                    # cancellation arrives. Use the exact persisted revocation,
+                    # never a guessed expiry or an epoch-only ownership check.
+                    proof=gateway._db.execute('SELECT * FROM lease_revocations WHERE owner=? AND lease_epoch=?',
+                                              (owner,epoch)).fetchone()
+                    if (proof is None or proof['reason']!='unknown_command_outcome'
+                            or state['state']!='recovery_required' or state['epoch']!=proof['revocation_epoch']):
+                        raise _error('lease termination requires the exact current owner and epoch')
+                    lease={'owner':proof['owner'],'epoch':proof['lease_epoch'],'lease_expires':proof['lease_expires']}
+                    event_key=self.end(lease,now=now,trigger=trigger,event_id=event_id,already_revoked=True)
+                if alias is None:
+                    gateway._db.execute('INSERT INTO lease_termination_requests VALUES(?,?,?,?,?)',
+                                        (trigger,event_id,owner,epoch,event_key))
+        # Only an unclaimed pending action can run. Its own final-write fence
+        # prevents a stop after explicit recovery or a newer owner takes over.
         return self.run(event_key)
 
     def cancel(self,request,lease):

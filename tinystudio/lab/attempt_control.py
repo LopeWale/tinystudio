@@ -80,6 +80,7 @@ class AttemptControl:
         self._attempt_deadline = None if deadline is None else _finite(deadline, 'attempt deadline')
         self._lease_deadline = None
         self._revocation_reason = None
+        self._termination_trigger = None
         self._last_time = None
         self._lock = threading.Lock()
 
@@ -87,18 +88,19 @@ class AttemptControl:
     def identity(self):
         return self._identity
 
-    def _revoke_locked(self, reason):
+    def _revoke_locked(self, reason, termination=None):
         if self._revocation_reason is None:
             self._revocation_reason = reason
+            self._termination_trigger = termination
 
     def _now_locked(self):
         try:
             now = _finite(self._monotonic(), 'monotonic clock')
         except Exception as error:
-            self._revoke_locked('monotonic_clock_invalid')
+            self._revoke_locked('monotonic_clock_invalid', 'expiry')
             raise AttemptAuthorityLost('attempt monotonic clock is invalid') from error
         if self._last_time is not None and now < self._last_time:
-            self._revoke_locked('monotonic_clock_regressed')
+            self._revoke_locked('monotonic_clock_regressed', 'expiry')
             raise AttemptAuthorityLost('attempt monotonic clock regressed')
         self._last_time = now
         return now
@@ -111,10 +113,12 @@ class AttemptControl:
         return min(self._lease_deadline, self._attempt_deadline)
 
     def _observe_locked(self, now):
-        if self._attempt_deadline is not None and now >= self._attempt_deadline:
-            self._revoke_locked('attempt_deadline_expired')
-        elif self._lease_deadline is not None and now >= self._lease_deadline:
-            self._revoke_locked('lease_expired')
+        attempt_expired = self._attempt_deadline is not None and now >= self._attempt_deadline
+        lease_expired = self._lease_deadline is not None and now >= self._lease_deadline
+        if attempt_expired and (not lease_expired or self._attempt_deadline <= self._lease_deadline):
+            self._revoke_locked('attempt_deadline_expired', 'cancel')
+        elif lease_expired:
+            self._revoke_locked('lease_expired', 'expiry')
 
     def _check_locked(self):
         if self._revocation_reason is not None:
@@ -143,7 +147,7 @@ class AttemptControl:
             if sent > now:
                 raise ValueError('heartbeat sent_at cannot be in the future')
             if candidate <= now:
-                self._revoke_locked('lease_expired')
+                self._revoke_locked('lease_expired', 'expiry')
                 raise AttemptAuthorityLost('heartbeat response arrived after its conservative lease deadline')
             self._lease_deadline = candidate
 
@@ -156,11 +160,18 @@ class AttemptControl:
             now = self._check_locked()
             return max(0., self._deadline_locked() - now)
 
-    def revoke(self, reason):
+    def revoke(self, reason, *, termination=None):
         if type(reason) is not str or not reason:
             raise ValueError('revocation requires a nonempty reason')
+        if termination is not None and (type(termination) is not str or termination not in {'release','cancel','expiry'}):
+            raise ValueError('termination must select release, cancel, expiry or None')
         with self._lock:
-            self._revoke_locked(reason)
+            if self._revocation_reason is None:
+                try:
+                    self._observe_locked(self._now_locked())
+                except AttemptAuthorityLost:
+                    pass  # The conservative clock-failure expiry is latched.
+            self._revoke_locked(reason, termination)
 
     def snapshot(self):
         with self._lock:
@@ -174,4 +185,6 @@ class AttemptControl:
                     'renewed': renewed, 'authorized': renewed and self._revocation_reason is None,
                     'lease_deadline': self._lease_deadline, 'attempt_deadline': self._attempt_deadline,
                     'monotonic_deadline': self._deadline_locked(), 'revoked': self._revocation_reason is not None,
-                    'revocation_reason': self._revocation_reason}
+                    'revocation_reason': self._revocation_reason,
+                    'termination_trigger': self._termination_trigger,
+                    'termination_reason': self._revocation_reason}

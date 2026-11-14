@@ -340,7 +340,7 @@ class LeaseHeartbeat:
                     raise
                 self.offset = offset
                 if status.get("cancel_requested"):
-                    if self.authority is not None:self.authority.revoke('server_requested_cancellation')
+                    if self.authority is not None:self.authority.revoke('server_requested_cancellation',termination='cancel')
                     self.cancelled.set()
                     (self.root / "cancel").touch()
                 elif self.authority is not None and not self.authority.snapshot()['revoked']:
@@ -351,7 +351,7 @@ class LeaseHeartbeat:
                         # Lab heartbeat can retain data after the supervisor ends.
                         pass
             except Exception as exc:
-                if self.authority is not None:self.authority.revoke('lab_heartbeat_failed')
+                if self.authority is not None:self.authority.revoke('lab_heartbeat_failed',termination='expiry')
                 self.error = exc
                 (self.root / "cancel").touch()
                 raise
@@ -371,11 +371,11 @@ class LeaseHeartbeat:
         if self.cancelled.is_set() and not ignore_cancel:
             raise AttemptCancelled("server requested cancellation")
         if time.monotonic() > self.deadline:
-            if self.authority is not None:self.authority.revoke('selected_execution_deadline_exceeded')
+            if self.authority is not None:self.authority.revoke('selected_execution_deadline_exceeded',termination='cancel')
             raise TimeoutError("experiment exceeded selected wall-time budget")
 
     def stop(self):
-        if self.authority is not None:self.authority.revoke('lab_heartbeat_stopped')
+        if self.authority is not None:self.authority.revoke('lab_heartbeat_stopped',termination='cancel')
         self.stop_event.set()
         if self.thread.is_alive():
             self.thread.join(timeout=35)
@@ -726,7 +726,7 @@ class Runner:
                     captured_out,captured_err = group.logs()
                     stdout.write(captured_out.encode());stderr.write(captured_err.encode())
                     stdout.flush();stderr.flush()
-                if authority is not None:authority.revoke('supervisor_process_exited')
+                if authority is not None:authority.revoke('supervisor_process_exited',termination='release' if returncode==0 else 'cancel')
                 group.close()  # Descendants must stop before reading/hashing any final output.
                 cleanup_confirmed = True
                 audit_only = returncode in {CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT}
@@ -803,13 +803,13 @@ class Runner:
                     error = result.get("execution_error") if returncode == FAILED_EVIDENCE_EXIT else None
                     verified_audit_result = audit_only
         except AttemptCancelled:
-            if authority is not None:authority.revoke('attempt_cancelled')
+            if authority is not None:authority.revoke('attempt_cancelled',termination='cancel')
             state, result, error = "cancelled", None, None
         except Exception as cause:
-            if authority is not None:authority.revoke('attempt_failed')
+            if authority is not None:authority.revoke('attempt_failed',termination='cancel')
             error = f"{type(cause).__name__}: {cause}"[:8192]
         finally:
-            if authority is not None:authority.revoke('attempt_cleanup')
+            if authority is not None:authority.revoke('attempt_cleanup',termination='cancel')
             if group is not None:
                 try:
                     group.close()

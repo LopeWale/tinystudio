@@ -663,9 +663,19 @@ no selected client timeout. Success artifacts use the authored
 `artifact_visibility` (`model`, `evaluation` or `truth`, default `evaluation`).
 Failed/cancelled local outputs remain audit-only evaluation evidence for later
 explicit curation. Visibility never rewrites raw source, decisions or receipts.
-The engine retains the verified source, raw supervisor report, local timed
+The engine rechecks the retained supervisor source after execution. A changed
+regular file is failure evidence with its actual hash and `verified: false`;
+missing or nonregular source is recorded, with unsafe replacements removed only
+from the engine's known source slot so other audit files remain exportable.
+The engine retains the source, raw supervisor report, local timed
 submission/receipt JSONL and manifest. The parent independently retains admission,
 delivery and lease metadata and freezes its evidence after child cleanup.
+Parent cleanup preserves the first observed termination cause: normal completion
+selects `on_release`, server/manual cancellation and the selected wall deadline
+select `on_cancel`, and lost lease authority selects `on_expiry`. Known elapsed
+deadlines are observed before accepting a normal-exit cause. Cleanup uses the
+exact owner and lease epoch, including an ordinary command's durably recorded
+revocation; it never replays an uncertain stop or stops a newer owner's lease.
 File fsync acknowledgements and transport receipts do not prove physical effects,
 power-loss durability or stopping.
 

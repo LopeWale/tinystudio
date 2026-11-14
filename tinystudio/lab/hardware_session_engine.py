@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 from importlib.machinery import SourceFileLoader
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import time
 from types import MappingProxyType
@@ -253,6 +256,72 @@ def _artifact(path, role, media_type='application/json', *, visibility='evaluati
             'media_type': media_type, 'role': role, 'visibility': visibility}
 
 
+def _retained_source_integrity(path, expected):
+    """Observe retained bytes without following links or blocking on a FIFO.
+
+    These checks identify the retained file, not isolation from trusted native
+    code that continues changing files after the engine returns.
+    """
+    def state(status, observed=None, **fields):
+        return {'status': status, 'observed_sha256': observed, **fields}
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mode, info.st_mtime_ns, info.st_ctime_ns)
+
+    try:
+        initial = path.lstat()
+        if stat.S_ISLNK(initial.st_mode):
+            return state('symlink')
+        if not stat.S_ISREG(initial.st_mode):
+            return state('not_regular')
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                return state('not_regular')
+            value = hashlib.sha256()
+            while block := os.read(descriptor, 1024 * 1024):
+                value.update(block)
+            after = os.fstat(descriptor)
+            current = path.lstat()
+        finally:
+            os.close(descriptor)
+        if stat.S_ISLNK(current.st_mode):
+            return state('symlink')
+        if not stat.S_ISREG(current.st_mode):
+            return state('not_regular')
+        observed = value.hexdigest()
+        if any(identity(info) != identity(initial) for info in (before, after, current)):
+            return state('changed_while_reading', observed)
+        return state('matched' if observed == expected else 'sha256_mismatch', observed)
+    except FileNotFoundError:
+        return state('missing')
+    except OSError as cause:
+        return state('unreadable', error_type=type(cause).__name__)
+
+
+def _remove_unpublishable_source(path):
+    """Remove only the replaced source entry so the remaining audit can export."""
+    entry_type = 'unknown'
+    try:
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode):
+            return {'status': 'not_removed', 'entry_type': 'regular'}
+        entry_type = ('symlink' if stat.S_ISLNK(info.st_mode) else
+                      'directory' if stat.S_ISDIR(info.st_mode) else
+                      'fifo' if stat.S_ISFIFO(info.st_mode) else
+                      'socket' if stat.S_ISSOCK(info.st_mode) else 'special')
+        if entry_type == 'directory':
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return {'status': 'removed', 'entry_type': entry_type}
+    except FileNotFoundError:
+        return {'status': 'already_missing', 'entry_type': entry_type}
+    except Exception as cause:
+        return {'status': 'failed', 'entry_type': entry_type, 'error_type': type(cause).__name__}
+
+
 def execute_hardware_session(spec, output_dir, emit, cancelled):
     """Run one authored supervisor; authority remains with the parent broker."""
     selection = validate_selection(spec.get('definition'))
@@ -341,25 +410,66 @@ def execute_hardware_session(spec, output_dir, emit, cancelled):
             emit({'event': 'hardware_session_supervisor', 'status': 'completed', 'binding_id': selection.binding_id})
         except Exception as cause:
             failure = cause
+    source_initially_verified = source_verified
+    source_integrity = None
+    source_integrity_failed = False
+
+    def check_retained_source():
+        nonlocal source_verified, source_integrity, source_integrity_failed, failure
+        source_integrity = _retained_source_integrity(paths.source, source_ref['sha256'])
+        source_verified = source_verified and source_integrity['status'] == 'matched'
+        if source_initially_verified and source_integrity['status'] != 'matched' and not source_integrity_failed:
+            source_integrity_failed = True
+            cause = ValueError('retained supervisor source integrity failed: ' + source_integrity['status'])
+            if failure is None:
+                failure = cause
+            else:
+                failure.add_note(str(cause))
+
+    check_retained_source()
     status = 'cancelled' if isinstance(failure, ExecutionCancelled) else 'failed' if failure else 'completed'
     writes = {name: writer.receipt() for name, writer in (('submissions', submissions), ('receipts', receipts)) if writer is not None}
     qualification = {'status': status, 'complete': failure is None, 'binding_id': selection.binding_id,
         'physical_outcome': 'unverified', 'physical_validation': False,
         'scope': 'Supervisor execution and local IPC evidence; parent admission/delivery records remain separate.',
-        'evidence_writes': writes, 'cleanup_errors': cleanup_errors}
+        'evidence_writes': writes, 'cleanup_errors': cleanup_errors, 'source_integrity': source_integrity}
     try:
         retained = {'format': FORMAT, 'status': status, 'selection': selection.to_dict(), 'seed': definition.get('seed'),
-            'inputs': deepcopy(definition['inputs']), 'supervisor_source': {**source_ref, 'verified': source_verified},
+            'inputs': deepcopy(definition['inputs']), 'supervisor_source': {**source_ref, 'verified': source_verified,
+                                                                         'integrity': source_integrity},
             'profile': profile, 'qualification': qualification, 'evidence_writes': writes,
             'error': _error(failure, descriptor['capability']) if failure else None}
         paths.manifest.write_text(json.dumps(retained, allow_nan=False) + '\n', encoding='utf-8')
+        # Match the source artifact to the last observation after report and
+        # manifest serialization, rather than publishing a newly hashed source
+        # under an earlier verified claim.
+        previous_integrity = source_integrity
+        check_retained_source()
+        if source_integrity['status'] not in {'matched', 'sha256_mismatch', 'missing'}:
+            cleanup = _remove_unpublishable_source(paths.source)
+            source_integrity['cleanup'] = cleanup
+            if cleanup['status'] == 'failed':
+                note = 'Retained supervisor source cleanup failed; audit export may remain unavailable: ' + cleanup['error_type']
+                if failure is None:
+                    failure = ValueError(note)
+                else:
+                    failure.add_note(note)
+        if source_integrity != previous_integrity:
+            status = 'cancelled' if isinstance(failure, ExecutionCancelled) else 'failed' if failure else 'completed'
+            qualification.update(status=status, complete=failure is None, source_integrity=source_integrity)
+            retained.update(status=status, error=_error(failure, descriptor['capability']) if failure else None)
+            retained['supervisor_source'].update(verified=source_verified, integrity=source_integrity)
+            paths.manifest.write_text(json.dumps(retained, allow_nan=False) + '\n', encoding='utf-8')
         artifacts = [_artifact(path, role, media, visibility=selection.artifact_visibility if failure is None else 'evaluation')
                      for path, role, media in (
-            (paths.source, 'hardware_session_supervisor', 'text/plain'),
             (paths.report, 'hardware_session_report', 'application/json'),
             (paths.submissions, 'hardware_session_submissions', 'application/x-ndjson'),
             (paths.receipts, 'hardware_session_receipts', 'application/x-ndjson'),
             (paths.manifest, 'hardware_session_manifest', 'application/json')) if path.is_file()]
+        if source_integrity['status'] in {'matched', 'sha256_mismatch'}:
+            artifacts.insert(0, {'name': paths.source.name, 'path': str(paths.source),
+                'sha256': source_integrity['observed_sha256'], 'role': 'hardware_session_supervisor',
+                'media_type': 'text/plain', 'visibility': selection.artifact_visibility if failure is None else 'evaluation'})
         result = {'records': deepcopy(report['records']) if isinstance(report, dict) and isinstance(report.get('records'), list) else
                   writes.get('receipts', {}).get('written_records', 0),
                   'metrics': deepcopy(report.get('metrics', {})) if isinstance(report, dict) else {},

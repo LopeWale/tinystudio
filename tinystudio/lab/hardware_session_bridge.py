@@ -62,7 +62,7 @@ class HardwareSessionBridge:
         try:self.writer.write_record(row)
         except Exception as error:
             self._errors.append({'phase':'parent_evidence','type':type(error).__name__})
-            self.control.revoke('parent_evidence_write_failed')
+            self.control.revoke('parent_evidence_write_failed',termination='cancel')
             raise
 
     def _manifest(self):
@@ -109,6 +109,7 @@ class HardwareSessionBridge:
             self._renewer=threading.Thread(target=self._renew,name='tinystudio-session-lease',daemon=True)
             self._server.start();self._renewer.start();self._manifest()
         except BaseException as error:
+            self.control.revoke('session_start_failed',termination='cancel')
             try:self.close()
             except BaseException as cleanup:error.add_note('Parent session cleanup unconfirmed: '+type(cleanup).__name__)
             raise
@@ -168,7 +169,7 @@ class HardwareSessionBridge:
             try:connection,_=self._listener.accept()
             except OSError:
                 if self._stop.is_set():return
-                self.control.revoke('session_listener_failed');return
+                self.control.revoke('session_listener_failed',termination='cancel');return
             with self._mutex:
                 # Close publishes its stop request before snapshotting clients.
                 # An accept returning after that snapshot must not start a reader.
@@ -209,13 +210,19 @@ class HardwareSessionBridge:
                 with self._mutex:self._lease={**lease,'expires_at':expiry}
             except Exception as error:
                 self._errors.append({'phase':'gateway_lease_renewal','type':type(error).__name__})
-                self.control.revoke('gateway_lease_renewal_failed');return
+                self.control.revoke('gateway_lease_renewal_failed',termination='expiry');return
             deadline=time.monotonic()+self.binding.renew_interval_seconds
 
     def close(self):
         with self._close_mutex:
             if self._closed:return deepcopy(self._outcome)
-            self._closing=True;self.control.revoke('parent_session_closed');self._stop.set()
+            self._closing=True
+            self.control.snapshot()  # Observe an elapsed authority deadline first.
+            self.control.revoke('parent_session_closed',termination='release')
+            authority=self.control.snapshot()
+            termination={'trigger':authority['termination_trigger'] or 'release',
+                         'reason':authority['termination_reason']}
+            self._stop.set()
             with self._mutex:connections=list(self._clients)
             for connection in connections:
                 try:connection.shutdown(socket.SHUT_RDWR)
@@ -226,21 +233,50 @@ class HardwareSessionBridge:
                 self._listener.close()
             for thread in (self._server,self._renewer):
                 if thread is not None and thread.ident is not None:thread.join()
-            self._outcome={'state':'closed','physical_outcome':'unverified','release_receipt':None,'errors':[]}
+            self._outcome={'state':'closed','physical_outcome':'unverified','release_receipt':None,
+                           'termination':termination,'termination_receipt':None,'errors':[]}
             if self.watchdog is not None:self.watchdog.close()
             if self.gateway is not None:
                 try:
-                    state=self.gateway.snapshot()
-                    if (self._lease is not None and state['state']=='owned' and state['owner']==self._lease['owner']
-                            and state['epoch']==self._lease['epoch']):
-                        release_id=hashlib.sha256(_canonical(['hardware.session.release',self.control.identity.owner])).hexdigest()
-                        self._outcome['release_receipt']=self.gateway.release(release_id,
-                            owner=self._lease['owner'],epoch=self._lease['epoch'])
-                    else:self._outcome['lease_actions']=self.gateway.watchdog_tick()
+                    if self._lease is not None:
+                        trigger=termination['trigger']
+                        if trigger=='release':
+                            release_id=hashlib.sha256(_canonical(['hardware.session.release',self.control.identity.owner])).hexdigest()
+                            receipt=self.gateway.release(release_id,owner=self._lease['owner'],epoch=self._lease['epoch'])
+                            self._outcome['release_receipt']=receipt
+                        else:
+                            request_id=hashlib.sha256(_canonical(['hardware.session.termination',
+                                self.control.identity.owner,self._lease['epoch'],trigger])).hexdigest()
+                            receipt=self.gateway.terminate_lease(request_id,owner=self._lease['owner'],
+                                epoch=self._lease['epoch'],trigger=trigger)
+                        self._outcome['termination_receipt']=receipt
                 except Exception as error:
                     self._outcome['errors'].append({'type':type(error).__name__,
                         'delivery_receipt':getattr(error,'delivery_receipt',None),
                         'lifecycle_receipt':getattr(error,'lifecycle_receipt',None)})
+                    receipt=getattr(error,'lifecycle_receipt',None)
+                    if receipt is None and self._lease is not None:
+                        try:
+                            prior=next((event for event in self.gateway.lease_events()
+                                if event['owner']==self._lease['owner'] and event['lease_epoch']==self._lease['epoch']),None)
+                            if prior is not None:
+                                receipt=prior['receipt']
+                                if (termination['trigger']=='release' and prior['state']=='pending'
+                                        and prior['trigger'] in {'cancel','expiry'}):
+                                    request_id=hashlib.sha256(_canonical(['hardware.session.termination',
+                                        self.control.identity.owner,self._lease['epoch'],prior['trigger']])).hexdigest()
+                                    try:
+                                        receipt=self.gateway.terminate_lease(request_id,owner=self._lease['owner'],
+                                            epoch=self._lease['epoch'],trigger=prior['trigger'])
+                                    except Exception as action_error:
+                                        self._outcome['errors'].append({'phase':'lease_termination',
+                                            'type':type(action_error).__name__,
+                                            'delivery_receipt':getattr(action_error,'delivery_receipt',None),
+                                            'lifecycle_receipt':getattr(action_error,'lifecycle_receipt',None)})
+                                        receipt=getattr(action_error,'lifecycle_receipt',receipt)
+                        except Exception as readback:
+                            self._outcome['errors'].append({'phase':'lease_event_readback','type':type(readback).__name__})
+                    self._outcome['termination_receipt']=deepcopy(receipt)
                 finally:self.gateway.close()
             failure=None
             if self.writer is not None:
