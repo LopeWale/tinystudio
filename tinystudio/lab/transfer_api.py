@@ -166,11 +166,17 @@ def install(project_routes, runner_routes):
         from .transfer_service import admit, attempt_identity
         _require_remote()
         run, attempt = svc.attempt_authority(db, target, id_, x_lab_lease)
-        row = admit(db, target.project_id, body.intent(), body.idempotency_key,
-                    attempt_authority=attempt_identity(run, attempt, target), policy=TransferPolicy.from_environment())
+        authority = attempt_identity(run, attempt, target)
+        project_id = target.project_id
+        # Preserve the authenticated hashes before releasing these locks. The
+        # admission transaction then acquires project-first locks and rechecks
+        # them; project deletion must never wait on a run while we wait on it.
+        db.commit()
+        row = admit(db, project_id, body.intent(), body.idempotency_key,
+                    attempt_authority=authority, policy=TransferPolicy.from_environment())
         session_id = row.id
         db.commit()
-        return _result(_control('initialize', db, target.project_id, session_id))
+        return _result(_control('initialize', db, project_id, session_id))
 
     @runner_routes.get(runner_paths.session_route)
     def output(id_: str, session_id: str, db: DB, target: TargetDep, x_lab_lease: str = Header(default='')):
