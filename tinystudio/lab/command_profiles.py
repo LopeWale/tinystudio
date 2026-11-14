@@ -267,7 +267,7 @@ class NativeCommandProfile:
     def from_binding(cls, binding) -> NativeCommandProfile:
         try:
             _exact(binding, {'endpoint_id', 'operator_id', 'transport', 'command_profile'},
-                   {'send_timeout', 'max_lease_seconds', 'limits', 'local_stop', 'ownership_key'}, label='native command binding')
+                   {'send_timeout', 'max_lease_seconds', 'limits', 'local_stop', 'ownership_key','lease_policy'}, label='native command binding')
             _finite_json(binding)
             value = deepcopy(binding)
             for name in ('endpoint_id', 'operator_id'):
@@ -304,6 +304,9 @@ class NativeCommandProfile:
             lease = value.get('max_lease_seconds')
             value['max_lease_seconds'] = None if lease is None else _positive(lease, 'max_lease_seconds')
             value.setdefault('local_stop', None)
+            if 'lease_policy' in value:
+                from .gateway_lease_policy import GatewayLeasePolicy
+                value['lease_policy']=GatewayLeasePolicy.from_binding(value).as_dict()
             digest = hashlib.sha256(_json({key: value[key] for key in ('command_profile', 'transport')}).encode()).hexdigest()
             profile = cls(_json(value), digest)
             if value['local_stop'] is not None:

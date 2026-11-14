@@ -8,7 +8,8 @@ import stat
 
 
 _OPERATIONS={'state':'GET','journal':'GET','command-profile':'GET','acquire':'POST',
-             'heartbeat':'POST','commands':'POST','stop':'POST','reconcile':'POST'}
+             'heartbeat':'POST','commands':'POST','stop':'POST','reconcile':'POST',
+             'release':'POST','lease-events':'GET'}
 
 
 def decode_gateway_json(data):

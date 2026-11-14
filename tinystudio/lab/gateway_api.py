@@ -3,7 +3,7 @@
 Provision owner-only files (0600): the endpoint binding consumed by CommandGateway
 and a token descriptor {endpoint_id, operator_id, token_sha256, permissions:[...]},
 where permissions explicitly name state/journal/acquire/heartbeat/commands/stop/
-reconcile. The journal directory must be owner-only (0700). No grants/tokens are
+reconcile/release. The journal directory must be owner-only (0700). No grants/tokens are
 created here. Bearer secrets remain with the operator; only SHA-256 is loaded.
 Every command body includes endpoint_id; stop/reconcile derive operator identity
 from the token descriptor, never from an authored research definition.
@@ -28,8 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .gateway import CommandGateway, GatewayError, GatewayExpired, _binding, _parameters,transport_for
 from .gateway_configuration import (GatewayApiPaths, GatewayStoragePaths, GatewayFilePolicy,
     GatewayRequestPolicy,GatewayRequestTooLarge,decode_gateway_json)
+from .gateway_watchdog import GatewayWatchdog
 
-PERMISSIONS = {"state", "journal", "acquire", "heartbeat", "commands", "stop", "reconcile"}
+PERMISSIONS = {"state", "journal", "acquire", "heartbeat", "commands", "stop", "reconcile", "release"}
 Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Identity = Annotated[str, Field(strict=True, min_length=1)]
 PATHS=GatewayApiPaths()
@@ -114,6 +115,11 @@ class StopRequest(EndpointRequest):
     request_id: Identity
 
 
+class ReleaseRequest(StopRequest):
+    owner: Identity
+    epoch: Annotated[int, Field(strict=True, ge=1)]
+
+
 class ReconcileRequest(EndpointRequest):
     evidence: dict | None = None
 
@@ -151,11 +157,21 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
             transport=transport_factory(deepcopy(binding),**selected)
         gateway = CommandGateway(GatewayStoragePaths.in_directory(root).journal, binding, transport)
         app.state.gateway = gateway
+        app.state.lease_watchdog = None
+        watchdog = None
         try:
+            watchdog = GatewayWatchdog(gateway)
+            app.state.lease_watchdog = watchdog
+            watchdog.start()
             yield
         finally:
-            gateway.close()
-            app.state.gateway = None
+            try:
+                if watchdog is not None:
+                    watchdog.close()
+            finally:
+                gateway.close()
+                app.state.gateway = None
+                app.state.lease_watchdog = None
 
     app = FastAPI(title="TinyStudio local endpoint gateway", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
@@ -193,6 +209,7 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
             requires_recovery = True
         result={"detail": str(exc), "retry_allowed": False,"recovery_requires_operator": requires_recovery}
         if getattr(exc,'delivery_receipt',None) is not None:result['delivery_receipt']=exc.delivery_receipt
+        if getattr(exc,'lifecycle_receipt',None) is not None:result['lifecycle_receipt']=exc.lifecycle_receipt
         return JSONResponse(status_code=410 if isinstance(exc,GatewayExpired) else 409,content=result)
 
     @app.exception_handler(TimeoutError)
@@ -205,6 +222,7 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
     def state():
         result=app.state.gateway.snapshot()
         result['command_profile']=described_profile(result['command_profile'])
+        result['lease_watchdog']=app.state.lease_watchdog.snapshot()
         return result
 
     @app.get(PATHS.command_profile,dependencies=[guard('state')])
@@ -218,6 +236,13 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
         return {"endpoint_id": endpoint_id, "items": rows[offset:offset+limit],
                 "next_offset": offset + limit if offset + limit < len(rows) else None}
 
+    @app.get(PATHS.route('lease-events'), dependencies=[guard("journal")])
+    def lease_events(offset: Annotated[int, Query(ge=0)] = 0,
+                     limit: Annotated[int, Query(ge=1, le=1000)] = 100):
+        rows = app.state.gateway.lease_events()
+        return {"endpoint_id": endpoint_id, "items": rows[offset:offset+limit],
+                "next_offset": offset + limit if offset + limit < len(rows) else None}
+
     @app.post(PATHS.route('acquire'), dependencies=[guard("acquire")])
     def acquire(body: AcquireRequest):
         scope(body)
@@ -228,6 +253,11 @@ def create_gateway_app(binding_file, journal_root, token_file, transport_factory
         scope(body)
         expires_at = app.state.gateway.heartbeat(body.owner, body.epoch, ttl=body.ttl)
         return {"endpoint_id": endpoint_id, "epoch": body.epoch, "expires_at": expires_at}
+
+    @app.post(PATHS.route('release'), dependencies=[guard("release")])
+    def release(body: ReleaseRequest):
+        scope(body)
+        return app.state.gateway.release(body.request_id, owner=body.owner, epoch=body.epoch)
 
     @app.post(PATHS.route('commands'), dependencies=[guard("commands")])
     def command(body: CommandRequest):

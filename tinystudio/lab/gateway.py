@@ -42,6 +42,8 @@ import uuid
 from .ownership import OwnershipError
 from .gateway_configuration import GatewayStoragePaths
 from .command_profiles import COMMAND_FORMAT,RECEIPT_FORMAT
+from .gateway_lease_policy import GatewayLeasePolicy
+from .gateway_lifecycle import GatewayLeaseLifecycle
 
 
 class GatewayError(OwnershipError):
@@ -159,6 +161,8 @@ class CommandGateway:
         from .command_profiles import NativeCommandProfile
         self._native_profile=(NativeCommandProfile.from_binding(self._binding)
                               if 'command_profile' in self._binding else None)
+        self.lease_policy=GatewayLeasePolicy.from_binding(self._binding)
+        self._leases=GatewayLeaseLifecycle(self)
         self._clock = clock
         self._mutex = threading.RLock()
         self._send_lock = threading.RLock()
@@ -220,6 +224,7 @@ class CommandGateway:
                 CREATE TABLE IF NOT EXISTS recovery (
                     id INTEGER PRIMARY KEY, recorded_at REAL NOT NULL, evidence TEXT NOT NULL);
             ''')
+            self._leases.install()
             with self._transaction():
                 state = self._db.execute("SELECT * FROM gateway WHERE id=1").fetchone()
                 encoded = _json(self._binding)
@@ -230,6 +235,7 @@ class CommandGateway:
                     raise GatewayError("journal is bound to a different endpoint/operator/configuration")
                 elif state["state"] == "owned" or self._db.execute("SELECT 1 FROM commands WHERE state='pending' LIMIT 1").fetchone():
                     self._recovery("restart_with_ownership_or_pending_command")
+                self._leases.recover()
             self.transport = transport if transport is not None else transport_for(self._binding)
             if self.transport.kind != self._binding["transport"]["kind"]:
                 raise GatewayError("transport implementation does not match the explicit binding")
@@ -281,7 +287,7 @@ class CommandGateway:
             raise GatewayError("persistent gateway clock regressed; explicit recovery required")
         self._db.execute("UPDATE gateway SET last_time=? WHERE id=1", (now,))
         if state["state"] == "owned" and now >= state["lease_expires"]:
-            self._recovery("lease_expired")
+            self._leases.end(state,now=now,trigger='expiry')
         return now
 
     def _authority(self, owner, epoch):
@@ -381,6 +387,10 @@ class CommandGateway:
                 state = self._db.execute("SELECT * FROM gateway WHERE id=1").fetchone()
                 if request["epoch"] != state["epoch"]:
                     raise GatewayError("local stop epoch changed before dispatch")
+                action=self._db.execute('SELECT state,revocation_epoch FROM lease_events WHERE stop_command_id=?',
+                                        (request['command_id'],)).fetchone()
+                if action is not None and (action['state']!='executing' or action['revocation_epoch']!=state['epoch']):
+                    raise GatewayError('lease action was consumed or superseded before its final write')
             if now >= request["expires_at"]:
                 raise GatewayError("command expired at the final transport write boundary")
             if self._native_profile is not None:
@@ -450,7 +460,14 @@ class CommandGateway:
         try:
             with self._transaction():
                 self._db.execute("UPDATE commands SET state='unknown',ack=?,error=? WHERE command_id=?", (encoded,type(cause).__name__,request['command_id']))
-                self._recovery('unknown_command_outcome')
+                state=self._db.execute('SELECT * FROM gateway WHERE id=1').fetchone()
+                # Uncertainty from an old lease cannot revoke a later owner, nor
+                # invalidate a lease action already committed by this owner.
+                if (state['state']=='idle' or state['state']=='owned'
+                        and state['owner']==request['owner'] and state['epoch']==request['epoch']):
+                    if state['state']=='owned':
+                        failure.revoked_lease={key:state[key] for key in ('owner','epoch','lease_expires')}
+                    self._recovery('unknown_command_outcome')
         except Exception as error:
             failure.add_note(f'Outcome journal update unconfirmed: {type(error).__name__}: {error}')
         raise failure from cause
@@ -466,23 +483,29 @@ class CommandGateway:
                     raise GatewayExpired('command has expired before admission')
                 if request['expires_at']>state['lease_expires']:
                     raise GatewayError('command outlives its ownership lease')
+                admitted_lease=dict(state)
                 existing_ack = self._pending(request)
             if existing_ack is not None:
                 return existing_ack  # Read an existing receipt; never repeat the effect.
-            should_cancel = lambda: self._stop_requested.is_set() or cancelled()
+            should_cancel = lambda: (self._stop_requested.is_set() or cancelled()
+                                     or self._leases.aborted(owner,epoch))
             if should_cancel():
                 with self._transaction():
                     self._db.execute("UPDATE commands SET state='cancelled' WHERE command_id=?", (command_id,))
-                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
+                self._leases.cancel(request,admitted_lease)
                 raise GatewayError("command cancelled; inspect the configured local-stop outcome")
             try:
                 ack = self._effect(request, should_cancel)
-            except GatewayError:
+            except GatewayError as error:
                 if should_cancel():
-                    self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
+                    try:self._leases.cancel(request,getattr(error,'revoked_lease',admitted_lease))
+                    except Exception as cleanup:
+                        error.add_note('Selected lease cleanup failed: '+type(cleanup).__name__)
+                        if getattr(cleanup,'lifecycle_receipt',None) is not None:
+                            error.lifecycle_receipt=cleanup.lifecycle_receipt
                 raise
             if should_cancel():
-                self.local_stop(self._binding["operator_id"], request_id="cancel:" + hashlib.sha256(command_id.encode()).hexdigest(),_internal=True)
+                self._leases.cancel(request,admitted_lease)
                 raise GatewayError("cancelled after dispatch; delivery receipt retained; inspect the local-stop outcome")
             return ack
 
@@ -495,6 +518,32 @@ class CommandGateway:
         if existing['state']=='not_configured' or self._completed(existing['state']):
             return json.loads(existing['ack'])
         raise GatewayError('uncertain local stop cannot be retried automatically')
+
+    def _stop_request(self,request_id,epoch,now):
+        if self._native_profile is not None and self._native_profile.local_stop_payload is None:
+            return {'protocol':COMMAND_FORMAT,'endpoint_id':self._binding['endpoint_id'],
+                'command_id':request_id,'epoch':epoch,'owner':self._binding['operator_id'],'payload':None,
+                'expires_at':now+self._binding['send_timeout'],'kind':'local_stop','profile_digest':self._native_profile.digest}
+        return self._request(request_id,self._binding['operator_id'],epoch,
+            None if self._native_profile is not None else self._binding['local_stop'],
+            now+self._binding['send_timeout'],'local_stop',
+            payload=self._native_profile.local_stop_payload if self._native_profile is not None else None)
+
+    def _record_unconfigured_stop(self,request):
+        receipt={'format':RECEIPT_FORMAT,
+            **{key:request[key] for key in ('endpoint_id','command_id','epoch','profile_digest')},
+            'status':'not_configured','device_application_confirmed':False,'physical_outcome':'unverified',
+            'disclosure':'Host authority revoked; no device stop action was configured or sent.'}
+        self._db.execute("UPDATE commands SET state='not_configured',ack=? WHERE command_id=?",
+                         (_json(receipt),request['command_id']))
+        return receipt
+
+    def release(self,request_id,*,owner,epoch):
+        return self._leases.release(request_id,owner=owner,epoch=epoch)
+
+    def watchdog_tick(self):return self._leases.tick()
+
+    def lease_events(self):return self._leases.events()
 
     def local_stop(self, operator_id, *, request_id,_internal=False):
         # Generated stop identities are fixed implementation metadata, rather
@@ -515,22 +564,10 @@ class CommandGateway:
                 now = self._now()
                 self._recovery("operator_local_stop")
                 epoch = self._db.execute("SELECT epoch FROM gateway WHERE id=1").fetchone()[0]
-                if self._native_profile is not None and self._native_profile.local_stop_payload is None:
-                    request={'protocol':COMMAND_FORMAT,'endpoint_id':self._binding['endpoint_id'],
-                        'command_id':request_id,'epoch':epoch,'owner':operator_id,'payload':None,
-                        'expires_at':now+self._binding['send_timeout'],'kind':'local_stop','profile_digest':self._native_profile.digest}
-                    self._pending(request)
-                    receipt={'format':RECEIPT_FORMAT,
-                        **{key:request[key] for key in ('endpoint_id','command_id','epoch','profile_digest')},
-                        'status':'not_configured','device_application_confirmed':False,'physical_outcome':'unverified',
-                        'disclosure':'Host authority revoked; no device stop action was configured or sent.'}
-                    self._db.execute("UPDATE commands SET state='not_configured',ack=? WHERE command_id=?",(_json(receipt),request_id))
-                    return receipt
-                request = self._request(request_id, operator_id, epoch,
-                    None if self._native_profile is not None else self._binding["local_stop"],
-                    now + self._binding["send_timeout"], "local_stop",
-                    payload=self._native_profile.local_stop_payload if self._native_profile is not None else None)
+                request=self._stop_request(request_id,epoch,now)
                 self._pending(request)
+                if self._native_profile is not None and self._native_profile.local_stop_payload is None:
+                    return self._record_unconfigured_stop(request)
             return self._effect(request, lambda: False)
 
     def reconcile(self, operator_id,*,evidence=None):
@@ -573,6 +610,7 @@ class CommandGateway:
                 for row in uncertain:
                     self._db.execute("UPDATE commands SET state=?,ack=? WHERE command_id=?", ("reconciled_" + outcomes[row[0]], _json(evidence), row[0]))
                 self._db.execute("INSERT INTO recovery(recorded_at,evidence) VALUES(?,?)", (now, _json(evidence)))
+                self._leases.supersede()
                 self._db.execute("UPDATE gateway SET state='idle',owner=NULL,lease_expires=0,epoch=MAX(epoch,?)+1,reason=NULL WHERE id=1", (device_epoch,))
             self._stop_requested.clear()
             return {"state": "idle", "replay": False, "evidence": deepcopy(evidence)}
@@ -593,6 +631,7 @@ class CommandGateway:
                     'operator_evidence':operator_evidence,'consumed_command_ids':uncertain,
                     'previous_epoch':state['epoch'],'observed_at':now,
                     'disclosure':'Operator-authorized host ownership reset; no physical effect or stopping claim is verified.'}
+                retained['superseded_lease_event_keys']=self._leases.supersede()
                 self._db.execute('INSERT INTO recovery(recorded_at,evidence) VALUES(?,?)',(now,_json(retained)))
                 self._db.execute("UPDATE commands SET state='reconciled_consumed' WHERE state IN ('pending','unknown','cancelled')")
                 self._db.execute("UPDATE gateway SET state='idle',owner=NULL,lease_expires=0,epoch=epoch+1,reason=NULL WHERE id=1")
@@ -605,6 +644,7 @@ class CommandGateway:
             state = dict(self._db.execute("SELECT epoch,state,owner,lease_expires,reason FROM gateway WHERE id=1").fetchone())
         result={**state, "endpoint_id": self._binding["endpoint_id"], "physical_qualified": False,
                 "qualification": "Host journal boundary; device application and physical effects require separate evidence."}
+        result['lease_policy']=self.lease_policy.as_dict()
         if self._native_profile is not None:result['command_profile']=self._native_profile.describe()
         else:result['command_profile']={'format':'tinystudio.fenced-command-profile.v1','protocol':1,
             'required_device_capabilities':['epoch_fencing','command_deduplication','command_expiry','application_ack'],

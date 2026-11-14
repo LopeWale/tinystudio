@@ -358,8 +358,9 @@ commands and recovery remains additional implementation work.
 
 The operator-provisioned gateway runs separately from the Lab API and read-only
 acquisition adapters. It currently has no Lab `physical_control` executor,
-session binding, release workflow or watchdog. Lease expiry prevents subsequent
-authorized writes; it does not automatically send a local stop. Host scheduling
+session binding or end-to-end control qualification. Standalone release,
+cancellation and observed lease expiry follow an operator-selected lease policy;
+an optional host watchdog checks that policy in the background. Host scheduling
 and SDK waits provide no hard real-time, control-stability or physical-stop
 guarantee.
 
@@ -400,7 +401,13 @@ For an operator-chosen local MQTT broker and topic, a native binding can be:
   },
   "send_timeout": 2,
   "max_lease_seconds": null,
-  "local_stop": null
+  "local_stop": null,
+  "lease_policy": {
+    "on_release": "revoke_only",
+    "on_expiry": "revoke_only",
+    "on_cancel": "local_stop",
+    "watchdog_interval_seconds": null
+  }
 }
 ```
 
@@ -413,6 +420,15 @@ authored command. `GET /command-profile` reports their precise byte scopes.
 An optional positive `max_lease_seconds` bounds requested lease durations;
 `null` still requires a positive acquired lease and an unexpired command.
 `capability_claims` and any `ownership_key` remain operator claims.
+
+The optional top-level `lease_policy` shown above gives the defaults: release
+and expiry revoke host authority without a device write, while cancellation
+selects `local_stop`, preserving the previous cancellation behavior. Each action
+selects exactly `revoke_only` or `local_stop`; the latter uses the fixed
+operator-configured stop payload, never a payload supplied by a release caller.
+For a native binding with `local_stop: null`, a selected stop records
+`not_configured` and sends nothing. Successful host revocation or stop delivery
+does not establish the equipment's physical state.
 
 Provision binding and token-descriptor files as operator-owned regular files,
 mode `0600`, without symbolic or hard links, and the canonical journal root as
@@ -439,7 +455,9 @@ settings apply, defaulting to `None`. Zero is a valid budget; no fixed 64 KiB
 configuration or request limit is imposed. Importable `GatewayFilePolicy`,
 `GatewayRequestPolicy`, `GatewayStoragePaths` and `GatewayApiPaths` live in
 `tinystudio.lab.gateway_configuration`; `NativeCommandProfile` lives in
-`tinystudio.lab.command_profiles`.
+`tinystudio.lab.command_profiles`. Lease policy and watchdog classes are
+`GatewayLeasePolicy` in `tinystudio.lab.gateway_lease_policy` and
+`GatewayWatchdog` in `tinystudio.lab.gateway_watchdog`.
 
 Device credentials belong in a separate private `--runtime-secrets-file`, not the
 public binding or payload. MQTT supports `username`/`password` and TLS fields
@@ -454,11 +472,14 @@ factory signature fails before listener startup.
 Authenticated `GET /state`, `/journal` and `/command-profile` inspect the host
 journal and selected profile; `/command-profile` requires the token's `state`
 permission and exposes the read-only payload schema, digest, budgets and
-qualification scope. `POST /acquire` selects `endpoint_id`, `owner` and positive
-`ttl`; retain its returned `epoch` and lease expiry. `POST /heartbeat` renews that
-owner/epoch. Each `POST /commands` supplies `endpoint_id`, `owner`, `epoch`, a new
-`command_id`, absolute wall-clock `expires_at` within the lease, and exactly one
-of legacy `parameters` or native `payload`. For the binding above, one payload is:
+qualification scope. State also exposes the effective `lease_policy` and
+`lease_watchdog` status. `GET /lease-events` uses `journal` permission and
+`offset`/`limit` paging to inspect lease actions and their retained receipts. `POST /acquire`
+selects `endpoint_id`, `owner` and positive `ttl`; retain its returned `epoch` and
+lease expiry. `POST /heartbeat` renews that owner/epoch. Each `POST /commands`
+supplies `endpoint_id`, `owner`, `epoch`, a new `command_id`, absolute wall-clock
+`expires_at` within the lease, and exactly one of legacy `parameters` or native
+`payload`. For the binding above, one payload is:
 
 ```json
 {
@@ -485,6 +506,24 @@ command expiry. This authenticated lookup requires the same immutable request,
 including owner, epoch, expiry and payload. Reusing the ID for different intent
 fails. Pending, unknown or consumed IDs never authorize automatic replay.
 
+`POST /release` requires an explicit token `release` permission and a body with
+`endpoint_id`, stable `request_id`, `owner` and positive, strictly integer `epoch`
+(not a boolean). New releases require the exact current lease. An identical
+completed request returns its immutable lifecycle receipt without revoking or stopping a
+later owner; a changed owner/epoch under the same request ID fails. A clean
+release can return the host to `idle` only after in-flight work has settled and
+there are no pending/unknown commands or unresolved lease actions. Inspect the
+receipt's `host_state`; a completed action alone does not imply availability.
+Expiry, cancellation and uncertain outcomes remain `recovery_required`.
+
+Lifecycle receipts use `tinystudio.gateway-lease-event.v1`, retain the exact
+lease identity and termination action, and reference the stop command and its
+delivery receipt when one exists. They keep `physical_outcome: "unverified"`.
+Ownership revocation commits together with its lifecycle intent; the action is
+durably claimed before a stop can be sent. After restart, a committed but
+unclaimed pending action can be resumed by a watchdog tick. An action already
+marked executing becomes unknown and is never automatically replayed.
+
 `POST /stop` uses the bound operator and a stable `request_id`, revokes host
 authority and attempts the exact configured `local_stop` payload. With
 `local_stop: null`, it records `not_configured` and sends no device stop.
@@ -492,7 +531,26 @@ Neither outcome proves that equipment stopped. In `recovery_required`, explicit
 `POST /reconcile` evidence must include `acknowledge_unverified_outcomes: true`.
 Native reconciliation records an `operator_attestation`, advances the host epoch
 and consumes uncertain command IDs while preserving receipts and unknown
-physical outcomes. It performs no command replay or physical-state verification.
+physical outcomes. It supersedes old unresolved lease actions before a new
+lease can be acquired. It performs no command replay or physical-state
+verification.
+
+A positive finite `watchdog_interval_seconds` starts an ASGI-owned watchdog;
+`null` creates no background thread. With the watchdog disabled, gateway calls
+can still observe expiry, and library callers can invoke `watchdog_tick()` to
+process pending actions. The worker waits the selected interval before its first
+tick and after each completed tick. This is a host polling cadence, not a
+hard deadline, SDK timeout guarantee or hardware timer that survives a gateway
+process outage. Default expiry behavior still performs no device stop unless
+the operator selects `on_expiry: "local_stop"`. That action selection alone does
+not enable a background worker; a watchdog or explicit library tick must run it.
+
+Library `GatewayWatchdog.close(timeout=None)` requests shutdown and joins the
+worker before returning. An optional nonnegative caller-selected timeout bounds
+that join; the returned status reports `alive: true` if a tick is still running.
+The API uses the default join before closing the gateway journal. A blocked
+native call can therefore delay shutdown; a requested shutdown is not evidence
+of physical stopping.
 
 Verification uses owned software endpoints, native loopback/emulator fixtures and
 controlled failures. It establishes no physical-device, Wokwi/Renode session,
