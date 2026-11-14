@@ -438,10 +438,15 @@ def check_finalization_publication_authority(db, row, result):
     if db.get_bind().dialect.name == 'postgresql':
         # Qualify only the legacy JSONB projection in the database's own JSONB
         # equality domain. The retained canonical archive remains exact text.
-        from sqlalchemy import Text, cast, literal
+        from sqlalchemy import Text, cast, literal, or_
         from sqlalchemy.dialects.postgresql import JSONB
         projection = cast(literal(envelope['canonical_result_json'], type_=Text), JSONB)
-        matches = db.scalar(select(LabRun.id).where(LabRun.id == identity.run_id, LabRun.result == projection))
+        same_projection = LabRun.result == projection
+        if envelope['canonical_result_json'] == 'null':
+            # A legacy SQL NULL also loads as None. Assigning None again may
+            # leave that column unchanged rather than writing JSON null.
+            same_projection = or_(LabRun.result.is_(None), same_projection)
+        matches = db.scalar(select(LabRun.id).where(LabRun.id == identity.run_id, same_projection))
         if matches is None:
             raise svc.LabError('provisional finalization result projection changed', 409)
     elif _text(run.result) != envelope['canonical_result_json']:
