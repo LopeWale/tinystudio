@@ -24,6 +24,7 @@ from .engine import digest
 from .execution_outcome import (CANCELLED_EVIDENCE_EXIT, FAILED_EVIDENCE_EXIT,
                                 cancelled_evidence_outcome, failed_evidence_outcome)
 from .service import catalog, implementation_digest, runtime_versions
+from .shared_work_configuration import SharedWorkConfiguration
 
 TRANSFER_LIMIT = 512 * 1024**2
 CLAIM_RETRY_INITIAL_SECONDS = 1.0
@@ -573,7 +574,8 @@ class Runner:
                                  runtime_read_paths=tuple(Path(value) for value in config.get("runtime_read_paths", [])) + ((root/"spec.json", root/"context.json") if policy["backend"] == "native" else ()),
                                  image=config.get("image"),namespace=config.get("namespace","tinystudio"),kube_context=config.get("kube_context"),
                                  kubeconfig=Path(config["kubeconfig"]) if config.get("kubeconfig") else None,storage_claim=config.get("storage_claim"),
-                                 require_hard_resources=config.get("require_hard_resources",False) or "pids" in policy.get("requirements", {}))
+                                 require_hard_resources=config.get("require_hard_resources",False) or "pids" in policy.get("requirements", {}),
+                                 shared_work_root=SharedWorkConfiguration.from_backend(config).root if policy["backend"]=="kubernetes" else None)
         return build_profile(request,trusted)
 
     @staticmethod
@@ -620,8 +622,8 @@ class Runner:
             config, selected_runtime = self._selection(spec)
             if selected_runtime != spec["runtime"]:
                 raise ValueError("runner runtime changed after claim")
-            if policy["backend"] == "kubernetes" and not root.resolve().is_relative_to(Path(config["shared_work_root"]).resolve()):
-                raise ValueError("Kubernetes attempt is outside its operator-provisioned shared storage")
+            if policy["backend"] == "kubernetes":
+                SharedWorkConfiguration.from_backend(config).relative_path(root)
             paths = self._download(spec, root, prefix, lease, heartbeat)
             (root / "spec.json").write_text(frozen)
             (root / "spec.json").chmod(0o444)

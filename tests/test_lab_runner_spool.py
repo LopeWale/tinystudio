@@ -152,3 +152,51 @@ def test_evidence_environment_preserves_final_symlink_for_rejection(tmp_path,mon
     assert host.lab_evidence_dir==alias
     with pytest.raises(ValueError,match='symlink'):
         SpoolConfiguration.resolve(None,'acquisition.mqtt','native',host=host)
+
+
+@pytest.mark.parametrize('spool_location', [False, None, 'operator/archive/retained'])
+def test_kubernetes_runner_mounts_the_staged_volume_paths(source,tmp_path,monkeypatch,spool_location):
+    """Owned local staging and manifests only; no Kubernetes runtime qualification."""
+    from tinystudio.lab.contracts import checksum
+
+    claimed=prepare(source)
+    claimed['spec']['definition']['execution'].update(backend='kubernetes',profile='isolated')
+    claimed['spec']['runtime']={'os':'Linux'}
+    claimed['spec_digest']=checksum(claimed['spec'])
+    shared=tmp_path/'shared-volume';shared.mkdir()
+    kubeconfig=tmp_path/'fixture-kubeconfig';kubeconfig.write_text('never used by a cluster')
+    selected={'shared_work_root':str(shared),'image':'fixture@sha256:'+'a'*64,
+              'kube_context':'fixture','kubeconfig':str(kubeconfig),'storage_claim':'fixture-pvc',
+              'grants':{'network_policy_enforced':True}}
+    spool={'enabled':spool_location is not False}
+    if isinstance(spool_location,str):
+        spool['root']=str(shared/spool_location)
+    worker=Runner('http://localhost','fixture','target-secret',client=ClaimTransport(claimed),
+                  source_root=source,profile_config={'schema_version':1,
+                  'backends':{'kubernetes':selected},'evidence_spool':spool})
+    monkeypatch.setattr(worker,'_advertised_capabilities',lambda:{})
+    plans=[]
+
+    def stage_manifest(attempt,root,**kwargs):
+        staged=root/'runtime/tinystudio';staged.mkdir(parents=True)
+        (staged/'fixture.py').write_text('owned source')
+        (root/'inputs').mkdir();(root/'inputs/source.json').write_text('owned input')
+        (root/'work').mkdir()
+        (root/'spec.json').write_text('owned specification')
+        plan=worker._profile(attempt['spec'],attempt,root,SimpleNamespace(root=staged),
+                             selected,['/usr/bin/python','-m','tinystudio.lab.execution'])
+        job=json.loads(plan.manifests_json)['items'][1]
+        mounts=job['spec']['template']['spec']['containers'][0]['volumeMounts']
+        mounted_root=shared/mounts[0]['subPath']
+        mounted_output=shared/mounts[1]['subPath']
+        assert mounted_root==root
+        assert (mounted_root/'spec.json').read_text()=='owned specification'
+        assert (mounted_root/'runtime/tinystudio/fixture.py').read_text()=='owned source'
+        assert (mounted_root/'inputs/source.json').read_text()=='owned input'
+        assert mounted_output==root/'work'
+        assert mounts[0]['readOnly'] is True and mounts[1]['readOnly'] is False
+        plans.append(plan)
+
+    monkeypatch.setattr(worker,'execute_attempt',stage_manifest)
+    assert worker.run_once()
+    assert len(plans)==1

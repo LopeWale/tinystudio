@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tinystudio.config import config, RuntimePaths
 from .evidence_spool import SpoolPolicy
+from .shared_work_configuration import SharedWorkConfiguration
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,8 @@ class SpoolConfiguration:
         profile={} if profile is None else profile
         selected=profile.get('evidence_spool',{})
         directory=profile.get('backends',{}).get(backend,{}).get('shared_work_root') if backend=='kubernetes' else work_root
+        if backend=='kubernetes' and directory:
+            directory=SharedWorkConfiguration.from_backend(profile['backends'][backend]).root
         default_root=RuntimePaths(Path(directory).absolute()).laboratory_evidence_spool if directory else host.laboratory_evidence_spool
         policy=SpoolPolicy.from_profile(profile,engine,default_root)
         explicit=bool(directory or host.lab_evidence_dir or selected.get('root'))

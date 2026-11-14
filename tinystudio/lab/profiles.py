@@ -22,6 +22,7 @@ import time
 from typing import Callable
 
 from tinystudio.config import RuntimeTools
+from .shared_work_configuration import SharedWorkConfiguration
 
 
 FORMAT = "tinystudio.execution-profile.v1"
@@ -96,6 +97,7 @@ class ProfileRequest:
     kubeconfig: Path | None = None
     storage_claim: str | None = None
     require_hard_resources: bool = False
+    shared_work_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -255,9 +257,14 @@ def build_profile(request: ProfileRequest, grants: RunnerGrants | None = None, *
     if not grants.network_policy_enforced:attestations.append('CNI NetworkPolicy enforcement')
     if request.require_hard_resources and (grants.kubernetes_pids_limit is None or grants.kubernetes_pids_limit > request.limits.pids):
         raise ValueError("Kubernetes per-pod PID limits require an independently attested node policy")
+    # Legacy standalone requests use a direct child of the PVC root. The runner
+    # always supplies its operator-selected root, including for spooled attempts.
+    storage=SharedWorkConfiguration(request.shared_work_root if request.shared_work_root is not None else root.parent)
+    attempt_subpath=storage.relative_path(request.attempt_root).as_posix()
+    output_subpath=storage.relative_path(request.output_root).as_posix()
     labels={_LABEL:owner,'tinystudio.attempt':request.attempt_id}
-    mounts=[{'name':'attempt','mountPath':str(root),'subPath':root.name,'readOnly':True},
-            {'name':'attempt','mountPath':str(output),'subPath':root.name+'/'+output.relative_to(root).as_posix(),'readOnly':False}]
+    mounts=[{'name':'attempt','mountPath':str(root),'subPath':attempt_subpath,'readOnly':True},
+            {'name':'attempt','mountPath':str(output),'subPath':output_subpath,'readOnly':False}]
     volumes=[{'name':'attempt','persistentVolumeClaim':{'claimName':request.storage_claim}}]
     for index, secret in enumerate(grants.kubernetes_secrets):
         name_='secret-'+str(index);volumes.append({'name':name_,'secret':{'secretName':secret,'defaultMode':0o400}})
